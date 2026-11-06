@@ -129,7 +129,9 @@ Legend: **FULL** = behaves as the app expects · **PARTIAL** = works with a mapp
 | Stop / cancel | GET | ✅ `session/cancel` | **FULL** | — |
 | Session list, open, history paging | ✅ | ✅ `session/list`, `session/follow` | **FULL** | — |
 | Session rename | ✅ | ✅ projections | **FULL** | — |
-| Session pin / archive / branch / duplicate / delete / export | ✅ | ✗ / unmapped | **NONE** | buttons 404 → toast/no-op |
+| Session pin / archive | ✅ | ✅ workspace pin/archive remotes | **FULL** | - |
+| Session branch (fork) | ✅ | ✅ session/fork | **FULL** | needs a completed turn, else the host refusal is shown |
+| Session duplicate / delete / export / compress / clear / undo / retry | ✅ | ✗ | **NONE** | 200 {ok:false, error} - a message, not a 404 banner |
 | Live title update | ✅ | ✅ projection | **FULL** | — |
 | Model picker | ✅ | ✅ `modelCatalog` | **FULL** | — |
 | Reasoning-effort picker | ✅ | ✅ preset | **PARTIAL** | — |
@@ -150,7 +152,9 @@ Legend: **FULL** = behaves as the app expects · **PARTIAL** = works with a mapp
 | Voice transcription | ✅ | speech-input plugin | **LATER** | — |
 | Move to Hermes | ✅ | ✗ | **NONE** | — |
 
-All NONE rows are safe by construction: the app treats a 404 on those screens as "empty", not fatal.
+All NONE rows are safe by construction: unsupported screens answer well-formed empty payloads
+(projects, crons, insights, memory, skills, kanban) and unsupported actions answer 200 {ok:false, error},
+so the app renders an empty state or a message rather than its "server endpoint was not found" banner.
 The **only** endpoints that must never 404 are the approval/clarify family — a 404 there hangs the
 turn silently. We always answer `{"pending":null}`.
 

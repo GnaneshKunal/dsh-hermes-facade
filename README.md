@@ -107,7 +107,8 @@ curl.
 | approvals (once / deny) | full: session and always collapse to allow-once |
 | clarifications / agent questions | full |
 | model picker, reasoning effort, workspaces, profiles | partial |
-| pin / archive / branch / duplicate / export session | not implemented |
+| session rename / pin / archive / branch (fork) | full |
+| session duplicate / export / compress / clear / undo / retry | not implemented (answers ok:false) |
 | projects, tasks/cron, skills, memory, insights, kanban, git panel, bots, push | not implemented (screens stay empty) |
 
 The full matrix, including what each gap looks like on the phone, is in
