@@ -148,6 +148,18 @@ export function createMockHost() {
       created.projections = { values: { title: 'Fork of ' + ((sessions.get(sessionId)?.projections.values.title) ?? sessionId) } }
       return { ok: true, sessionId: created.sessionId }
     },
+    async modelSelection(sessionId) {
+      const record = sessions.get(sessionId)
+      const selection = record?.projections?.values?.modelSelection
+      return selection ?? undefined
+    },
+    async setReasoningEffort({ sessionId, effort }) {
+      const record = sessions.get(sessionId)
+      if (record) {
+        record.projections = { values: { ...record.projections.values, modelSelection: { ...(record.projections.values.modelSelection ?? {}), reasoningEffort: effort } } }
+      }
+      return { ok: true }
+    },
     async readMedia(sessionId, reference) {
       const { readFile } = await import('node:fs/promises')
       const { extname } = await import('node:path')

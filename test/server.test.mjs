@@ -268,6 +268,44 @@ test('/api/media serves a referenced file', async t => {
   assert.equal(missing.status, 404)
 })
 
+test('changing reasoning effort answers instead of 404ing', async t => {
+  const { facade, base, password } = await boot()
+  t.after(() => facade.close())
+  const login = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }),
+  })
+  const cookie = cookieOf(login)
+
+  const res = await fetch(base + '/api/reasoning', {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ effort: 'high', session_id: 'sess-mock' }),
+  })
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  assert.equal(body.ok, true)
+  assert.equal(body.reasoning_effort, 'high')
+  assert.ok(Array.isArray(body.supported_efforts))
+
+  const status = await (await fetch(base + '/api/reasoning?session_id=sess-mock', { headers: { cookie } })).json()
+  assert.equal(status.reasoning_effort, 'high', 'the GET reflects what was saved')
+})
+
+test('unknown writes answer 200 ok:false instead of 404', async t => {
+  const { facade, base, password } = await boot()
+  t.after(() => facade.close())
+  const login = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }),
+  })
+  const cookie = cookieOf(login)
+  const res = await fetch(base + '/api/session/frobnicate', {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({}),
+  })
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  assert.equal(body.ok, false)
+  assert.match(body.error, /not supported/i)
+})
+
 test('projects come from DSH workspaces and sessions carry project_id', async t => {
   const { facade, base, password } = await boot()
   t.after(() => facade.close())

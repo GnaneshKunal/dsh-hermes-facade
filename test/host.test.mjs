@@ -11,7 +11,16 @@ function build() {
   const gateway = {
     async invoke(request) {
       calls.push(request)
-      if (request.method === 'list') return { items: [{ sessionId: 's1', updatedAt: 1700000000000, running: false }] }
+      if (request.method === 'list') {
+        return {
+          items: [{
+            sessionId: 's1',
+            updatedAt: 1700000000000,
+            running: false,
+            projections: { values: { modelSelection: { provider: 'deepseek-official', model: 'deepseek-v4-pro', reasoningEffort: 'medium' } } },
+          }],
+        }
+      }
       if (request.method === 'create') return { sessionId: 'created-1' }
       if (request.method === 'prompt') return { accepted: true }
       if (request.method === 'cancel') return { accepted: true }

@@ -239,6 +239,44 @@ export function createDshHost({ ctx, logger = console }) {
     },
 
     /**
+     * Current model selection of a session, from its projections.
+     * @param {string} sessionId session id.
+     * @returns {Promise<{provider?: string, model?: string, reasoningEffort?: string}|undefined>} selection.
+     */
+    async modelSelection(sessionId) {
+      const rows = await this.listSessions()
+      const row = rows.find(entry => String(entry?.sessionId) === String(sessionId))
+      const selection = row?.projections?.values?.modelSelection
+      if (selection === undefined || selection === null) return undefined
+      const model = selection.model
+      return {
+        ...(typeof selection.provider === 'string' ? { provider: selection.provider } : {}),
+        ...(typeof model === 'string' ? { model } : (typeof model?.id === 'string' ? { model: model.id } : {})),
+        ...(typeof selection.reasoningEffort === 'string' ? { reasoningEffort: selection.reasoningEffort } : {}),
+      }
+    },
+
+    /**
+     * Change the reasoning effort of a session.
+     *
+     * DSH has no separate effort endpoint: effort is part of the model
+     * selection, so the current provider/model are replayed with the new effort.
+     *
+     * @param {object} input input.
+     * @param {string} input.sessionId session id.
+     * @param {string} input.effort effort id.
+     * @returns {Promise<{ok: boolean}>} outcome.
+     */
+    async setReasoningEffort({ sessionId, effort }) {
+      const selection = await this.modelSelection(sessionId)
+      const request = { sessionId, reasoningEffort: effort }
+      if (selection?.provider !== undefined) request.provider = selection.provider
+      if (selection?.model !== undefined) request.model = selection.model
+      await invoke('session', 'selectModel', { request })
+      return { ok: true }
+    },
+
+    /**
      * Serve a file referenced by a chat: an absolute path, a session-relative
      * path, or an attachment id from DSH's content-addressed store.
      * @param {string} sessionId session the reference belongs to.

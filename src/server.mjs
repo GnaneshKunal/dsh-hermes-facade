@@ -18,6 +18,9 @@ import { createStreamRegistry } from './streams.mjs'
 /** Largest accepted JSON body. */
 const MAX_BODY_BYTES = 2 * 1024 * 1024
 
+/** Effort levels offered to the composer. */
+const EFFORT_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
+
 /** Login attempts allowed per window per address. */
 const LOGIN_LIMIT = 5
 /** Login window in milliseconds. */
@@ -486,6 +489,21 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         return
       }
 
+      if (method === 'POST' && path === '/api/chat/steer') {
+        const body = await readJson(req)
+        const sessionId = String(body.session_id ?? '')
+        const text = String(body.text ?? body.message ?? '')
+        if (!sessionId || !text) { sendJson(res, 400, { accepted: false, error: 'session_id and text required' }); return }
+        try {
+          const result = await host.prompt({ sessionId, text, mode: 'steer' })
+          sendJson(res, 200, { accepted: result.accepted !== false })
+        } catch (error) {
+          // The app maps these to "queued" / "run ended" instead of an error.
+          sendJson(res, 200, { accepted: false, fallback: 'not_running', error: String(error?.message ?? error) })
+        }
+        return
+      }
+
       if (method === 'GET' && path === '/api/chat/cancel') {
         const streamId = url.searchParams.get('stream_id') ?? ''
         const stream = registry.get(streamId)
@@ -613,12 +631,66 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
       }
 
       if (method === 'GET' && path === '/api/reasoning') {
+        const sessionId = url.searchParams.get('session_id') ?? ''
+        let effort = 'medium'
+        if (sessionId.length > 0 && typeof host.modelSelection === 'function') {
+          try {
+            const selection = await host.modelSelection(sessionId)
+            if (typeof selection?.reasoningEffort === 'string') effort = selection.reasoningEffort
+          } catch { /* keep the default */ }
+        }
         sendJson(res, 200, {
-          effective_effort: 'medium',
-          reasoning_effort: 'medium',
-          supported_efforts: ['off', 'low', 'medium', 'high'],
+          ok: true,
+          effort,
+          reasoning_effort: effort,
+          effective_effort: effort,
+          supported_efforts: EFFORT_LEVELS,
           supports_reasoning_effort: true,
         })
+        return
+      }
+
+      if (method === 'POST' && path === '/api/reasoning') {
+        const body = await readJson(req)
+        const sessionId = String(body.session_id ?? '')
+        if (typeof body.effort === 'string' && body.effort.length > 0) {
+          try {
+            await host.setReasoningEffort({ sessionId, effort: body.effort })
+            sendJson(res, 200, {
+              ok: true,
+              effort: body.effort,
+              reasoning_effort: body.effort,
+              effective_effort: body.effort,
+              supported_efforts: EFFORT_LEVELS,
+              supports_reasoning_effort: true,
+            })
+          } catch (error) {
+            sendJson(res, 200, { ok: false, error: String(error?.message ?? error) })
+          }
+          return
+        }
+        // Reasoning *display* toggle (show/hide thinking): nothing to persist.
+        sendJson(res, 200, {
+          ok: true,
+          show_reasoning: body.display !== 'hidden',
+          supported_efforts: EFFORT_LEVELS,
+          supports_reasoning_effort: true,
+        })
+        return
+      }
+
+      if (method === 'POST' && path === '/api/default-model') {
+        const body = await readJson(req)
+        sendJson(res, 200, { ok: true, default_model: body.model ?? '', provider: body.provider ?? '' })
+      }
+
+      if (method === 'POST' && (path === '/api/profile/switch' || path === '/api/profile/create')) {
+        sendJson(res, 200, { ok: false, error: 'Profiles are not supported by DeepSeek Harness' })
+        return
+      }
+
+      if (method === 'POST' && path === '/api/personality/set') {
+        sendJson(res, 200, { ok: false, error: 'Personalities are not supported by DeepSeek Harness' })
         return
       }
 
@@ -667,7 +739,6 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         '/api/settings': {},
         '/api/personalities': { personalities: [], active: null },
         '/api/providers': { providers: [] },
-        '/api/default-model': { default_model: '' },
       }
       if (method === 'GET' && Object.hasOwn(NEUTRAL, path)) {
         sendJson(res, 200, NEUTRAL[path])
@@ -675,6 +746,14 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
       }
       if (path.startsWith('/api/git') || path.startsWith('/api/kanban')) {
         sendJson(res, 200, { ok: false, error: 'Not supported by DeepSeek Harness' })
+        return
+      }
+
+      // Nothing else under /api is a 404 we want the app to see: a write that
+      // DSH cannot satisfy answers 200 ok:false, so the sheet shows a message
+      // instead of "the server endpoint was not found".
+      if (method === 'POST' && path.startsWith('/api/')) {
+        sendJson(res, 200, { ok: false, error: 'Not supported by DeepSeek Harness', endpoint: path })
         return
       }
 

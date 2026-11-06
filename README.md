@@ -106,7 +106,8 @@ curl.
 | token deltas, thinking, tool call + result cards | full |
 | approvals (once / deny) | full: session and always collapse to allow-once |
 | clarifications / agent questions | full |
-| model picker, reasoning effort, workspaces, profiles | partial |
+| model picker, reasoning effort, workspaces | full |
+| profiles (DSH has agent presets, not profiles) | partial |
 | session rename / pin / archive / branch (fork) | full |
 | session duplicate / export / compress / clear / undo / retry | not implemented (answers ok:false) |
 | projects (one per DSH workspace, read-only) | partial |
