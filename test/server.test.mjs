@@ -181,6 +181,42 @@ test('a turn with no stream chunks still delivers its text once', async t => {
   assert.equal((text.match(/settled text/g) ?? []).length, 1, 'the settled text must not be duplicated')
 })
 
+test('session actions answer instead of 404ing', async t => {
+  const { facade, base, password } = await boot()
+  t.after(() => facade.close())
+  const login = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }),
+  })
+  const cookie = cookieOf(login)
+  const post = (path, body) => fetch(base + path, {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body),
+  })
+
+  const created = await (await post('/api/session/new', {})).json()
+  assert.equal(typeof created.session.session_id, 'string')
+  const id = created.session.session_id
+
+  const renamed = await (await post('/api/session/rename', { session_id: id, title: 'Renamed' })).json()
+  assert.equal(renamed.ok, true)
+  const list = await (await fetch(base + '/api/sessions', { headers: { cookie } })).json()
+  assert.equal(list.sessions.find(row => row.session_id === id).title, 'Renamed')
+
+  assert.equal((await (await post('/api/session/pin', { session_id: id, pinned: true })).json()).ok, true)
+  assert.equal((await (await post('/api/session/archive', { session_id: id, archived: true })).json()).ok, true)
+
+  const forked = await (await post('/api/session/branch', { session_id: id, keep_count: 1 })).json()
+  assert.equal(forked.ok, true)
+  assert.equal(typeof forked.session_id, 'string')
+
+  // No DSH equivalent: still a 200 with an honest message, never the scary
+  // "server endpoint was not found" the app shows for a 404.
+  const unsupported = await post('/api/session/delete', { session_id: id })
+  assert.equal(unsupported.status, 200)
+  const body = await unsupported.json()
+  assert.equal(body.ok, false)
+  assert.match(body.error, /not supported/i)
+})
+
 test('approval pending, SSE and respond', async t => {
   const { facade, base, host, password } = await boot()
   t.after(() => facade.close())

@@ -333,6 +333,71 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         return
       }
 
+      if (method === 'POST' && path === '/api/session/new') {
+        await readJson(req)
+        const created = await host.ensureSession()
+        const rows = await host.listSessions()
+        const item = rows.find(entry => String(entry?.sessionId) === created)
+        sendJson(res, 200, { session: detailOf(item ?? { sessionId: created }, []) })
+        return
+      }
+
+      if (method === 'POST' && path === '/api/session/rename') {
+        const body = await readJson(req)
+        const sessionId = String(body.session_id ?? '')
+        const title = String(body.title ?? '')
+        if (!sessionId || !title) { sendJson(res, 400, { ok: false, error: 'session_id and title required' }); return }
+        await host.renameSession({ sessionId, title })
+        sendJson(res, 200, { ok: true })
+        return
+      }
+
+      if (method === 'POST' && path === '/api/session/pin') {
+        const body = await readJson(req)
+        const sessionId = String(body.session_id ?? '')
+        if (!sessionId) { sendJson(res, 400, { ok: false, error: 'session_id required' }); return }
+        await host.pinSession({ sessionId, pinned: body.pinned !== false })
+        sendJson(res, 200, { ok: true })
+        return
+      }
+
+      if (method === 'POST' && path === '/api/session/archive') {
+        const body = await readJson(req)
+        const sessionId = String(body.session_id ?? '')
+        if (!sessionId) { sendJson(res, 400, { ok: false, error: 'session_id required' }); return }
+        await host.archiveSession({ sessionId, archived: body.archived !== false })
+        sendJson(res, 200, { ok: true })
+        return
+      }
+
+      if (method === 'POST' && path === '/api/session/branch') {
+        const body = await readJson(req)
+        const sessionId = String(body.session_id ?? '')
+        if (!sessionId) { sendJson(res, 400, { ok: false, error: 'session_id required' }); return }
+        const forked = await host.forkSession({ sessionId, keepCount: body.keep_count })
+        sendJson(res, 200, { ok: true, session_id: forked.sessionId ?? null })
+        return
+      }
+
+      if (method === 'POST' && path === '/api/session/yolo') {
+        sendJson(res, 200, { ok: true, yolo_enabled: false })
+        return
+      }
+
+      if (method === 'GET' && path === '/api/session/status') {
+        const sessionId = url.searchParams.get('session_id') ?? ''
+        const stream = registry.forSession(sessionId)
+        sendJson(res, 200, { active: stream !== undefined, session_id: sessionId })
+        return
+      }
+
+      // Actions DSH has no equivalent for: answer 200 with an honest error so
+      // the app shows a message instead of "the server endpoint was not found".
+      if (method === 'POST' && ['/api/session/delete', '/api/session/duplicate', '/api/session/compress', '/api/session/clear', '/api/session/undo', '/api/session/retry', '/api/session/truncate', '/api/session/move', '/api/session/update', '/api/session/export', '/api/session/import_cli'].includes(path)) {
+        sendJson(res, 200, { ok: false, error: 'Not supported by DeepSeek Harness' })
+        return
+      }
+
       if (method === 'POST' && path === '/api/chat/start') {
         const body = await readJson(req)
         const text = typeof body.message === 'string' ? body.message : ''
@@ -532,6 +597,31 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
           supported_efforts: ['off', 'low', 'medium', 'high'],
           supports_reasoning_effort: true,
         })
+        return
+      }
+
+      // Screens DSH has no data for. Answer with an empty, well-formed payload
+      // so the app renders an empty state instead of its 404 banner.
+      const NEUTRAL = {
+        '/api/projects': { projects: [] },
+        '/api/crons': { crons: [], jobs: [] },
+        '/api/crons/recent': { runs: [] },
+        '/api/insights': { days: [], totals: {}, sessions: [] },
+        '/api/memory': { entries: [], memories: [] },
+        '/api/skills': { skills: [], enabled: [] },
+        '/api/kanban/boards': { boards: [] },
+        '/api/kanban/config': {},
+        '/api/settings': {},
+        '/api/personalities': { personalities: [], active: null },
+        '/api/providers': { providers: [] },
+        '/api/default-model': { default_model: '' },
+      }
+      if (method === 'GET' && Object.hasOwn(NEUTRAL, path)) {
+        sendJson(res, 200, NEUTRAL[path])
+        return
+      }
+      if (path.startsWith('/api/git') || path.startsWith('/api/kanban')) {
+        sendJson(res, 200, { ok: false, error: 'Not supported by DeepSeek Harness' })
         return
       }
 

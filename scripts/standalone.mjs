@@ -128,6 +128,18 @@ export function createMockHost() {
     },
     async commands() { return [] },
     async workspaces() { return { workspaces: [{ path: process.cwd(), name: 'cwd' }] } },
+    async renameSession({ sessionId, title }) {
+      const record = sessions.get(sessionId)
+      if (record) record.projections = { values: { ...record.projections.values, title } }
+      return { ok: true }
+    },
+    async pinSession() { return { ok: true } },
+    async archiveSession() { return { ok: true } },
+    async forkSession({ sessionId }) {
+      const created = ensure(undefined)
+      created.projections = { values: { title: 'Fork of ' + ((sessions.get(sessionId)?.projections.values.title) ?? sessionId) } }
+      return { ok: true, sessionId: created.sessionId }
+    },
     pendingApproval(sessionId) { return pendingApprovals.get(sessionId) },
     pendingClarification() { return undefined },
     respondApproval({ approvalId, choice }) {

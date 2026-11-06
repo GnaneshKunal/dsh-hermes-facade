@@ -323,6 +323,57 @@ export function createDshHost({ ctx, logger = console }) {
     },
 
     /**
+     * Rename a session.
+     * @param {object} input input.
+     * @param {string} input.sessionId session id.
+     * @param {string} input.title new title.
+     * @returns {Promise<{ok: boolean}>} outcome.
+     */
+    async renameSession({ sessionId, title }) {
+      await invoke('session', 'rename', { request: { sessionId, title } })
+      return { ok: true }
+    },
+
+    /**
+     * Pin or unpin a session (workspace ordering, not execution).
+     * @param {object} input input.
+     * @param {string} input.sessionId session id.
+     * @param {boolean} input.pinned desired state.
+     * @returns {Promise<{ok: boolean}>} outcome.
+     */
+    async pinSession({ sessionId, pinned }) {
+      await invoke('workspace', pinned ? 'pinSession' : 'unpinSession', { request: { sessionId } })
+      return { ok: true }
+    },
+
+    /**
+     * Archive or unarchive a session.
+     * @param {object} input input.
+     * @param {string} input.sessionId session id.
+     * @param {boolean} input.archived desired state.
+     * @returns {Promise<{ok: boolean}>} outcome.
+     */
+    async archiveSession({ sessionId, archived }) {
+      await invoke('workspace', archived ? 'archiveSession' : 'unarchiveSession', { request: { sessionId } })
+      return { ok: true }
+    },
+
+    /**
+     * Fork a session from its own history (Hermex calls this "branch").
+     * @param {object} input input.
+     * @param {string} input.sessionId session id.
+     * @param {number} [input.keepCount] messages to keep.
+     * @returns {Promise<{ok: boolean, sessionId?: string}>} outcome.
+     */
+    async forkSession({ sessionId, keepCount }) {
+      const value = await invoke('session', 'fork', {
+        request: { sessionId, ...(Number.isSafeInteger(keepCount) ? { keepCount } : {}) },
+      })
+      const created = typeof value?.sessionId === 'string' ? value.sessionId : undefined
+      return { ok: true, ...(created === undefined ? {} : { sessionId: created }) }
+    },
+
+    /**
      * Answer a pending approval.
      * @param {object} input input.
      * @param {string} input.approvalId approval id.
