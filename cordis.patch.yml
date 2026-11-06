@@ -1,0 +1,20 @@
+# Hermex facade for the dsh web profile.
+#
+# Runs an HTTP+SSE server on its own loopback port that makes the local DeepSeek
+# Harness look like a hermes-webui host, so the stock Hermex iOS app (App Store,
+# MIT) can drive the agent. Nothing is mounted on dsh's own :3080 origin: that
+# origin is already published through Tailscale Funnel, and /api there is dsh's
+# own fenced RPC namespace.
+#
+# Reachable from the phone only through an explicit tailnet-only serve rule:
+#   tailscale serve --bg --https=9443 http://127.0.0.1:9120
+#
+# The password, cookie secret and device state live in ~/.dsh/hermes-facade/.
+
+- insert:
+    - id: hermes-facade
+      name: '@gnanesh/dsh-hermes-facade'
+      config:
+        enabled: true
+        port: 9120
+        bindHost: 127.0.0.1
