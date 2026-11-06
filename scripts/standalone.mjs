@@ -118,7 +118,14 @@ export function createMockHost() {
     },
     async cancel(sessionId) { const record = sessions.get(sessionId); if (record) record.running = false },
     follow(sessionId) { return queues.get(sessionId) ?? createQueue() },
-    async models() { return { models: [{ id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' }], defaultModel: 'deepseek-v4-pro' } },
+    async models() {
+      // Mirrors the real ModelCatalog shape (groups/default), not a flat list.
+      return {
+        default: { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
+        groups: [{ id: 'deepseek-official', name: 'DeepSeek', models: [{ id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' }] }],
+        failures: [],
+      }
+    },
     async commands() { return [] },
     async workspaces() { return { workspaces: [{ path: process.cwd(), name: 'cwd' }] } },
     pendingApproval(sessionId) { return pendingApprovals.get(sessionId) },

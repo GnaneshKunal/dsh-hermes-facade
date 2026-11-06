@@ -463,17 +463,31 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
 
       if (method === 'GET' && path === '/api/models') {
         const catalog = await host.models()
-        const models = Array.isArray(catalog?.models)
-          ? catalog.models.map(model => ({
-              id: String(model?.id ?? model?.model ?? ''),
-              label: String(model?.label ?? model?.name ?? model?.id ?? model?.model ?? ''),
-            })).filter(model => model.id.length > 0)
-          : []
+        const groups = []
+        if (Array.isArray(catalog?.groups)) {
+          for (const group of catalog.groups) {
+            const entries = Array.isArray(group?.models)
+              ? group.models.map(model => ({
+                  id: String(model?.id ?? ''),
+                  label: String(model?.name ?? model?.id ?? ''),
+                })).filter(model => model.id.length > 0)
+              : []
+            if (entries.length > 0) {
+              groups.push({
+                name: String(group?.name ?? group?.id ?? 'default'),
+                label: String(group?.name ?? group?.id ?? 'default'),
+                models: entries,
+              })
+            }
+          }
+        }
+        const models = groups.flatMap(group => group.models)
+        const selection = catalog?.default ?? {}
         sendJson(res, 200, {
           models,
-          groups: models.length > 0 ? [{ name: 'default', label: 'default', models }] : [],
-          default_model: catalog?.defaultModel ?? catalog?.default_model ?? models[0]?.id ?? '',
-          active_provider: catalog?.provider ?? '',
+          groups,
+          default_model: String(selection.model ?? catalog?.defaultModel ?? models[0]?.id ?? ''),
+          active_provider: String(selection.provider ?? catalog?.provider ?? ''),
         })
         return
       }

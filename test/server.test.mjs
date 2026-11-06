@@ -180,8 +180,11 @@ test('composer catalogs and unknown paths', async t => {
   const cookie = cookieOf(login)
 
   const models = await (await fetch(base + '/api/models', { headers: { cookie } })).json()
-  assert.equal(typeof models.models[0].id, 'string')
-  assert.equal(typeof models.default_model, 'string')
+  assert.equal(typeof models.models[0].id, 'string', 'flat list is emitted alongside groups')
+  assert.equal(models.groups[0].models[0].id, 'deepseek-v4-pro')
+  assert.equal(models.models[0].label, 'DeepSeek V4 Pro')
+  assert.equal(models.default_model, 'deepseek-v4-pro')
+  assert.equal(models.active_provider, 'deepseek-official')
 
   const commands = await (await fetch(base + '/api/commands', { headers: { cookie } })).json()
   assert.deepEqual(commands.commands, [])

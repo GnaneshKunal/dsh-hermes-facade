@@ -188,7 +188,8 @@ export function createDshHost({ ctx, logger = console }) {
     async readSession(sessionId, options = {}) {
       const controller = new AbortController()
       try {
-        const stream = gateway.stream({
+        // typertGateway.stream() resolves to an AsyncIterable; it is a Promise.
+        const stream = await gateway.stream({
           namespace: 'session',
           method: 'follow',
           peer,
@@ -261,8 +262,10 @@ export function createDshHost({ ctx, logger = console }) {
      * @param {AbortSignal} options.signal cancellation.
      * @returns {AsyncIterable<object>} frames.
      */
-    follow(sessionId, { signal }) {
-      return gateway.stream({
+    async *follow(sessionId, { signal }) {
+      // stream() resolves to an AsyncIterable, so yield through it rather than
+      // handing the promise back to a for-await consumer.
+      const iterable = await gateway.stream({
         namespace: 'session',
         method: 'follow',
         peer,
@@ -274,6 +277,7 @@ export function createDshHost({ ctx, logger = console }) {
           },
         },
       })
+      for await (const frame of iterable) yield frame
     },
 
     /**
@@ -283,6 +287,7 @@ export function createDshHost({ ctx, logger = console }) {
     async models() {
       try {
         const value = await invoke('session', 'modelCatalog', {})
+        // ModelCatalog: { default: {provider, model}, groups: [{id, name, models:[{id,name}]}], failures }
         return value ?? {}
       } catch (error) {
         logger.warn?.('hermes-facade: modelCatalog failed: ' + String(error?.message ?? error))
