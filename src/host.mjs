@@ -226,15 +226,25 @@ export function createDshHost({ ctx, logger = console }) {
      * @param {string} [sessionId] preferred id.
      * @returns {Promise<string>} the id to use.
      */
-    async ensureSession(sessionId, workspacePath) {
+    async ensureSession(sessionId, workspacePath, workspaceId) {
       const request = {}
       if (sessionId) request.sessionId = sessionId
       // workspaceId and cwd are EXCLUSIVE in session/create: cwd creates a
       // session that owns a directory but joins no Workspace, which is what
       // the GUI shows as "ungrouped". Joining the Workspace is what groups it.
-      if (typeof workspacePath === 'string' && workspacePath.length > 0) {
-        request.workspaceId = await this.ensureWorkspace(workspacePath)
+      //
+      // Two callers name the workspace differently: the composer sends a path
+      // (workspace), the project lanes send our own project_id, which IS the
+      // DSH workspace id. Accept either.
+      let target
+      if (typeof workspaceId === 'string' && workspaceId.length > 0) {
+        const { workspaces } = await this.workspaces()
+        target = workspaces.find(workspace => workspace.id === workspaceId)?.id
       }
+      if (target === undefined && typeof workspacePath === 'string' && workspacePath.length > 0) {
+        target = await this.ensureWorkspace(workspacePath)
+      }
+      if (target !== undefined) request.workspaceId = target
       const value = await invoke('session', 'create', { request })
       // The new session joins a Workspace, which changes the baseline. Drop the
       // cache so the very next list read shows the grouping, not five-seconds-ago.

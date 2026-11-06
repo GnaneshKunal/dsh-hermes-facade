@@ -341,7 +341,8 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
       if (method === 'POST' && path === '/api/session/new') {
         const body = await readJson(req)
         const workspace = typeof body.workspace === 'string' && body.workspace.length > 0 ? body.workspace : undefined
-        const created = await host.ensureSession(undefined, workspace)
+        const projectId = typeof body.project_id === 'string' && body.project_id.length > 0 ? body.project_id : undefined
+        const created = await host.ensureSession(undefined, workspace, projectId)
         const rows = await host.listSessions()
         const item = rows.find(entry => String(entry?.sessionId) === created)
         const index = typeof host.workspaceIndex === 'function' ? await host.workspaceIndex() : new Map()
@@ -429,7 +430,8 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         let sessionId = typeof body.session_id === 'string' && body.session_id.length > 0 ? body.session_id : undefined
         if (sessionId === undefined) {
           const workspace = typeof body.workspace === 'string' && body.workspace.length > 0 ? body.workspace : undefined
-          sessionId = await host.ensureSession(undefined, workspace)
+          const projectId = typeof body.project_id === 'string' && body.project_id.length > 0 ? body.project_id : undefined
+          sessionId = await host.ensureSession(undefined, workspace, projectId)
         }
         const stream = registry.create({ sessionId })
         const pendingStartedAt = Date.now() / 1000

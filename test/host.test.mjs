@@ -129,6 +129,21 @@ test('readSession omits assistantStream (const-true field in the host schema)', 
   assert.ok(!('assistantStream' in call.args.request), 'sending false fails strict boundary validation')
 })
 
+test('ensureSession accepts a project id as the workspace id', async () => {
+  const { host, calls } = build({ '/private/tmp': 'ws-existing' })
+  await host.ensureSession(undefined, undefined, 'ws-existing')
+  const session = calls.find(entry => entry.namespace === 'session' && entry.method === 'create')
+  assert.equal(session.args.request.workspaceId, 'ws-existing', 'the project lane names the workspace by id')
+  assert.ok(!calls.some(entry => entry.namespace === 'workspace' && entry.method === 'create'), 'no workspace is created')
+})
+
+test('an unknown project id falls back to the workspace path', async () => {
+  const { host, calls } = build({ '/private/tmp': 'ws-existing' })
+  await host.ensureSession(undefined, '/private/tmp', 'not-a-workspace')
+  const session = calls.find(entry => entry.namespace === 'session' && entry.method === 'create')
+  assert.equal(session.args.request.workspaceId, 'ws-existing')
+})
+
 test('setReasoningEffort replays the provider and model with the new effort', async () => {
   const { host, calls } = build()
   await host.setReasoningEffort({ sessionId: 's1', effort: 'high' })
