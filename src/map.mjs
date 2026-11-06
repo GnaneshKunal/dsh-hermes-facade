@@ -146,10 +146,18 @@ export function detailOf(item, messages) {
  */
 export function messagesOf(events) {
   const messages = []
+  /** Last assistant message, so tool calls attach to the row that issued them. */
+  let lastAssistant
   for (const event of events) {
     const data = event?.data ?? {}
     const timestamp = epochSeconds(event?.time)
     if (event.type === 'user/message') {
+      // DSH stores injected context as user/message with a source.kind. Only
+      // kind "user" (or an unlabelled message) is a real message from the
+      // human; runtime-context, skill-catalog, time-context and ptc-mode are
+      // harness plumbing and must never render as "Me:".
+      const kind = data.source && typeof data.source.kind === 'string' ? data.source.kind : undefined
+      if (kind !== undefined && kind !== 'user') continue
       const text = textOf(data.content)
       if (!text) continue
       messages.push({ role: 'user', content: text, timestamp })
@@ -161,7 +169,7 @@ export function messagesOf(events) {
       const reasoning = reasoningOf(content)
       const toolCalls = toolCallsOf(content)
       if (!text && !reasoning && toolCalls.length === 0) continue
-      messages.push({
+      const assistantMessage = {
         role: 'assistant',
         content: text,
         timestamp,
@@ -169,18 +177,29 @@ export function messagesOf(events) {
         ...(toolCalls.length
           ? { tool_calls: toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: typeof call.arguments === 'string' ? call.arguments : JSON.stringify(call.arguments ?? {}) } })) }
           : {}),
-      })
+      }
+      messages.push(assistantMessage)
+      lastAssistant = assistantMessage
       continue
     }
     if (event.type === 'tool/call') {
-      messages.push({
-        role: 'tool',
-        content: '',
-        timestamp,
-        tool_call_id: String(data.callId ?? ''),
-        name: String(data.name ?? ''),
-        tool_calls: [{ id: String(data.callId ?? ''), type: 'function', function: { name: String(data.name ?? ''), arguments: typeof data.arguments === 'string' ? data.arguments : JSON.stringify(data.arguments ?? {}) } }],
-      })
+      // Tool calls belong on the assistant message that issued them, not as a
+      // separate row: a bare role:"tool" message renders as an empty bubble.
+      const call = {
+        id: String(data.callId ?? ''),
+        type: 'function',
+        function: {
+          name: String(data.name ?? ''),
+          arguments: typeof data.arguments === 'string' ? data.arguments : JSON.stringify(data.arguments ?? {}),
+        },
+      }
+      if (lastAssistant !== undefined) {
+        lastAssistant.tool_calls = Array.isArray(lastAssistant.tool_calls) ? [...lastAssistant.tool_calls, call] : [call]
+      } else {
+        const message = { role: 'assistant', content: '', timestamp, tool_calls: [call] }
+        messages.push(message)
+        lastAssistant = message
+      }
       continue
     }
   }

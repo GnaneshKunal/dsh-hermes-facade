@@ -1,3 +1,12 @@
+/**
+ * First assistant message that carries tool calls.
+ * @param {Array<object>} messages mapped messages.
+ * @returns {object|undefined} the message.
+ */
+function assistantWith(messages) {
+  return messages.find(message => Array.isArray(message.tool_calls))
+}
+
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { detailOf, epochSeconds, messagesOf, normaliseEvent, summaryOf, textOf } from '../src/map.mjs'
@@ -68,6 +77,36 @@ test('detailOf returns messages and offset', () => {
   assert.equal(detail.session_id, 's1')
   assert.equal(detail.messages.length, 1)
   assert.equal(detail.messages_offset, 0)
+})
+
+test('injected context never renders as a user message', () => {
+  const messages = messagesOf([
+    { type: 'user/message', seq: 1, time: 1, data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'real question' }] } },
+    { type: 'user/message', seq: 2, time: 2, data: { source: { kind: 'runtime-context', form: 'snapshot' }, content: [{ type: 'text', text: 'Current runtime context...' }] } },
+    { type: 'user/message', seq: 3, time: 3, data: { source: { kind: 'skill-catalog', form: 'catalog' }, content: [{ type: 'text', text: '<system-reminder>...' }] } },
+    { type: 'user/message', seq: 4, time: 4, data: { source: { kind: 'time-context', form: 'snapshot' }, content: [{ type: 'text', text: 'Time sampled...' }] } },
+    { type: 'user/message', seq: 5, time: 5, data: { source: { kind: 'ptc-mode' }, content: [{ type: 'text', text: '<path>/tmp/pic.jpg</path>' }] } },
+  ])
+  assert.equal(messages.length, 1)
+  assert.equal(messages[0].content, 'real question')
+})
+
+test('a user message without a source is still a real message', () => {
+  const messages = messagesOf([{ type: 'user/message', seq: 1, time: 1, data: { content: [{ type: 'text', text: 'hi' }] } }])
+  assert.equal(messages.length, 1)
+  assert.equal(messages[0].role, 'user')
+})
+
+test('tool calls attach to the assistant row instead of adding empty rows', () => {
+  const messages = messagesOf([
+    { type: 'assistant/message', seq: 1, time: 1, data: { message: { content: [] } } },
+    { type: 'tool/call', seq: 2, time: 2, data: { callId: 'c1', name: 'run_code', arguments: '{"x":1}' } },
+    { type: 'tool/call', seq: 3, time: 3, data: { callId: 'c2', name: 'bash', arguments: '{}' } },
+  ])
+  const withCalls = messages.filter(m => m.role === 'assistant' && Array.isArray(m.tool_calls))
+  assert.equal(messages.filter(m => m.role === 'tool').length, 0, 'no synthetic tool rows')
+  assert.equal(assistantWith(messages).tool_calls.length, 2)
+  assert.equal(assistantWith(messages).tool_calls[0].function.name, 'run_code')
 })
 
 test('normaliseEvent extracts assistant text and reasoning', () => {
