@@ -43,6 +43,11 @@ export function resolveConfig(raw = {}) {
       ? raw.tokenTtlSeconds
       : 30 * 24 * 60 * 60,
     logRequests: raw.logRequests === true,
+    // "auto" binds every non-loopback IPv4 (Wi-Fi LAN and Tailscale) in
+    // addition to the configured bind host. A string binds exactly that one.
+    lanHost: raw.lanHost === 'auto'
+      ? 'auto'
+      : (typeof raw.lanHost === 'string' && raw.lanHost.length > 0 ? raw.lanHost : undefined),
   }
 }
 

@@ -9,6 +9,7 @@
  */
 
 import { createServer } from 'node:http'
+import { networkInterfaces } from 'node:os'
 import { COOKIE_NAME, createAuth } from './auth.mjs'
 import { detailOf, epochSeconds, messagesOf, normaliseEvent, summaryOf } from './map.mjs'
 import { openSse } from './sse.mjs'
@@ -235,7 +236,7 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
     }
   }
 
-  const server = createServer(async (req, res) => {
+  const handler = async (req, res) => {
     const started = Date.now()
     try {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -533,9 +534,32 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         logger.info?.('hermes-facade: ' + (req.method ?? '') + ' ' + (req.url ?? '') + ' ' + String(Date.now() - started) + 'ms')
       }
     }
-  })
+  }
 
-  return {
+  const server = createServer(handler)
+  /** Additional listeners beyond the primary one (LAN / Tailscale addresses). */
+  const extra = []
+
+  /**
+   * Addresses to bind in addition to the primary one.
+   * @returns {string[]} host addresses.
+   */
+  function extraHosts() {
+    const lanHost = config.lanHost
+    if (lanHost === undefined) return []
+    if (lanHost !== 'auto') return lanHost === config.bindHost ? [] : [lanHost]
+    const hosts = []
+    for (const entries of Object.values(networkInterfaces())) {
+      for (const entry of entries ?? []) {
+        if (entry.internal) continue
+        if (String(entry.family) !== 'IPv4' && String(entry.family) !== '4') continue
+        if (!hosts.includes(entry.address)) hosts.push(entry.address)
+      }
+    }
+    return hosts.filter(host => host !== config.bindHost)
+  }
+
+  const facade = {
     server,
     auth: authService,
     registry,
@@ -543,24 +567,34 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
      * Start listening.
      * @returns {Promise<{port: number, host: string}>} address.
      */
-    listen() {
-      return new Promise((resolve, reject) => {
-        server.once('error', reject)
-        server.listen(config.port, config.bindHost, () => {
-          const address = server.address()
-          resolve({ port: typeof address === 'object' && address ? address.port : config.port, host: config.bindHost })
+    async listen() {
+      const hosts = [config.bindHost, ...extraHosts()]
+      const addresses = []
+      for (const host of hosts) {
+        const instance = host === config.bindHost ? server : createServer(handler)
+        const port = await new Promise((resolve, reject) => {
+          instance.once('error', reject)
+          instance.listen(config.port, host, () => {
+            const bound = instance.address()
+            resolve(bound !== null && typeof bound === 'object' ? bound.port : config.port)
+          })
         })
-      })
+        if (instance !== server) extra.push(instance)
+        addresses.push({ host, port })
+      }
+      facade.addresses = addresses
+      return addresses[0]
     },
     /**
      * Stop listening.
      * @returns {Promise<void>} resolves when closed.
      */
     close() {
-      return new Promise(resolve => {
-        server.close(() => resolve())
-        server.closeAllConnections?.()
-      })
+      const instances = [server, ...extra]
+      return Promise.all(instances.map(instance => new Promise(resolve => {
+        instance.close(() => resolve())
+        instance.closeAllConnections?.()
+      }))).then(() => undefined)
     },
     /**
      * Expose epoch helper for tests.
@@ -569,4 +603,6 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
      */
     epochSeconds,
   }
+
+  return facade
 }

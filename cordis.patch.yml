@@ -18,3 +18,5 @@
         enabled: true
         port: 9120
         bindHost: 127.0.0.1
+        # also listen on the Wi-Fi LAN address and the Tailscale address
+        lanHost: auto

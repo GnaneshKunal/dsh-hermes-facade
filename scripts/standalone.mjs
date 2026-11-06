@@ -158,11 +158,14 @@ const isMain = process.argv[1] && process.argv[1].endsWith('standalone.mjs')
 if (isMain) {
   const portArg = process.argv.indexOf('--port')
   const port = portArg > 0 ? Number.parseInt(process.argv[portArg + 1], 10) : undefined
-  const config = resolveConfig({ port, dir: process.env.HERMES_FACADE_DIR })
+  const lan = process.argv.includes('--lan')
+  const config = resolveConfig({ port, dir: process.env.HERMES_FACADE_DIR, lanHost: lan ? 'auto' : undefined })
   const host = createMockHost()
   const facade = createFacadeServer({ config, host })
-  const address = await facade.listen()
-  console.log('hermes-facade (standalone, MOCK agent) on http://' + address.host + ':' + address.port)
+  await facade.listen()
+  for (const bound of facade.addresses ?? []) {
+    console.log('hermes-facade (standalone, MOCK agent) on http://' + bound.host + ':' + bound.port)
+  }
   if (facade.auth.generatedPassword) console.log('password: ' + facade.auth.generatedPassword)
   else console.log('password: (existing) see ' + facade.auth.passwordPath)
   const shutdown = async () => { await facade.close(); process.exit(0) }

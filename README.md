@@ -62,6 +62,30 @@ Remove the exposure with:
 
     tailscale serve --https=9443 off      # NOT 'serve reset': that also kills Funnel and :8443
 
+## Reaching it from the phone
+
+Three addresses work, all plain HTTP except the last. Hermex permits insecure
+HTTP to local-network hosts and to the Tailscale 100.64.0.0/10 range, so no
+certificate is needed for the first two.
+
+| Where | URL |
+|---|---|
+| same Wi-Fi | http://<mac-lan-ip>:9120 |
+| Tailscale, plain HTTP (no DNS, no TLS) | http://<mac-tailscale-ip>:9120 |
+| Tailscale, HTTPS through serve | https://<machine>.<tailnet>.ts.net:9443 |
+
+Find the addresses with:
+
+    ipconfig getifaddr en0      # Wi-Fi LAN address
+    tailscale ip -4             # Tailscale address
+
+The LAN and Tailscale listeners exist because cordis.patch.yml sets
+lanHost: auto. Without it the facade is loopback-only and only the serve rule
+can reach it. iOS asks for Local Network permission the first time; allow it.
+
+If the HTTPS address hangs, use the plain-HTTP Tailscale IP: it skips MagicDNS
+and the TLS handshake entirely.
+
 ## Develop without restarting dsh
 
 dsh web loads plugins at boot, so host-plugin changes need a restart. To iterate
