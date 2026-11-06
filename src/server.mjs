@@ -333,7 +333,8 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
           return
         }
         const messages = messagesOf(snapshot.events)
-        sendJson(res, 200, { session: detailOf(item ?? { sessionId }, messages) })
+        const index = typeof host.workspaceIndex === 'function' ? await host.workspaceIndex() : new Map()
+        sendJson(res, 200, { session: detailOf(item ?? { sessionId }, messages, index.get(String(sessionId))) })
         return
       }
 
@@ -343,7 +344,8 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         const created = await host.ensureSession(undefined, workspace)
         const rows = await host.listSessions()
         const item = rows.find(entry => String(entry?.sessionId) === created)
-        sendJson(res, 200, { session: detailOf(item ?? { sessionId: created }, []) })
+        const index = typeof host.workspaceIndex === 'function' ? await host.workspaceIndex() : new Map()
+        sendJson(res, 200, { session: detailOf(item ?? { sessionId: created }, [], index.get(String(created))) })
         return
       }
 

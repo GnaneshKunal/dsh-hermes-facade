@@ -129,8 +129,8 @@ export function summaryOf(item, workspace) {
  * @param {Array<object>} messages ChatMessage array.
  * @returns {object} snake_case detail.
  */
-export function detailOf(item, messages) {
-  const summary = summaryOf(item)
+export function detailOf(item, messages, workspace) {
+  const summary = summaryOf(item, workspace)
   return {
     ...summary,
     message_count: messages.length,

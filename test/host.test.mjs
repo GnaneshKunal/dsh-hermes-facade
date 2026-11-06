@@ -129,6 +129,32 @@ test('readSession omits assistantStream (const-true field in the host schema)', 
   assert.ok(!('assistantStream' in call.args.request), 'sending false fails strict boundary validation')
 })
 
+test('setReasoningEffort replays the provider and model with the new effort', async () => {
+  const { host, calls } = build()
+  await host.setReasoningEffort({ sessionId: 's1', effort: 'high' })
+  const call = calls.find(entry => entry.method === 'selectModel')
+  assert.deepEqual(call.args.request, {
+    sessionId: 's1',
+    reasoningEffort: 'high',
+    provider: 'deepseek-official',
+    model: 'deepseek-v4-pro',
+  })
+})
+
+test('creating a session drops the cached workspace baseline', async () => {
+  const { host, calls } = build()
+  const baselineReads = () => calls.filter(entry => entry.namespace === 'workspace' && entry.method === 'follow').length
+
+  await host.workspaces()
+  const before = baselineReads()
+  await host.workspaces()
+  assert.equal(baselineReads(), before, 'the second read is served from cache')
+
+  await host.ensureSession(undefined, '/tmp')
+  await host.workspaces()
+  assert.equal(baselineReads(), before + 1, 'the baseline is refetched after a create')
+})
+
 test('models returns the raw ModelCatalog', async () => {
   const { host } = build()
   const catalog = await host.models()

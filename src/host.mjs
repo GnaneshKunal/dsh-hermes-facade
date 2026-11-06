@@ -236,6 +236,10 @@ export function createDshHost({ ctx, logger = console }) {
         request.workspaceId = await this.ensureWorkspace(workspacePath)
       }
       const value = await invoke('session', 'create', { request })
+      // The new session joins a Workspace, which changes the baseline. Drop the
+      // cache so the very next list read shows the grouping, not five-seconds-ago.
+      workspaceCache = undefined
+      workspaceCacheAt = 0
       const created = value?.sessionId
       if (typeof created !== 'string' || created.length === 0) throw new Error('session/create returned no sessionId')
       return created
@@ -551,6 +555,8 @@ export function createDshHost({ ctx, logger = console }) {
      */
     async archiveSession({ sessionId, archived }) {
       await invoke('workspace', archived ? 'archiveSession' : 'unarchiveSession', { request: { sessionId } })
+      workspaceCache = undefined
+      workspaceCacheAt = 0
       return { ok: true }
     },
 
