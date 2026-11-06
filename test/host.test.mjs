@@ -53,6 +53,13 @@ test('ensureSession returns the id the host created', async () => {
   assert.equal(await host.ensureSession(), 'created-1')
 })
 
+test('ensureSession forwards the workspace as cwd so the GUI groups it', async () => {
+  const { host, calls } = build()
+  await host.ensureSession(undefined, '/tmp')
+  const call = calls.find(entry => entry.method === 'create')
+  assert.equal(call.args.request.cwd, '/tmp')
+})
+
 test('prompt sends an idempotent request envelope', async () => {
   const { host, calls } = build()
   const result = await host.prompt({ sessionId: 's1', text: 'hello' })

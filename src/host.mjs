@@ -10,6 +10,9 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 /** How long a pending interaction waits before it is released to the GUI. */
 const INTERACTION_TIMEOUT_MS = 10 * 60 * 1000
@@ -220,11 +223,80 @@ export function createDshHost({ ctx, logger = console }) {
      * @param {string} [sessionId] preferred id.
      * @returns {Promise<string>} the id to use.
      */
-    async ensureSession(sessionId) {
-      const value = await invoke('session', 'create', { request: sessionId ? { sessionId } : {} })
+    async ensureSession(sessionId, cwd) {
+      const request = {}
+      if (sessionId) request.sessionId = sessionId
+      // Grouping in the GUI is by working directory: without cwd the session
+      // lands ungrouped, which is what happened to sessions started from the app.
+      if (typeof cwd === 'string' && cwd.length > 0) request.cwd = cwd
+      const value = await invoke('session', 'create', { request })
       const created = value?.sessionId
       if (typeof created !== 'string' || created.length === 0) throw new Error('session/create returned no sessionId')
       return created
+    },
+
+    /**
+     * Serve a file referenced by a chat: an absolute path, a session-relative
+     * path, or an attachment id from DSH's content-addressed store.
+     * @param {string} sessionId session the reference belongs to.
+     * @param {string} reference path or attachment id.
+     * @returns {Promise<{body: Buffer, contentType: string}|undefined>} file bytes.
+     */
+    async readMedia(sessionId, reference) {
+      const contentTypeFor = file => {
+        const ext = String(file).toLowerCase().split('.').pop() ?? ''
+        const map = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', webp2: 'image/webp', svg: 'image/svg+xml', pdf: 'application/pdf', txt: 'text/plain; charset=utf-8', md: 'text/plain; charset=utf-8', json: 'application/json', mp4: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg', wav: 'audio/wav' }
+        return map[ext] ?? 'application/octet-stream'
+      }
+
+      const fromAttachment = async id => {
+        const sha = String(id).replace(/^sha256:/, '').replace(/^attachment:/, '')
+        if (!/^[a-f0-9]{64}$/i.test(sha)) return undefined
+        // Peer-free on purpose: a plugin must not hard-require a host package
+        // just to find its own state directory.
+        const home = process.env.DSH_HOME || join(homedir(), '.dsh')
+        const path = join(home, 'attachments', 'v1', 'objects', sha.slice(0, 2), sha)
+        try {
+          const body = await readFile(path)
+          return { body, contentType: contentTypeFor(path) }
+        } catch {
+          return undefined
+        }
+      }
+
+      const raw = String(reference ?? '')
+      if (raw.length === 0) return undefined
+      if (raw.startsWith('attachment:') || /^[a-f0-9]{64}$/i.test(raw) || /^sha256:[a-f0-9]{64}$/i.test(raw)) {
+        const attachment = await fromAttachment(raw)
+        if (attachment !== undefined) return attachment
+      }
+
+      let resolved = raw
+      if (!raw.startsWith('/')) {
+        const cwd = await this.cwdOf(sessionId)
+        if (cwd === undefined) return undefined
+        resolved = join(cwd, raw)
+      }
+      try {
+        const body = await readFile(resolved)
+        return { body, contentType: contentTypeFor(resolved) }
+      } catch {
+        return undefined
+      }
+    },
+
+    /**
+     * Working directory of a session, used to resolve relative media paths.
+     * @param {string} sessionId session id.
+     * @returns {Promise<string|undefined>} cwd.
+     */
+    async cwdOf(sessionId) {
+      try {
+        const rows = await this.listSessions()
+        const row = rows.find(entry => String(entry?.sessionId) === sessionId)
+        if (typeof row?.cwd === 'string' && row.cwd.length > 0) return row.cwd
+      } catch { /* fall through */ }
+      return undefined
     },
 
     /**

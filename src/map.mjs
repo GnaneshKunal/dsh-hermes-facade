@@ -144,6 +144,39 @@ export function detailOf(item, messages) {
  * @param {Array<object>} events normalised events ({type, seq, time, data}).
  * @returns {Array<object>} ChatMessage array.
  */
+/**
+ * Pull image references out of a DSH content array.
+ *
+ * DSH surfaces an agent-generated image as a ptc-mode user message whose text
+ * block names the file and whose image blocks carry a content-addressed
+ * attachment. Hermex renders images from markdown, so the reference has to
+ * become ![name](path).
+ *
+ * @param {unknown} content content blocks.
+ * @returns {Array<{path?: string, name?: string, attachmentId?: string}>} image refs.
+ */
+export function imageRefsOf(content) {
+  if (!Array.isArray(content)) return []
+  const refs = []
+  let namedPath
+  for (const block of content) {
+    if (block && block.type === 'text' && typeof block.text === 'string') {
+      const match = /<path>([\s\S]*?)<\/path>/.exec(block.text)
+      if (match) namedPath = match[1].trim()
+    }
+  }
+  for (const block of content) {
+    if (!block || block.type !== 'image') continue
+    const attachment = block.attachment ?? {}
+    refs.push({
+      ...(namedPath === undefined ? {} : { path: namedPath }),
+      ...(typeof attachment.name === 'string' ? { name: attachment.name } : {}),
+      ...(typeof attachment.attachmentId === 'string' ? { attachmentId: attachment.attachmentId } : {}),
+    })
+  }
+  return refs
+}
+
 export function messagesOf(events) {
   const messages = []
   /** Last assistant message, so tool calls attach to the row that issued them. */
@@ -157,6 +190,25 @@ export function messagesOf(events) {
       // human; runtime-context, skill-catalog, time-context and ptc-mode are
       // harness plumbing and must never render as "Me:".
       const kind = data.source && typeof data.source.kind === 'string' ? data.source.kind : undefined
+      if (kind === 'ptc-mode') {
+        // The agent's own image: fold it into the reply as markdown so the app
+        // renders it, instead of dropping it or showing it as a user message.
+        const refs = imageRefsOf(data.content)
+        if (refs.length > 0) {
+          const markdown = refs
+            .map(ref => '![' + (ref.name ?? 'image') + '](' + (ref.path ?? ('attachment:' + ref.attachmentId)) + ')')
+            .join('\n')
+          if (lastAssistant !== undefined) {
+            const content = typeof lastAssistant.content === 'string' ? lastAssistant.content : ''
+            lastAssistant.content = content.length > 0 ? content + '\n\n' + markdown : markdown
+          } else {
+            const message = { role: 'assistant', content: markdown, timestamp }
+            messages.push(message)
+            lastAssistant = message
+          }
+        }
+        continue
+      }
       if (kind !== undefined && kind !== 'user') continue
       const text = textOf(data.content)
       if (!text) continue

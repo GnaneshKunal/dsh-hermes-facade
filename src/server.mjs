@@ -334,8 +334,9 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
       }
 
       if (method === 'POST' && path === '/api/session/new') {
-        await readJson(req)
-        const created = await host.ensureSession()
+        const body = await readJson(req)
+        const workspace = typeof body.workspace === 'string' && body.workspace.length > 0 ? body.workspace : undefined
+        const created = await host.ensureSession(undefined, workspace)
         const rows = await host.listSessions()
         const item = rows.find(entry => String(entry?.sessionId) === created)
         sendJson(res, 200, { session: detailOf(item ?? { sessionId: created }, []) })
@@ -420,7 +421,10 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         const text = typeof body.message === 'string' ? body.message : ''
         if (text.length === 0) { sendJson(res, 400, { detail: 'message required' }); return }
         let sessionId = typeof body.session_id === 'string' && body.session_id.length > 0 ? body.session_id : undefined
-        if (sessionId === undefined) sessionId = await host.ensureSession()
+        if (sessionId === undefined) {
+          const workspace = typeof body.workspace === 'string' && body.workspace.length > 0 ? body.workspace : undefined
+          sessionId = await host.ensureSession(undefined, workspace)
+        }
         const stream = registry.create({ sessionId })
         const pendingStartedAt = Date.now() / 1000
         sendJson(res, 200, {
@@ -614,6 +618,23 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
           supported_efforts: ['off', 'low', 'medium', 'high'],
           supports_reasoning_effort: true,
         })
+        return
+      }
+
+      if (method === 'GET' && (path === '/api/media' || path === '/api/file/raw')) {
+        const sessionId = url.searchParams.get('session_id') ?? ''
+        const reference = url.searchParams.get('path') ?? ''
+        const file = await host.readMedia(sessionId, reference)
+        if (file === undefined) {
+          sendJson(res, 404, { error: 'not found', detail: 'file not found' })
+          return
+        }
+        res.writeHead(200, {
+          'content-type': file.contentType,
+          'content-length': file.body.length,
+          'cache-control': 'private, max-age=300',
+        })
+        res.end(file.body)
         return
       }
 

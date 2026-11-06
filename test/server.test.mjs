@@ -248,6 +248,26 @@ test('approval pending, SSE and respond', async t => {
   assert.deepEqual(await gone.json(), { pending: null, pending_count: 0 })
 })
 
+test('/api/media serves a referenced file', async t => {
+  const { writeFileSync } = await import('node:fs')
+  const { facade, base, password } = await boot()
+  t.after(() => facade.close())
+  const login = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }),
+  })
+  const cookie = cookieOf(login)
+  const file = join(mkdtempSync(join(tmpdir(), 'hermes-media-')), 'pic.png')
+  writeFileSync(file, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+
+  const res = await fetch(base + '/api/media?session_id=sess-mock&path=' + encodeURIComponent(file), { headers: { cookie } })
+  assert.equal(res.status, 200)
+  assert.equal(res.headers.get('content-type'), 'image/png')
+  assert.equal((await res.arrayBuffer()).byteLength, 4)
+
+  const missing = await fetch(base + '/api/media?session_id=sess-mock&path=/nope.png', { headers: { cookie } })
+  assert.equal(missing.status, 404)
+})
+
 test('composer catalogs and unknown paths', async t => {
   const { facade, base, password } = await boot()
   t.after(() => facade.close())

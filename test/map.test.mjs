@@ -109,6 +109,26 @@ test('tool calls attach to the assistant row instead of adding empty rows', () =
   assert.equal(assistantWith(messages).tool_calls[0].function.name, 'run_code')
 })
 
+test('an agent image becomes markdown on the reply', () => {
+  const messages = messagesOf([
+    { type: 'assistant/message', seq: 1, time: 1, data: { message: { content: [{ type: 'text', text: 'Here it is' }] } } },
+    {
+      type: 'user/message', seq: 2, time: 2,
+      data: {
+        source: { kind: 'ptc-mode' },
+        content: [
+          { type: 'text', text: '<path>/tmp/kimi_lifted.jpg</path>\n<type>image</type>' },
+          { type: 'image', attachment: { attachmentId: 'sha256:abc', name: 'kimi_lifted.jpg', mediaType: 'image/jpeg' } },
+        ],
+      },
+    },
+  ])
+  assert.equal(messages.length, 1, 'no phantom user message')
+  assert.equal(messages[0].role, 'assistant')
+  assert.match(messages[0].content, /Here it is/)
+  assert.match(messages[0].content, /!\[kimi_lifted\.jpg\]\(\/tmp\/kimi_lifted\.jpg\)/)
+})
+
 test('normaliseEvent extracts assistant text and reasoning', () => {
   const event = normaliseEvent({ type: 'assistant/message', seq: 3, time: 1, data: { message: { content: [{ type: 'text', text: 'a' }, { type: 'reasoning', text: 'r' }] } } })
   assert.equal(event.data.text, 'a')

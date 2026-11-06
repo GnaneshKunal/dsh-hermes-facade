@@ -140,6 +140,15 @@ export function createMockHost() {
       created.projections = { values: { title: 'Fork of ' + ((sessions.get(sessionId)?.projections.values.title) ?? sessionId) } }
       return { ok: true, sessionId: created.sessionId }
     },
+    async readMedia(sessionId, reference) {
+      const { readFile } = await import('node:fs/promises')
+      const { extname } = await import('node:path')
+      const types = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.md': 'text/plain; charset=utf-8' }
+      try {
+        const body = await readFile(String(reference))
+        return { body, contentType: types[extname(String(reference)).toLowerCase()] ?? 'application/octet-stream' }
+      } catch { return undefined }
+    },
     pendingApproval(sessionId) { return pendingApprovals.get(sessionId) },
     pendingClarification() { return undefined },
     respondApproval({ approvalId, choice }) {
