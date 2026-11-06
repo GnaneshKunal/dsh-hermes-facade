@@ -130,6 +130,19 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
   }
 
   /**
+   * Workspace to join when the client names none.
+   *
+   * Hermex sends only {"profile":"default"} on a plain new chat: its project
+   * selection does not travel to the server, and webui would fall back to its
+   * configured default workspace. We mirror that with the host's own cwd so the
+   * session is grouped rather than orphaned.
+   * @returns {string} absolute path.
+   */
+  function defaultWorkspacePath() {
+    return config.defaultWorkspace ?? process.cwd()
+  }
+
+  /**
    * Rate-limit login attempts per remote address.
    * @param {string} address remote address.
    * @returns {boolean} allowed.
@@ -369,7 +382,7 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
 
       if (method === 'POST' && path === '/api/session/new') {
         const body = await readJson(req)
-        const workspace = typeof body.workspace === 'string' && body.workspace.length > 0 ? body.workspace : undefined
+        const workspace = typeof body.workspace === 'string' && body.workspace.length > 0 ? body.workspace : defaultWorkspacePath()
         const projectId = typeof body.project_id === 'string' && body.project_id.length > 0 ? body.project_id : undefined
         const created = await host.ensureSession(undefined, workspace, projectId)
         const rows = await host.listSessions()
@@ -458,7 +471,7 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         if (text.length === 0) { sendJson(res, 400, { detail: 'message required' }); return }
         let sessionId = typeof body.session_id === 'string' && body.session_id.length > 0 ? body.session_id : undefined
         if (sessionId === undefined) {
-          const workspace = typeof body.workspace === 'string' && body.workspace.length > 0 ? body.workspace : undefined
+          const workspace = typeof body.workspace === 'string' && body.workspace.length > 0 ? body.workspace : defaultWorkspacePath()
           const projectId = typeof body.project_id === 'string' && body.project_id.length > 0 ? body.project_id : undefined
           sessionId = await host.ensureSession(undefined, workspace, projectId)
         }

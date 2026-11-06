@@ -45,6 +45,9 @@ export function resolveConfig(raw = {}) {
     logRequests: raw.logRequests === true,
     // "auto" binds every non-loopback IPv4 (Wi-Fi LAN and Tailscale) in
     // addition to the configured bind host. A string binds exactly that one.
+    defaultWorkspace: typeof raw.defaultWorkspace === 'string' && raw.defaultWorkspace.length > 0
+      ? raw.defaultWorkspace
+      : undefined,
     lanHost: raw.lanHost === 'auto'
       ? 'auto'
       : (typeof raw.lanHost === 'string' && raw.lanHost.length > 0 ? raw.lanHost : undefined),

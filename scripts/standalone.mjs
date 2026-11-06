@@ -98,7 +98,10 @@ export function createMockHost() {
       const record = sessions.get(sessionId)
       return { item: record, events: record ? record.events : [], projections: {} }
     },
-    async ensureSession(sessionId) { return ensure(sessionId).sessionId },
+    async ensureSession(sessionId, workspacePath, workspaceId) {
+      this.lastEnsure = { sessionId, workspacePath, workspaceId }
+      return ensure(sessionId).sessionId
+    },
     async prompt({ sessionId, text }) {
       const record = ensure(sessionId)
       record.running = true

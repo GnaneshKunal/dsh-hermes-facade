@@ -306,6 +306,22 @@ test('unknown writes answer 200 ok:false instead of 404', async t => {
   assert.match(body.error, /not supported/i)
 })
 
+test('a bare new chat joins the default workspace instead of none', async t => {
+  const { facade, host, base, password } = await boot()
+  t.after(() => facade.close())
+  const login = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }),
+  })
+  const cookie = cookieOf(login)
+  // This is exactly what the app sends: profile only, no workspace, no project.
+  await fetch(base + '/api/session/new', {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ profile: 'default' }),
+  })
+  assert.equal(host.lastEnsure.workspacePath, process.cwd(), 'falls back to the host cwd')
+  assert.equal(host.lastEnsure.projectId, undefined)
+})
+
 test('projects come from DSH workspaces and sessions carry project_id', async t => {
   const { facade, base, password } = await boot()
   t.after(() => facade.close())
