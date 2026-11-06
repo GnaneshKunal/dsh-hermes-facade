@@ -139,7 +139,7 @@ Legend: **FULL** = behaves as the app expects · **PARTIAL** = works with a mapp
 | Workspaces | ✅ | ✅ | **PARTIAL** | create/list yes, per-workspace settings no |
 | Profiles | ✅ | agent presets | **PARTIAL** | mapped |
 | File browser / attachments | ✅ | ✅ file list/download/upload | **PARTIAL** | read+upload; no git ops |
-| Projects | ✅ | workspaces only | **NONE** | empty screen |
+| Projects | ✅ | ✅ DSH workspaces (one project per workspace) | **PARTIAL** | real list, but no create/rename/delete from the phone |
 | Tasks / cron (run, pause, history, output) | ✅ | scheduled tasks + goals | **NONE** v1 | empty screen |
 | Skills browser | ✅ | skill catalog | **PARTIAL** | read-only |
 | Memory | ✅ | ✗ | **NONE** | empty screen |

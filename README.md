@@ -109,7 +109,8 @@ curl.
 | model picker, reasoning effort, workspaces, profiles | partial |
 | session rename / pin / archive / branch (fork) | full |
 | session duplicate / export / compress / clear / undo / retry | not implemented (answers ok:false) |
-| projects, tasks/cron, skills, memory, insights, kanban, git panel, bots, push | not implemented (screens stay empty) |
+| projects (one per DSH workspace, read-only) | partial |
+| tasks/cron, skills, memory, insights, kanban, git panel, bots, push | not implemented (screens stay empty) |
 
 The full matrix, including what each gap looks like on the phone, is in
 [docs/00-DESIGN.md](docs/00-DESIGN.md).

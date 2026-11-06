@@ -127,7 +127,15 @@ export function createMockHost() {
       }
     },
     async commands() { return [] },
-    async workspaces() { return { workspaces: [{ path: process.cwd(), name: 'cwd' }] } },
+    async workspaces() {
+      return { workspaces: [{ id: 'ws-mock', name: 'mock workspace', path: process.cwd(), sessionIds: ['sess-mock'] }] }
+    },
+    async workspaceIndex() {
+      const { workspaces } = await this.workspaces()
+      const index = new Map()
+      for (const workspace of workspaces) for (const id of workspace.sessionIds) index.set(id, { id: workspace.id, name: workspace.name })
+      return index
+    },
     async renameSession({ sessionId, title }) {
       const record = sessions.get(sessionId)
       if (record) record.projections = { values: { ...record.projections.values, title } }

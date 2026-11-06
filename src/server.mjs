@@ -304,8 +304,9 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
 
       if (method === 'GET' && path === '/api/sessions') {
         const items = await host.listSessions()
+        const index = typeof host.workspaceIndex === 'function' ? await host.workspaceIndex() : new Map()
         sendJson(res, 200, {
-          sessions: items.map(summaryOf),
+          sessions: items.map(item => summaryOf(item, index.get(String(item?.sessionId)))),
           cli_count: 0,
           archived_count: 0,
           server_time: Math.floor(Date.now() / 1000),
@@ -638,10 +639,24 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         return
       }
 
+      if (method === 'GET' && path === '/api/projects') {
+        const { workspaces } = await host.workspaces()
+        sendJson(res, 200, {
+          projects: workspaces.map(workspace => ({
+            project_id: workspace.id,
+            name: workspace.name,
+            color: null,
+            created_at: null,
+            session_count: (workspace.sessionIds ?? []).length,
+          })),
+        })
+        return
+      }
+
       // Screens DSH has no data for. Answer with an empty, well-formed payload
       // so the app renders an empty state instead of its 404 banner.
       const NEUTRAL = {
-        '/api/projects': { projects: [] },
+        '/api/projects': { projects: [] }, // replaced below by the live workspaces
         '/api/crons': { crons: [], jobs: [] },
         '/api/crons/recent': { runs: [] },
         '/api/insights': { days: [], totals: {}, sessions: [] },

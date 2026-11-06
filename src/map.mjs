@@ -94,10 +94,11 @@ export function modelOf(item) {
  * @param {object} item session/list row.
  * @returns {object} snake_case summary.
  */
-export function summaryOf(item) {
+export function summaryOf(item, workspace) {
   const updated = epochSeconds(item?.updatedAt)
   return {
     session_id: String(item?.sessionId ?? ''),
+    ...(workspace === undefined ? {} : { project_id: String(workspace.id), project: String(workspace.name) }),
     title: titleOf(item),
     workspace: typeof item?.cwd === 'string' ? item.cwd : '',
     message_count: Number.isSafeInteger(item?.projections?.values?.sessionListMetadata?.messageCount)

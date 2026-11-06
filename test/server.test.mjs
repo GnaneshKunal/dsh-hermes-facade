@@ -268,6 +268,24 @@ test('/api/media serves a referenced file', async t => {
   assert.equal(missing.status, 404)
 })
 
+test('projects come from DSH workspaces and sessions carry project_id', async t => {
+  const { facade, base, password } = await boot()
+  t.after(() => facade.close())
+  const login = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }),
+  })
+  const cookie = cookieOf(login)
+
+  const projects = await (await fetch(base + '/api/projects', { headers: { cookie } })).json()
+  assert.equal(projects.projects.length, 1)
+  assert.equal(projects.projects[0].project_id, 'ws-mock')
+  assert.equal(projects.projects[0].name, 'mock workspace')
+
+  const sessions = await (await fetch(base + '/api/sessions', { headers: { cookie } })).json()
+  const row = sessions.sessions.find(entry => entry.session_id === 'sess-mock')
+  assert.equal(row.project_id, 'ws-mock', 'the list groups under the workspace')
+})
+
 test('composer catalogs and unknown paths', async t => {
   const { facade, base, password } = await boot()
   t.after(() => facade.close())

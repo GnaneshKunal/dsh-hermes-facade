@@ -32,6 +32,9 @@ export function createDshHost({ ctx, logger = console }) {
   }
 
   const peer = connection.createPeer({ principal: { kind: 'owner' }, interactions: 'answer' })
+  /** Short-lived cache of the workspace baseline. */
+  let workspaceCache
+  let workspaceCacheAt = 0
 
   /**
    * Invoke one Host Remote as this facade's peer.
@@ -382,17 +385,58 @@ export function createDshHost({ ctx, logger = console }) {
      * @returns {Promise<{workspaces: Array<object>}>} workspaces.
      */
     async workspaces() {
+      // There is no workspace/list Remote: the browser state comes from the
+      // workspace/follow baseline. Cached briefly because every session list
+      // read wants it.
+      if (workspaceCache !== undefined && Date.now() - workspaceCacheAt < 5000) return workspaceCache
+      const controller = new AbortController()
       try {
-        const value = await invoke('workspace', 'list', {})
-        const items = Array.isArray(value?.items) ? value.items : Array.isArray(value?.workspaces) ? value.workspaces : []
-        return {
+        const iterable = await gateway.stream({
+          namespace: 'workspace',
+          method: 'follow',
+          peer,
+          signal: controller.signal,
+          args: {},
+        })
+        const iterator = iterable[Symbol.asyncIterator]()
+        const first = await iterator.next()
+        await iterator.return?.()
+        const baseline = first.done ? undefined : first.value?.value
+        const items = Array.isArray(baseline?.items) ? baseline.items : []
+        workspaceCache = {
           workspaces: items
-            .map(item => (typeof item === 'string' ? { path: item, name: item } : { path: item?.path, name: item?.name ?? item?.path }))
-            .filter(item => typeof item.path === 'string'),
+            .filter(item => typeof item?.path === 'string' && item.path.length > 0)
+            .map(item => ({
+              id: String(item.workspaceId ?? item.path),
+              name: typeof item.title === 'string' && item.title.length > 0 ? item.title : String(item.path),
+              path: String(item.path),
+              sessionIds: (Array.isArray(item.sessionIds) ? item.sessionIds : []).map(String),
+            })),
         }
-      } catch {
+        workspaceCacheAt = Date.now()
+        return workspaceCache
+      } catch (error) {
+        logger.warn?.('hermes-facade: workspace/follow failed: ' + String(error?.message ?? error))
         return { workspaces: [] }
+      } finally {
+        controller.abort(new Error('baseline received'))
       }
+    },
+
+    /**
+     * Map a session id to the workspace that accounts for it, so Hermex can
+     * group sessions into projects.
+     * @returns {Promise<Map<string, {id: string, name: string}>>} session -> workspace.
+     */
+    async workspaceIndex() {
+      const { workspaces } = await this.workspaces()
+      const index = new Map()
+      for (const workspace of workspaces) {
+        for (const sessionId of workspace.sessionIds ?? []) {
+          index.set(String(sessionId), { id: workspace.id, name: workspace.name })
+        }
+      }
+      return index
     },
 
     /**
