@@ -197,7 +197,8 @@ export function createDshHost({ ctx, logger = console }) {
           args: {
             request: {
               address: { kind: 'session', sessionId },
-              assistantStream: false,
+              // assistantStream is a const-true field in the host schema: sending
+              // false fails strict boundary validation, so omit it instead.
               ...(Number.isSafeInteger(options.maxMessages) ? { maxMessages: options.maxMessages } : {}),
             },
           },

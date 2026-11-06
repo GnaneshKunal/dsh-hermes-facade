@@ -347,8 +347,12 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         const sessionId = String(body.session_id ?? '')
         const title = String(body.title ?? '')
         if (!sessionId || !title) { sendJson(res, 400, { ok: false, error: 'session_id and title required' }); return }
-        await host.renameSession({ sessionId, title })
-        sendJson(res, 200, { ok: true })
+        try {
+          await host.renameSession({ sessionId, title })
+          sendJson(res, 200, { ok: true })
+        } catch (error) {
+          sendJson(res, 200, { ok: false, error: String(error?.message ?? error) })
+        }
         return
       }
 
@@ -356,8 +360,12 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         const body = await readJson(req)
         const sessionId = String(body.session_id ?? '')
         if (!sessionId) { sendJson(res, 400, { ok: false, error: 'session_id required' }); return }
-        await host.pinSession({ sessionId, pinned: body.pinned !== false })
-        sendJson(res, 200, { ok: true })
+        try {
+          await host.pinSession({ sessionId, pinned: body.pinned !== false })
+          sendJson(res, 200, { ok: true })
+        } catch (error) {
+          sendJson(res, 200, { ok: false, error: String(error?.message ?? error) })
+        }
         return
       }
 
@@ -365,8 +373,12 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         const body = await readJson(req)
         const sessionId = String(body.session_id ?? '')
         if (!sessionId) { sendJson(res, 400, { ok: false, error: 'session_id required' }); return }
-        await host.archiveSession({ sessionId, archived: body.archived !== false })
-        sendJson(res, 200, { ok: true })
+        try {
+          await host.archiveSession({ sessionId, archived: body.archived !== false })
+          sendJson(res, 200, { ok: true })
+        } catch (error) {
+          sendJson(res, 200, { ok: false, error: String(error?.message ?? error) })
+        }
         return
       }
 
@@ -374,8 +386,13 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         const body = await readJson(req)
         const sessionId = String(body.session_id ?? '')
         if (!sessionId) { sendJson(res, 400, { ok: false, error: 'session_id required' }); return }
-        const forked = await host.forkSession({ sessionId, keepCount: body.keep_count })
-        sendJson(res, 200, { ok: true, session_id: forked.sessionId ?? null })
+        try {
+          const forked = await host.forkSession({ sessionId, keepCount: body.keep_count })
+          sendJson(res, 200, { ok: true, session_id: forked.sessionId ?? null })
+        } catch (error) {
+          // A session with no completed turn cannot be forked: say so, do not 500.
+          sendJson(res, 200, { ok: false, error: String(error?.message ?? error) })
+        }
         return
       }
 

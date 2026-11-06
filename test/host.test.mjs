@@ -78,6 +78,15 @@ test('readSession returns the snapshot events', async () => {
   assert.equal(snapshot.events[0].type, 'user/message')
 })
 
+test('readSession omits assistantStream (const-true field in the host schema)', async () => {
+  const { host, calls } = build()
+  await host.readSession('s1', { maxMessages: 10 })
+  const call = calls.find(entry => entry.method === 'follow')
+  assert.equal(call.args.request.address.sessionId, 's1')
+  assert.equal(call.args.request.maxMessages, 10)
+  assert.ok(!('assistantStream' in call.args.request), 'sending false fails strict boundary validation')
+})
+
 test('models returns the raw ModelCatalog', async () => {
   const { host } = build()
   const catalog = await host.models()
