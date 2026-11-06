@@ -6,7 +6,7 @@ import { createDshHost } from '../src/host.mjs'
  * Build a host adapter over a fake gateway.
  * @returns {{host: object, calls: Array<object>}} adapter and recorded calls.
  */
-function build() {
+function build(existingWorkspaces = {}) {
   const calls = []
   const gateway = {
     async invoke(request) {
@@ -21,6 +21,9 @@ function build() {
           }],
         }
       }
+      if (request.method === 'create' && request.namespace === 'workspace') {
+        return { workspace: { workspaceId: 'ws-1', path: '/tmp', title: 'tmp', sessionIds: [] }, created: true }
+      }
       if (request.method === 'create') return { sessionId: 'created-1' }
       if (request.method === 'prompt') return { accepted: true }
       if (request.method === 'cancel') return { accepted: true }
@@ -33,6 +36,17 @@ function build() {
     // Promise wrapper that used to break the for-await consumer.
     stream(request) {
       calls.push(request)
+      if (request.namespace === 'workspace' && request.method === 'follow') {
+        const items = Object.entries(existingWorkspaces).map(([path, workspaceId]) => ({
+          workspaceId,
+          path,
+          title: path,
+          sessionIds: [],
+        }))
+        return Promise.resolve((async function* frames() {
+          yield { type: 'baseline', value: { items, archivedSessionIds: [], pinnedSessionIds: [] } }
+        })())
+      }
       return Promise.resolve((async function* frames() {
         yield { type: 'snapshot', cursor: 0, records: [{ type: 'event', event: { type: 'user/message', seq: 0, time: 1700000000000, data: { content: [{ type: 'text', text: 'hi' }] } } }], hasMore: false, projections: {} }
         yield { type: 'assistant-stream', frame: { type: 'chunk', chunk: { type: 'text', text: 'ok' } } }
@@ -62,11 +76,23 @@ test('ensureSession returns the id the host created', async () => {
   assert.equal(await host.ensureSession(), 'created-1')
 })
 
-test('ensureSession forwards the workspace as cwd so the GUI groups it', async () => {
+test('ensureSession joins a workspace so the GUI groups the session', async () => {
   const { host, calls } = build()
   await host.ensureSession(undefined, '/tmp')
-  const call = calls.find(entry => entry.method === 'create')
-  assert.equal(call.args.request.cwd, '/tmp')
+  const { realpathSync } = await import('node:fs')
+  const workspace = calls.find(entry => entry.namespace === 'workspace' && entry.method === 'create')
+  assert.equal(workspace.args.request.path, realpathSync('/tmp'), 'the path is canonicalised before create')
+  const session = calls.find(entry => entry.namespace === 'session' && entry.method === 'create')
+  assert.equal(session.args.request.workspaceId, 'ws-1')
+  assert.ok(!('cwd' in session.args.request), 'cwd and workspaceId are exclusive')
+})
+
+test('ensureSession reuses an existing workspace for the same path', async () => {
+  const { host, calls } = build({'/tmp/': 'ws-existing'})
+  await host.ensureSession(undefined, '/tmp')
+  assert.ok(!calls.some(entry => entry.namespace === 'workspace' && entry.method === 'create'), 'no duplicate workspace')
+  const session = calls.find(entry => entry.namespace === 'session' && entry.method === 'create')
+  assert.equal(session.args.request.workspaceId, 'ws-existing')
 })
 
 test('prompt sends an idempotent request envelope', async () => {

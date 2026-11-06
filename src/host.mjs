@@ -226,12 +226,15 @@ export function createDshHost({ ctx, logger = console }) {
      * @param {string} [sessionId] preferred id.
      * @returns {Promise<string>} the id to use.
      */
-    async ensureSession(sessionId, cwd) {
+    async ensureSession(sessionId, workspacePath) {
       const request = {}
       if (sessionId) request.sessionId = sessionId
-      // Grouping in the GUI is by working directory: without cwd the session
-      // lands ungrouped, which is what happened to sessions started from the app.
-      if (typeof cwd === 'string' && cwd.length > 0) request.cwd = cwd
+      // workspaceId and cwd are EXCLUSIVE in session/create: cwd creates a
+      // session that owns a directory but joins no Workspace, which is what
+      // the GUI shows as "ungrouped". Joining the Workspace is what groups it.
+      if (typeof workspacePath === 'string' && workspacePath.length > 0) {
+        request.workspaceId = await this.ensureWorkspace(workspacePath)
+      }
       const value = await invoke('session', 'create', { request })
       const created = value?.sessionId
       if (typeof created !== 'string' || created.length === 0) throw new Error('session/create returned no sessionId')
@@ -459,6 +462,44 @@ export function createDshHost({ ctx, logger = console }) {
       } finally {
         controller.abort(new Error('baseline received'))
       }
+    },
+
+    /**
+     * Find or create the Workspace for a directory.
+     * @param {string} path absolute directory path.
+     * @returns {Promise<string>} workspace id.
+     */
+    async ensureWorkspace(path) {
+      // /tmp is a symlink to /private/tmp on macOS and DSH stores the canonical
+      // path, so canonicalise before matching or a duplicate workspace appears.
+      let wanted = String(path)
+      try {
+        const { realpath } = await import('node:fs/promises')
+        wanted = await realpath(wanted)
+      } catch { /* keep the raw path when it does not exist */ }
+      const trim = value => value.replace(/\/+$/, '')
+      const { workspaces } = await this.workspaces()
+      const canonicalOf = async value => {
+        try {
+          const { realpath } = await import('node:fs/promises')
+          return await realpath(value)
+        } catch { return value }
+      }
+      let existing
+      for (const workspace of workspaces) {
+        if (trim(workspace.path) === trim(wanted) || trim(await canonicalOf(workspace.path)) === trim(wanted)) {
+          existing = workspace
+          break
+        }
+      }
+      if (existing !== undefined) return existing.id
+      const value = await invoke('workspace', 'create', { request: { path: wanted } })
+      workspaceCache = undefined
+      const created = value?.workspace?.workspaceId
+      if (typeof created !== 'string' || created.length === 0) {
+        throw new Error('workspace/create returned no workspaceId for ' + wanted)
+      }
+      return created
     },
 
     /**
