@@ -142,11 +142,15 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
     if (frame?.type === 'assistant-stream') {
       const inner = frame.frame
       if (inner?.type === 'chunk') {
+        // StreamChunk types are text-delta / reasoning-delta (dsh-llm); the bare
+        // text / reasoning spellings are accepted defensively.
         const chunk = inner.chunk ?? {}
-        if (chunk.type === 'text' && typeof chunk.text === 'string' && chunk.text.length > 0) {
-          registry.publish(stream, 'token', { text: chunk.text })
-        } else if (chunk.type === 'reasoning' && typeof chunk.text === 'string' && chunk.text.length > 0) {
-          registry.publish(stream, 'reasoning', { text: chunk.text })
+        const text = typeof chunk.text === 'string' ? chunk.text : ''
+        if (text.length > 0 && (chunk.type === 'text-delta' || chunk.type === 'text')) {
+          stream.emittedText = (stream.emittedText ?? 0) + text.length
+          registry.publish(stream, 'token', { text })
+        } else if (text.length > 0 && (chunk.type === 'reasoning-delta' || chunk.type === 'reasoning')) {
+          registry.publish(stream, 'reasoning', { text })
         }
       }
       return false
@@ -171,6 +175,14 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
           is_error: event.data.isError === true,
           tid: String(event.data.callId ?? ''),
         })
+        return false
+      case 'assistant/message':
+        // Safety net: if the streaming frames never arrived (or used a chunk
+        // type we do not know), still deliver the settled text exactly once.
+        if (typeof event.data.text === 'string' && event.data.text.length > 0 && (stream.emittedText ?? 0) === 0) {
+          stream.emittedText = event.data.text.length
+          registry.publish(stream, 'token', { text: event.data.text })
+        }
         return false
       case 'session/title':
         if (typeof event.data.title === 'string') {

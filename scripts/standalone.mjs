@@ -108,7 +108,7 @@ export function createMockHost() {
       const reply = 'Echo: ' + text
       setTimeout(() => {
         for (const word of reply.split(' ')) {
-          queue.push({ type: 'assistant-stream', frame: { type: 'chunk', chunk: { type: 'text', text: word + ' ' } } })
+          queue.push({ type: 'assistant-stream', frame: { type: 'chunk', chunk: { type: 'text-delta', index: 0, text: word + ' ' } } })
         }
         queue.push({ type: 'event', event: { type: 'assistant/message', seq: seq++, time: Date.now(), data: { message: { content: [{ type: 'text', text: reply }] } } } })
         queue.push({ type: 'event', event: { type: 'turn/end', seq: seq++, time: Date.now(), data: { turn: 1, reason: { kind: 'stop' } } } })

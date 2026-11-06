@@ -140,6 +140,47 @@ test('chat start streams token, done and stream_end over SSE', async t => {
   assert.equal(statusBody.journal.terminal, true)
 })
 
+test('a turn with no stream chunks still delivers its text once', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'hermes-facade-nochunks-'))
+  const config = { enabled: true, port: 0, bindHost: '127.0.0.1', dir, tokenTtlSeconds: 3600, logRequests: false }
+  const host = {
+    setClientPredicate() {},
+    onInteraction() { return () => {} },
+    async listSessions() { return [] },
+    async ensureSession() { return 's1' },
+    async prompt() {},
+    async cancel() {},
+    async models() { return {} },
+    async commands() { return [] },
+    async workspaces() { return { workspaces: [] } },
+    pendingApproval() { return undefined },
+    pendingClarification() { return undefined },
+    respondApproval() { return { ok: false } },
+    respondClarification() { return { ok: false } },
+    // No assistant-stream frames at all: only the durable message and turn end.
+    async *follow() {
+      yield { type: 'event', event: { type: 'assistant/message', seq: 1, time: Date.now(), data: { message: { content: [{ type: 'text', text: 'settled text' }] } } } }
+      yield { type: 'event', event: { type: 'turn/end', seq: 2, time: Date.now(), data: { turn: 1 } } }
+    },
+  }
+  const facade = createFacadeServer({ config, host })
+  const address = await facade.listen()
+  const base = 'http://127.0.0.1:' + address.port
+  t.after(() => facade.close())
+
+  const login = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: facade.auth.generatedPassword }),
+  })
+  const cookie = cookieOf(login)
+  const start = await (await fetch(base + '/api/chat/start', {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ message: 'hi' }),
+  })).json()
+  const text = await (await fetch(base + '/api/chat/stream?stream_id=' + start.stream_id, { headers: { cookie } })).text()
+  assert.match(text, /event: token/)
+  assert.match(text, /settled text/)
+  assert.equal((text.match(/settled text/g) ?? []).length, 1, 'the settled text must not be duplicated')
+})
+
 test('approval pending, SSE and respond', async t => {
   const { facade, base, host, password } = await boot()
   t.after(() => facade.close())
