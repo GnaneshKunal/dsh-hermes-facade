@@ -8,8 +8,10 @@
  * @module dsh-hermes-facade/src/server
  */
 
+import { appendFileSync, mkdirSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { networkInterfaces } from 'node:os'
+import { join as join_dir } from 'node:path'
 import { COOKIE_NAME, createAuth } from './auth.mjs'
 import { detailOf, epochSeconds, messagesOf, normaliseEvent, summaryOf } from './map.mjs'
 import { openSse } from './sse.mjs'
@@ -17,6 +19,13 @@ import { createStreamRegistry } from './streams.mjs'
 
 /** Largest accepted JSON body. */
 const MAX_BODY_BYTES = 2 * 1024 * 1024
+
+/**
+ * Optional request-body audit hook, set by createFacadeServer when logging is
+ * on. Used to see exactly what the iOS client sends on a create.
+ * @type {((req: import('node:http').IncomingMessage, body: object) => void) | null}
+ */
+let auditSink = null
 
 /** Effort levels offered to the composer. */
 const EFFORT_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
@@ -63,7 +72,11 @@ async function readJson(req) {
   if (text.length === 0) return {}
   try {
     const value = JSON.parse(text)
-    return value !== null && typeof value === 'object' ? value : {}
+    const parsed = value !== null && typeof value === 'object' ? value : {}
+    if (auditSink !== null) {
+      try { auditSink(req, parsed) } catch { /* auditing must never break a request */ }
+    }
+    return parsed
   } catch {
     throw Object.assign(new Error('invalid json'), { statusCode: 400 })
   }
@@ -80,6 +93,22 @@ async function readJson(req) {
  */
 export function createFacadeServer({ config, host, logger = console, auth }) {
   const authService = auth ?? createAuth({ dir: config.dir, ttlSeconds: config.tokenTtlSeconds })
+
+  if (config.logRequests) {
+    const logPath = join_dir(config.dir, 'requests.log')
+    try { mkdirSync(config.dir, { recursive: true, mode: 0o700 }) } catch { /* exists */ }
+    auditSink = (req, body) => {
+      // Bounded: enough to see which keys the client sends, never a whole file.
+      let text = JSON.stringify(body)
+      if (text.length > 4000) text = text.slice(0, 4000) + '…'
+      appendFileSync(logPath, JSON.stringify({
+        at: new Date().toISOString(),
+        method: req.method,
+        url: req.url,
+        body: text,
+      }) + '\n')
+    }
+  }
   const registry = createStreamRegistry()
   const loginAttempts = new Map()
   /** @type {Set<Function>} */
