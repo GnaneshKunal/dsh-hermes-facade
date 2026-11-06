@@ -151,6 +151,10 @@ export function createMockHost() {
       created.projections = { values: { title: 'Fork of ' + ((sessions.get(sessionId)?.projections.values.title) ?? sessionId) } }
       return { ok: true, sessionId: created.sessionId }
     },
+    async adoptSession({ sessionId, workspacePath }) {
+      this.lastAdopt = { sessionId, workspacePath }
+      return { ok: true, workspaceId: 'ws-mock' }
+    },
     async modelSelection(sessionId) {
       const record = sessions.get(sessionId)
       const selection = record?.projections?.values?.modelSelection

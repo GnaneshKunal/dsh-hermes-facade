@@ -470,6 +470,16 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         const text = typeof body.message === 'string' ? body.message : ''
         if (text.length === 0) { sendJson(res, 400, { detail: 'message required' }); return }
         let sessionId = typeof body.session_id === 'string' && body.session_id.length > 0 ? body.session_id : undefined
+        const requestedWorkspace = typeof body.workspace === 'string' && body.workspace.length > 0 ? body.workspace : undefined
+        if (sessionId !== undefined && requestedWorkspace !== undefined && typeof host.adoptSession === 'function') {
+          // The app creates the session first and names the project only here,
+          // so file the session under that workspace before the turn starts.
+          try {
+            await host.adoptSession({ sessionId, workspacePath: requestedWorkspace })
+          } catch (error) {
+            logger.warn?.('hermes-facade: could not adopt session into workspace: ' + String(error?.message ?? error))
+          }
+        }
         if (sessionId === undefined) {
           const workspace = typeof body.workspace === 'string' && body.workspace.length > 0 ? body.workspace : defaultWorkspacePath()
           const projectId = typeof body.project_id === 'string' && body.project_id.length > 0 ? body.project_id : undefined

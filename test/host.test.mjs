@@ -144,6 +144,14 @@ test('an unknown project id falls back to the workspace path', async () => {
   assert.equal(session.args.request.workspaceId, 'ws-existing')
 })
 
+test('adoptSession files an existing session under the workspace', async () => {
+  const { host, calls } = build()
+  const result = await host.adoptSession({ sessionId: 's1', workspacePath: '/tmp' })
+  assert.equal(result.ok, true)
+  const adopt = calls.find(entry => entry.namespace === 'workspace' && entry.method === 'insertSessionBefore')
+  assert.deepEqual(adopt.args.request, { workspaceId: 'ws-1', sessionId: 's1' })
+})
+
 test('setReasoningEffort replays the provider and model with the new effort', async () => {
   const { host, calls } = build()
   await host.setReasoningEffort({ sessionId: 's1', effort: 'high' })

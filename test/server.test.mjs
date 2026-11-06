@@ -322,6 +322,29 @@ test('a bare new chat joins the default workspace instead of none', async t => {
   assert.equal(host.lastEnsure.projectId, undefined)
 })
 
+test('chat/start adopts the session into the workspace the app names', async t => {
+  const { facade, host, base, password } = await boot()
+  t.after(() => facade.close())
+  const login = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }),
+  })
+  const cookie = cookieOf(login)
+  // The shape the app actually posts: workspace on start, not on create.
+  const started = await (await fetch(base + '/api/chat/start', {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({
+      model: 'deepseek/deepseek-v4.1-flash-1017',
+      profile: 'default',
+      message: 'hi',
+      workspace: '/Users/gnanesh/setu/litellm-super-openrouter',
+      session_id: 'sess-mock',
+    }),
+  })).json()
+  assert.equal(typeof started.stream_id, 'string')
+  assert.equal(host.lastAdopt.sessionId, 'sess-mock')
+  assert.equal(host.lastAdopt.workspacePath, '/Users/gnanesh/setu/litellm-super-openrouter')
+})
+
 test('projects come from DSH workspaces and sessions carry project_id', async t => {
   const { facade, base, password } = await boot()
   t.after(() => facade.close())

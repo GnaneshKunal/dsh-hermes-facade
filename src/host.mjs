@@ -517,6 +517,26 @@ export function createDshHost({ ctx, logger = console }) {
     },
 
     /**
+     * File an existing session under a workspace.
+     *
+     * Hermex creates the session first (profile only) and only names the
+     * workspace on the following chat/start, so the session has to be adopted
+     * afterwards or it stays ungrouped.
+     *
+     * @param {object} input input.
+     * @param {string} input.sessionId session id.
+     * @param {string} input.workspacePath directory path.
+     * @returns {Promise<{ok: boolean, workspaceId?: string}>} outcome.
+     */
+    async adoptSession({ sessionId, workspacePath }) {
+      const workspaceId = await this.ensureWorkspace(workspacePath)
+      await invoke('workspace', 'insertSessionBefore', { request: { workspaceId, sessionId } })
+      workspaceCache = undefined
+      workspaceCacheAt = 0
+      return { ok: true, workspaceId }
+    },
+
+    /**
      * Map a session id to the workspace that accounts for it, so Hermex can
      * group sessions into projects.
      * @returns {Promise<Map<string, {id: string, name: string}>>} session -> workspace.
