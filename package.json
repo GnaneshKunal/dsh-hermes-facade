@@ -1,9 +1,39 @@
 {
-  "name": "@gnanesh/dsh-hermes-facade",
+  "name": "dsh-hermes-facade",
   "version": "0.1.0",
-  "private": true,
-  "description": "Impersonate a hermes-webui server so the Hermex iOS app drives a DeepSeek Harness agent",
   "type": "module",
+  "description": "Drive a local DeepSeek Harness agent from the Hermex iOS app — a host plugin that makes dsh look like a hermes-webui server (HTTP + SSE): sessions, streaming tokens, thinking, tool cards, approvals, clarifications, images, projects.",
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "hermes",
+    "hermex",
+    "ios",
+    "mobile",
+    "hermes-webui",
+    "sse",
+    "agent",
+    "self-hosted"
+  ],
+  "license": "MIT",
+  "author": "Gnanesh Kunal",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GnaneshKunal/dsh-hermes-facade.git"
+  },
+  "homepage": "https://github.com/GnaneshKunal/dsh-hermes-facade#readme",
+  "bugs": {
+    "url": "https://github.com/GnaneshKunal/dsh-hermes-facade/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "dsh": ">=0.2.1-rc.1",
+    "node": ">=22.6"
+  },
   "main": "index.js",
   "exports": {
     ".": "./index.js",
@@ -11,13 +41,24 @@
     "./standalone": "./scripts/standalone.mjs",
     "./package.json": "./package.json"
   },
-  "files": ["index.js", "src", "scripts/standalone.mjs", "cordis.patch.yml", "README.md", "LICENSE"],
+  "files": [
+    "index.js",
+    "src",
+    "scripts/standalone.mjs",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "scripts": {
-    "test": "node --test test/",
+    "check": "for f in index.js src/*.mjs scripts/*.mjs test/*.mjs; do node --check \"$f\" || exit 1; done",
+    "test": "node --test test/*.test.mjs",
     "standalone": "node scripts/standalone.mjs"
   },
-  "dsh": { "manifestVersion": 1, "bundle": { "patch": "./cordis.patch.yml" } },
-  "engines": { "node": ">=22" },
-  "license": "MIT",
-  "author": { "name": "Gnanesh Kunal" }
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
 }

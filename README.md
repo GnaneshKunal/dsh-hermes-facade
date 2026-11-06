@@ -27,15 +27,12 @@ namespace).
 
 ## Install
 
-    cd ~/self/dsh-hermes-facade
-    npm test                          # 16 tests, no network needed
-
-    dsh plugin --profile web add ~/self/dsh-hermes-facade
+    dsh plugin --profile web add dsh-hermes-facade
 
 Then add the package to the profile bundle list in
 ~/.dsh/profiles/web/package.json:
 
-    "dsh": { "profile": { "bundles": [ "... existing ...", "@gnanesh/dsh-hermes-facade" ] } }
+    "dsh": { "profile": { "bundles": [ "... existing ...", "dsh-hermes-facade" ] } }
 
 Restart the host so the plugin loads:
 
@@ -85,6 +82,13 @@ can reach it. iOS asks for Local Network permission the first time; allow it.
 
 If the HTTPS address hangs, use the plain-HTTP Tailscale IP: it skips MagicDNS
 and the TLS handshake entirely.
+
+## From a checkout
+
+    git clone git@github.com:GnaneshKunal/dsh-hermes-facade.git
+    cd dsh-hermes-facade
+    npm run check && npm test
+    dsh plugin --profile web add ~/self/dsh-hermes-facade
 
 ## Develop without restarting dsh
 

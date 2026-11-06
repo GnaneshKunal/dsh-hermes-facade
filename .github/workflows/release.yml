@@ -1,0 +1,62 @@
+name: Release
+
+# Pushing a tag is the release: publish to npm, then publish the notes from CHANGELOG.md.
+# One-time setup on npmjs.com: create the package, then add a trusted publisher
+# (GitHub Actions, repository GnaneshKunal/dsh-hermes-facade, workflow release.yml,
+# environment release). No npm token is stored in this repository.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # create the GitHub Release
+  id-token: write # OIDC: npm trusted publishing and provenance
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+
+      - name: Use an OIDC-capable npm CLI
+        run: npm install --global npm@latest
+
+      # A tag that disagrees with package.json would publish one version and claim another.
+      - name: Check the tag matches package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag $tag does not match package.json $version"
+            exit 1
+          fi
+
+      - run: npm run check
+      - run: npm test
+
+      # A manual bootstrap publish and this workflow can describe the same version.
+      - name: Check whether npm already has this version
+        id: published
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if npm view "dsh-hermes-facade@$version" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm
+        if: steps.published.outputs.exists == 'false'
+        run: npm publish --provenance --access public
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" --title "v$version" --notes-file "docs/RELEASE-v$version.md" 2>/dev/null             || gh release create "$GITHUB_REF_NAME" --title "v$version" --generate-notes
