@@ -20,5 +20,7 @@
         bindHost: 127.0.0.1
         # also listen on the Wi-Fi LAN address and the Tailscale address
         lanHost: auto
-        # write request bodies to ~/.dsh/hermes-facade/requests.log (debugging)
+        # write request bodies to ~/.dsh/hermes-facade/requests.log, and one
+        # line per request (method/path/status/ms/client_gone) to access.log.
+        # Unimplemented endpoints are always logged to unknown-endpoints.log.
         logRequests: true

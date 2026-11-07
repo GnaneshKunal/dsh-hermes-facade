@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -8,16 +8,53 @@ import { createMockHost } from '../scripts/standalone.mjs'
 
 /**
  * Boot a facade on an ephemeral port with a fresh state directory.
+ * @param {object} [options] options.
+ * @param {boolean} [options.logRequests] write access.log.
  * @returns {Promise<object>} harness.
  */
-async function boot() {
+async function boot(options = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'hermes-facade-'))
   const host = createMockHost()
-  const config = { enabled: true, port: 0, bindHost: '127.0.0.1', dir, tokenTtlSeconds: 3600, logRequests: false }
-  const facade = createFacadeServer({ config, host })
+  const lines = []
+  const logger = { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) }
+  const config = {
+    enabled: true,
+    port: 0,
+    bindHost: '127.0.0.1',
+    dir,
+    tokenTtlSeconds: 3600,
+    logRequests: options.logRequests === true,
+  }
+  const facade = createFacadeServer({ config, host, logger })
   const address = await facade.listen()
   const base = 'http://127.0.0.1:' + address.port
-  return { facade, host, base, password: facade.auth.generatedPassword, dir }
+  return { facade, host, base, password: facade.auth.generatedPassword, dir, lines }
+}
+
+/**
+ * Log in and return the cookie header.
+ * @param {string} base base URL.
+ * @param {string} password facade password.
+ * @returns {Promise<string>} cookie header value.
+ */
+async function signIn(base, password) {
+  const login = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }),
+  })
+  return cookieOf(login)
+}
+
+/**
+ * Read one JSONL log file.
+ * @param {string} path file path.
+ * @returns {Array<object>} parsed lines.
+ */
+function readLog(path) {
+  try {
+    return readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+  } catch {
+    return []
+  }
 }
 
 /**
@@ -268,13 +305,23 @@ test('/api/media serves a referenced file', async t => {
   assert.equal(missing.status, 404)
 })
 
+test('the effort chip starts on the model default, not a hard-coded medium', async t => {
+  const { facade, base, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+
+  const status = await (await fetch(base + '/api/reasoning?session_id=sess-mock', { headers: { cookie } })).json()
+  assert.equal(status.effective_effort, 'high', 'the catalog default, not "medium"')
+  assert.equal(status.reasoning_effort, 'high')
+  assert.deepEqual(status.supported_efforts, ['off', 'low', 'medium', 'high', 'max'])
+  assert.ok(!status.supported_efforts.includes('xhigh'), 'advertising a level the model lacks breaks every change')
+  assert.equal(status.supports_reasoning_effort, true)
+})
+
 test('changing reasoning effort answers instead of 404ing', async t => {
   const { facade, base, password } = await boot()
   t.after(() => facade.close())
-  const login = await fetch(base + '/api/auth/login', {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }),
-  })
-  const cookie = cookieOf(login)
+  const cookie = await signIn(base, password)
 
   const res = await fetch(base + '/api/reasoning', {
     method: 'POST', headers: { 'content-type': 'application/json', cookie },
@@ -288,6 +335,52 @@ test('changing reasoning effort answers instead of 404ing', async t => {
 
   const status = await (await fetch(base + '/api/reasoning?session_id=sess-mock', { headers: { cookie } })).json()
   assert.equal(status.reasoning_effort, 'high', 'the GET reflects what was saved')
+})
+
+test('a stale effort name is translated instead of failing', async t => {
+  const { facade, base, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+
+  // The iOS picker used to be offered the OpenAI spellings for this model.
+  const body = await (await fetch(base + '/api/reasoning', {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ effort: 'xhigh', session_id: 'sess-mock' }),
+  })).json()
+  assert.equal(body.ok, true)
+  assert.equal(body.reasoning_effort, 'max', 'xhigh is what this model calls max')
+  const status = await (await fetch(base + '/api/reasoning?session_id=sess-mock', { headers: { cookie } })).json()
+  assert.equal(status.effective_effort, 'max')
+})
+
+test('an effort the model does not offer answers ok:false with the real levels', async t => {
+  const { facade, base, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+
+  const res = await fetch(base + '/api/reasoning', {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ effort: 'ultra', session_id: 'sess-mock' }),
+  })
+  assert.equal(res.status, 200, 'a refused action is 200 ok:false, not a transport error')
+  const body = await res.json()
+  assert.equal(body.ok, false)
+  assert.match(body.error, /not offered/)
+  assert.deepEqual(body.supported_efforts, ['off', 'low', 'medium', 'high', 'max'])
+  assert.equal(body.reasoning_effort, 'high', 'the current effort is still reported so the chip stays usable')
+})
+
+test('an effort change without a session_id says what is missing', async t => {
+  const { facade, base, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+
+  const body = await (await fetch(base + '/api/reasoning', {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ effort: 'high' }),
+  })).json()
+  assert.equal(body.ok, false)
+  assert.equal(body.error, 'session_id required')
 })
 
 test('unknown writes answer 200 ok:false instead of 404', async t => {
@@ -389,4 +482,85 @@ test('composer catalogs and unknown paths', async t => {
 
   const missing = await fetch(base + '/api/does-not-exist', { headers: { cookie } })
   assert.equal(missing.status, 404)
+})
+
+test('the workspace file browser lists a directory and reads a text file', async t => {
+  const { facade, base, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+  const root = mkdtempSync(join(tmpdir(), 'hermes-browse-'))
+  mkdirSync(join(root, 'src'))
+  writeFileSync(join(root, 'notes.md'), 'line one\nline two\n')
+
+  const listing = await (await fetch(base + '/api/list?session_id=sess-mock&path=' + encodeURIComponent(root), { headers: { cookie } })).json()
+  assert.equal(listing.path, root)
+  assert.deepEqual(listing.dirs, ['src'])
+  assert.deepEqual(listing.files, ['notes.md'])
+  assert.equal(listing.entries[0].is_dir, true)
+
+  const file = await (await fetch(base + '/api/file?session_id=sess-mock&path=' + encodeURIComponent(join(root, 'notes.md')), { headers: { cookie } })).json()
+  assert.equal(file.content, 'line one\nline two\n')
+  assert.equal(file.name, 'notes.md')
+  assert.equal(file.language, 'md')
+  assert.equal(file.lines, 3)
+
+  const absent = await fetch(base + '/api/list?session_id=sess-mock&path=' + encodeURIComponent(join(root, 'nope')), { headers: { cookie } })
+  assert.equal(absent.status, 404)
+})
+
+test('unknown endpoints are written to their own log, with the body', async t => {
+  const { facade, base, password, dir } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+
+  await fetch(base + '/api/workspace/frobnicate', {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ path: '/private/tmp' }),
+  })
+  await fetch(base + '/api/nope', { headers: { cookie } })
+
+  const entries = readLog(join(dir, 'unknown-endpoints.log'))
+  const write = entries.find(entry => entry.method === 'POST' && entry.path === '/api/workspace/frobnicate')
+  assert.equal(write.kind, 'unsupported-write')
+  assert.equal(write.status, 200)
+  assert.match(write.body, /private\/tmp/, 'the body is kept so the client call can be reconstructed')
+  const read = entries.find(entry => entry.method === 'GET' && entry.path === '/api/nope')
+  assert.equal(read.kind, 'no-route')
+  assert.equal(read.status, 404)
+})
+
+test('access.log records method, path, status and duration when enabled', async t => {
+  const { facade, base, password, dir } = await boot({ logRequests: true })
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+  await fetch(base + '/api/sessions', { headers: { cookie } })
+  // The line is written from the response "finish" hook.
+  await new Promise(resolve => setTimeout(resolve, 100))
+
+  const entries = readLog(join(dir, 'access.log'))
+  const row = entries.find(entry => entry.path === '/api/sessions' && entry.status === 200)
+  assert.ok(row !== undefined, 'the request appears in access.log')
+  assert.equal(row.method, 'GET')
+  assert.equal(typeof row.ms, 'number')
+  assert.equal(row.client_gone, undefined, 'the client waited for the answer')
+})
+
+test('default-model answers once, with a decodable body', async t => {
+  const { facade, base, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+
+  const res = await fetch(base + '/api/default-model', {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ model: 'deepseek-v4-pro', provider: 'deepseek-official' }),
+  })
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  assert.equal(body.ok, true)
+  assert.equal(body.default_model, 'deepseek-v4-pro')
+  assert.equal(body.persisted, false)
+
+  // A second response would have poisoned this keep-alive connection.
+  const after = await fetch(base + '/api/sessions', { headers: { cookie } })
+  assert.equal(after.status, 200)
 })

@@ -124,11 +124,23 @@ export function createMockHost() {
     async models() {
       // Mirrors the real ModelCatalog shape (groups/default), not a flat list.
       return {
-        default: { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
-        groups: [{ id: 'deepseek-official', name: 'DeepSeek', models: [{ id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' }] }],
+        default: { provider: 'deepseek-official', model: 'deepseek-v4-pro', reasoningEffort: 'high' },
+        groups: [{
+          id: 'deepseek-official',
+          name: 'DeepSeek',
+          models: [{
+            id: 'deepseek-v4-pro',
+            name: 'DeepSeek V4 Pro',
+            reasoning: {
+              efforts: [{ id: 'off' }, { id: 'low' }, { id: 'medium' }, { id: 'high' }, { id: 'max' }],
+              defaultEffort: 'high',
+            },
+          }],
+        }],
         failures: [],
       }
     },
+    warm() {},
     async commands() { return [] },
     async workspaces() {
       return { workspaces: [{ id: 'ws-mock', name: 'mock workspace', path: process.cwd(), sessionIds: ['sess-mock'] }] }
@@ -157,15 +169,96 @@ export function createMockHost() {
     },
     async modelSelection(sessionId) {
       const record = sessions.get(sessionId)
-      const selection = record?.projections?.values?.modelSelection
-      return selection ?? undefined
+      // The real projection is {lastUsed, pending|next}; the flat shape is the
+      // early-draft spelling this mock used to return.
+      const projection = record?.projections?.values?.modelSelection
+      return projection?.lastUsed ?? undefined
+    },
+    async reasoning({ sessionId }) {
+      const catalog = await this.models()
+      const selection = sessionId ? await this.modelSelection(sessionId) : undefined
+      const model = catalog.groups[0].models[0]
+      const offered = model.reasoning.efforts.map(effort => effort.id)
+      return {
+        provider: selection?.provider ?? catalog.default.provider,
+        model: selection?.model ?? catalog.default.model,
+        effort: selection?.reasoningEffort ?? model.reasoning.defaultEffort,
+        supportedEfforts: offered,
+      }
     },
     async setReasoningEffort({ sessionId, effort }) {
-      const record = sessions.get(sessionId)
-      if (record) {
-        record.projections = { values: { ...record.projections.values, modelSelection: { ...(record.projections.values.modelSelection ?? {}), reasoningEffort: effort } } }
+      const record = ensure(sessionId)
+      const state = await this.reasoning({ sessionId })
+      const wanted = state.supportedEfforts.includes(effort)
+        ? effort
+        : { xhigh: 'max', none: 'off', minimal: 'low' }[effort]
+      if (wanted === undefined || !state.supportedEfforts.includes(wanted)) {
+        throw new Error('effort "' + effort + '" is not offered by ' + state.provider + '/' + state.model + '; use one of ' + state.supportedEfforts.join(', '))
       }
-      return { ok: true }
+      record.projections = {
+        values: {
+          ...record.projections.values,
+          modelSelection: {
+            lastUsed: { provider: state.provider, model: state.model, reasoningEffort: wanted },
+            pending: null,
+          },
+        },
+      }
+      return { ok: true, effort: wanted, provider: state.provider, model: state.model, supportedEfforts: state.supportedEfforts }
+    },
+    async listDir(sessionId, reference) {
+      const { readdir, stat } = await import('node:fs/promises')
+      const { basename, dirname, join } = await import('node:path')
+      const target = await this.resolvePath(sessionId, reference)
+      if (target === undefined) return undefined
+      const dirents = await readdir(target, { withFileTypes: true }).catch(() => undefined)
+      if (dirents === undefined) return undefined
+      const entries = []
+      for (const dirent of dirents) {
+        const full = join(target, dirent.name)
+        const stats = await stat(full).catch(() => undefined)
+        entries.push({
+          name: dirent.name,
+          path: full,
+          is_dir: dirent.isDirectory(),
+          kind: dirent.isDirectory() ? 'dir' : 'file',
+          ...(stats === undefined ? {} : { size: stats.size, modified: Math.floor(stats.mtimeMs / 1000) }),
+        })
+      }
+      entries.sort((left, right) => (left.is_dir === right.is_dir ? left.name.localeCompare(right.name) : (left.is_dir ? -1 : 1)))
+      return {
+        path: target,
+        name: basename(target) || target,
+        parent: dirname(target),
+        entries,
+        dirs: entries.filter(entry => entry.is_dir).map(entry => entry.name),
+        files: entries.filter(entry => !entry.is_dir).map(entry => entry.name),
+        count: entries.length,
+      }
+    },
+    async readText(sessionId, reference) {
+      const { readFile } = await import('node:fs/promises')
+      const { basename, extname } = await import('node:path')
+      const target = await this.resolvePath(sessionId, reference)
+      if (target === undefined) return undefined
+      const body = await readFile(target).catch(() => undefined)
+      if (body === undefined || body.includes(0)) return undefined
+      const content = body.toString('utf8')
+      return {
+        content,
+        path: target,
+        name: basename(target),
+        language: extname(target).replace(/^\./, '').toLowerCase(),
+        size: body.length,
+        lines: content.length === 0 ? 0 : content.split('\n').length,
+      }
+    },
+    async resolvePath(sessionId, reference) {
+      const { join } = await import('node:path')
+      const raw = String(reference ?? '').trim()
+      if (raw.startsWith('/')) return raw
+      const cwd = sessions.get(sessionId)?.cwd ?? process.cwd()
+      return raw.length === 0 ? cwd : join(cwd, raw)
     },
     async readMedia(sessionId, reference) {
       const { readFile } = await import('node:fs/promises')

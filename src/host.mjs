@@ -10,12 +10,105 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, extname, join } from 'node:path'
 
 /** How long a pending interaction waits before it is released to the GUI. */
 const INTERACTION_TIMEOUT_MS = 10 * 60 * 1000
+
+/** How long a model catalog read is reused before asking the host again. */
+const CATALOG_TTL_MS = 15 * 1000
+
+/** MIME type for one file path. */
+function contentTypeFor(file) {
+  const ext = String(file).toLowerCase().split('.').pop() ?? ''
+  const map = {
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+    webp: 'image/webp', svg: 'image/svg+xml', pdf: 'application/pdf',
+    txt: 'text/plain; charset=utf-8', md: 'text/plain; charset=utf-8', json: 'application/json',
+    mp4: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg', wav: 'audio/wav',
+  }
+  return map[ext] ?? 'application/octet-stream'
+}
+
+/**
+ * Effort ids one catalog model advertises.
+ * @param {object|undefined} entry catalog model or group model entry.
+ * @returns {string[]} effort ids, empty when the model declares none.
+ */
+function effortIdsOf(entry) {
+  const efforts = entry?.reasoning?.efforts
+  if (!Array.isArray(efforts)) return []
+  return efforts
+    .map(effort => (typeof effort === 'string' ? effort : String(effort?.id ?? '')))
+    .filter(id => id.length > 0)
+}
+
+/**
+ * Find one model in a ModelCatalog.
+ * @param {object} catalog ModelCatalog value.
+ * @param {string|undefined} provider provider route.
+ * @param {string|undefined} model model id.
+ * @returns {{provider: string, model: string, entry: object}|undefined} match.
+ */
+function catalogModel(catalog, provider, model) {
+  const groups = Array.isArray(catalog?.groups) ? catalog.groups : []
+  for (const group of groups) {
+    const providerId = String(group?.id ?? group?.name ?? '')
+    if (typeof provider === 'string' && provider.length > 0 && providerId !== provider) continue
+    for (const entry of Array.isArray(group?.models) ? group.models : []) {
+      const modelId = String(entry?.id ?? '')
+      if (typeof model === 'string' && model.length > 0 && modelId !== model) continue
+      return { provider: providerId, model: modelId, entry }
+    }
+  }
+  return undefined
+}
+
+/**
+ * Translate one effort id to the vocabulary a model declares.
+ *
+ * The iOS client ships its own level names; a level the model does not offer is
+ * otherwise rejected by the adapter even though both names mean the same thing.
+ * @param {string} requested effort from the client.
+ * @param {string[]} supported ids the model advertises.
+ * @returns {string|undefined} an offered id, or undefined when none matches.
+ */
+function coerceEffort(requested, supported) {
+  if (!Array.isArray(supported) || supported.length === 0) return requested
+  if (supported.includes(requested)) return requested
+  /** Names different clients use for the same level. */
+  const aliases = { none: ['off'], off: ['none'], minimal: ['low'], low: ['minimal'], xhigh: ['max'], max: ['xhigh'] }
+  for (const candidate of aliases[requested] ?? []) {
+    if (supported.includes(candidate)) return candidate
+  }
+  return undefined
+}
+
+/**
+ * Unwrap the recorded model-selection projection.
+ *
+ * DSH projects `values.modelSelection = {lastUsed, next|pending}`
+ * (`SessionProjectionMap`); the flat shape is only used by early drafts, so
+ * reading it alone makes every effort read look unset and every write send no
+ * provider/model.
+ * @param {object|undefined} row session list row.
+ * @returns {{provider?: string, model?: string, reasoningEffort?: string}|undefined} selection.
+ */
+function selectionOf(row) {
+  const projection = row?.projections?.values?.modelSelection
+  if (projection === null || typeof projection !== 'object') return undefined
+  const chosen = projection.next ?? projection.pending ?? projection.lastUsed ?? projection
+  if (chosen === null || typeof chosen !== 'object') return undefined
+  const model = chosen.model
+  const selection = {
+    ...(typeof chosen.provider === 'string' ? { provider: chosen.provider } : {}),
+    ...(typeof model === 'string' ? { model } : (typeof model?.id === 'string' ? { model: model.id } : {})),
+    ...(typeof chosen.reasoningEffort === 'string' ? { reasoningEffort: chosen.reasoningEffort } : {}),
+  }
+  return Object.keys(selection).length > 0 ? selection : undefined
+}
 
 /**
  * Create the host adapter.
@@ -35,6 +128,28 @@ export function createDshHost({ ctx, logger = console }) {
   /** Short-lived cache of the workspace baseline. */
   let workspaceCache
   let workspaceCacheAt = 0
+  /** Short-lived cache of the model catalog: a cold read queries every provider. */
+  let catalogCache
+  let catalogCacheAt = 0
+
+  /**
+   * Model catalog, cached briefly so a composer open does not query every
+   * provider. A failed read returns the last good value (or {}) and retries on
+   * the next call instead of pinning the failure.
+   * @returns {Promise<object>} ModelCatalog value.
+   */
+  async function modelCatalog() {
+    if (catalogCache !== undefined && Date.now() - catalogCacheAt < CATALOG_TTL_MS) return catalogCache
+    try {
+      const value = await invoke('session', 'modelCatalog', {})
+      catalogCache = value ?? {}
+      catalogCacheAt = Date.now()
+      return catalogCache
+    } catch (error) {
+      logger.warn?.('hermes-facade: modelCatalog failed: ' + String(error?.message ?? error))
+      return catalogCache ?? {}
+    }
+  }
 
   /**
    * Invoke one Host Remote as this facade's peer.
@@ -263,13 +378,42 @@ export function createDshHost({ ctx, logger = console }) {
     async modelSelection(sessionId) {
       const rows = await this.listSessions()
       const row = rows.find(entry => String(entry?.sessionId) === String(sessionId))
-      const selection = row?.projections?.values?.modelSelection
-      if (selection === undefined || selection === null) return undefined
-      const model = selection.model
+      return selectionOf(row)
+    },
+
+    /**
+     * Reasoning-effort state of a session.
+     *
+     * The effort in force is the session's recorded selection; the levels on
+     * offer are the ones the selected model declares in the model catalog.
+     *
+     * @param {object} input input.
+     * @param {string} [input.sessionId] session id.
+     * @param {string} [input.provider] explicit provider (composer query).
+     * @param {string} [input.model] explicit model (composer query).
+     * @returns {Promise<{provider?: string, model?: string, effort: string, supportedEfforts: string[]}>} state.
+     */
+    async reasoning({ sessionId, provider, model }) {
+      const catalog = await modelCatalog()
+      const selection = typeof sessionId === 'string' && sessionId.length > 0
+        ? await this.modelSelection(sessionId)
+        : undefined
+      const resolvedProvider = provider ?? selection?.provider ?? catalog?.default?.provider
+      const resolvedModel = model ?? selection?.model ?? catalog?.default?.model
+      const match = catalogModel(catalog, resolvedProvider, resolvedModel)
+      const offered = effortIdsOf(match?.entry)
+      const selectionEffort = selection !== undefined && selection.model === (match?.model ?? resolvedModel)
+        ? selection.reasoningEffort
+        : undefined
+      const effort = selectionEffort ??
+        match?.entry?.reasoning?.defaultEffort ??
+        catalog?.default?.reasoningEffort ??
+        (offered.length > 0 ? offered[Math.floor(offered.length / 2)] : 'medium')
       return {
-        ...(typeof selection.provider === 'string' ? { provider: selection.provider } : {}),
-        ...(typeof model === 'string' ? { model } : (typeof model?.id === 'string' ? { model: model.id } : {})),
-        ...(typeof selection.reasoningEffort === 'string' ? { reasoningEffort: selection.reasoningEffort } : {}),
+        ...(typeof resolvedProvider === 'string' ? { provider: resolvedProvider } : {}),
+        ...(typeof resolvedModel === 'string' ? { model: resolvedModel } : {}),
+        effort: String(effort),
+        supportedEfforts: offered.length > 0 ? offered : ['off', 'low', 'medium', 'high', 'max'],
       }
     },
 
@@ -278,19 +422,40 @@ export function createDshHost({ ctx, logger = console }) {
      *
      * DSH has no separate effort endpoint: effort is part of the model
      * selection, so the current provider/model are replayed with the new effort.
+     * selectModel requires BOTH, which is why they are resolved from the catalog
+     * when the session has not recorded a selection yet.
      *
      * @param {object} input input.
      * @param {string} input.sessionId session id.
      * @param {string} input.effort effort id.
-     * @returns {Promise<{ok: boolean}>} outcome.
+     * @returns {Promise<{ok: boolean, effort: string, provider: string, model: string, supportedEfforts: string[]}>} outcome.
      */
     async setReasoningEffort({ sessionId, effort }) {
-      const selection = await this.modelSelection(sessionId)
-      const request = { sessionId, reasoningEffort: effort }
-      if (selection?.provider !== undefined) request.provider = selection.provider
-      if (selection?.model !== undefined) request.model = selection.model
-      await invoke('session', 'selectModel', { request })
-      return { ok: true }
+      const state = await this.reasoning({ sessionId })
+      const provider = state.provider
+      const model = state.model
+      if (typeof provider !== 'string' || provider.length === 0 || typeof model !== 'string' || model.length === 0) {
+        throw new Error('no model is selected for this session yet, so its reasoning effort cannot be changed')
+      }
+      const offered = state.supportedEfforts
+      const wanted = coerceEffort(effort, offered)
+      if (wanted === undefined) {
+        throw Object.assign(
+          new Error('effort "' + effort + '" is not offered by ' + provider + '/' + model + '; use one of ' + offered.join(', ')),
+          { code: 'effort-unsupported', supportedEfforts: offered },
+        )
+      }
+      const value = await invoke('session', 'selectModel', {
+        request: { sessionId, provider, model, reasoningEffort: wanted },
+      })
+      const selected = value?.selected
+      return {
+        ok: true,
+        effort: typeof selected?.reasoningEffort === 'string' ? selected.reasoningEffort : wanted,
+        provider: typeof selected?.provider === 'string' ? selected.provider : provider,
+        model: typeof selected?.model === 'string' ? selected.model : model,
+        supportedEfforts: offered,
+      }
     },
 
     /**
@@ -301,12 +466,6 @@ export function createDshHost({ ctx, logger = console }) {
      * @returns {Promise<{body: Buffer, contentType: string}|undefined>} file bytes.
      */
     async readMedia(sessionId, reference) {
-      const contentTypeFor = file => {
-        const ext = String(file).toLowerCase().split('.').pop() ?? ''
-        const map = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', webp2: 'image/webp', svg: 'image/svg+xml', pdf: 'application/pdf', txt: 'text/plain; charset=utf-8', md: 'text/plain; charset=utf-8', json: 'application/json', mp4: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg', wav: 'audio/wav' }
-        return map[ext] ?? 'application/octet-stream'
-      }
-
       const fromAttachment = async id => {
         const sha = String(id).replace(/^sha256:/, '').replace(/^attachment:/, '')
         if (!/^[a-f0-9]{64}$/i.test(sha)) return undefined
@@ -329,17 +488,104 @@ export function createDshHost({ ctx, logger = console }) {
         if (attachment !== undefined) return attachment
       }
 
-      let resolved = raw
-      if (!raw.startsWith('/')) {
-        const cwd = await this.cwdOf(sessionId)
-        if (cwd === undefined) return undefined
-        resolved = join(cwd, raw)
-      }
+      const resolved = await this.resolvePath(sessionId, raw)
+      if (resolved === undefined) return undefined
       try {
         const body = await readFile(resolved)
         return { body, contentType: contentTypeFor(resolved) }
       } catch {
         return undefined
+      }
+    },
+
+    /**
+     * Resolve a client-supplied path: absolute as-is, otherwise relative to the
+     * session's working directory. An empty reference means "the session cwd".
+     * @param {string} sessionId session id.
+     * @param {string} reference path or empty.
+     * @returns {Promise<string|undefined>} absolute path.
+     */
+    async resolvePath(sessionId, reference) {
+      const raw = String(reference ?? '').trim()
+      if (raw.startsWith('/')) return raw
+      const cwd = await this.cwdOf(sessionId)
+      if (cwd === undefined) return undefined
+      return raw.length === 0 ? cwd : join(cwd, raw)
+    },
+
+    /**
+     * List one directory for the workspace file browser (GET /api/list).
+     * @param {string} sessionId session id (defines the relative-path base).
+     * @param {string} reference directory path, absolute or session-relative.
+     * @returns {Promise<object|undefined>} listing, undefined when absent.
+     */
+    async listDir(sessionId, reference) {
+      const target = await this.resolvePath(sessionId, reference)
+      if (target === undefined) return undefined
+      let dirents
+      try {
+        dirents = await readdir(target, { withFileTypes: true })
+      } catch {
+        return undefined
+      }
+      const entries = []
+      for (const dirent of dirents) {
+        const full = join(target, dirent.name)
+        let size
+        let modified
+        try {
+          const stats = await stat(full)
+          size = stats.size
+          modified = Math.floor(stats.mtimeMs / 1000)
+        } catch { /* vanished between readdir and stat */ }
+        entries.push({
+          name: dirent.name,
+          path: full,
+          is_dir: dirent.isDirectory(),
+          kind: dirent.isDirectory() ? 'dir' : 'file',
+          ...(size === undefined ? {} : { size }),
+          ...(modified === undefined ? {} : { modified }),
+        })
+      }
+      entries.sort((left, right) => (left.is_dir === right.is_dir
+        ? left.name.localeCompare(right.name)
+        : (left.is_dir ? -1 : 1)))
+      return {
+        path: target,
+        name: basename(target) || target,
+        parent: dirname(target),
+        entries,
+        dirs: entries.filter(entry => entry.is_dir).map(entry => entry.name),
+        files: entries.filter(entry => !entry.is_dir).map(entry => entry.name),
+        count: entries.length,
+      }
+    },
+
+    /**
+     * Read one text file for the workspace file browser (GET /api/file).
+     * @param {string} sessionId session id (defines the relative-path base).
+     * @param {string} reference file path, absolute or session-relative.
+     * @returns {Promise<object|undefined>} file payload, undefined when absent or binary.
+     */
+    async readText(sessionId, reference) {
+      const target = await this.resolvePath(sessionId, reference)
+      if (target === undefined) return undefined
+      let body
+      try {
+        body = await readFile(target)
+      } catch {
+        return undefined
+      }
+      // A binary file belongs on /api/file/raw; a NUL byte is a cheap tell.
+      if (body.includes(0)) return undefined
+      const content = body.toString('utf8')
+      return {
+        content,
+        path: target,
+        name: basename(target),
+        language: extname(target).replace(/^\./, '').toLowerCase(),
+        size: body.length,
+        lines: content.length === 0 ? 0 : content.split('\n').length,
       }
     },
 
@@ -416,14 +662,16 @@ export function createDshHost({ ctx, logger = console }) {
      * @returns {Promise<object>} catalog.
      */
     async models() {
-      try {
-        const value = await invoke('session', 'modelCatalog', {})
-        // ModelCatalog: { default: {provider, model}, groups: [{id, name, models:[{id,name}]}], failures }
-        return value ?? {}
-      } catch (error) {
-        logger.warn?.('hermes-facade: modelCatalog failed: ' + String(error?.message ?? error))
-        return {}
-      }
+      // ModelCatalog: { default: {provider, model}, groups: [{id, name, models:[{id,name,reasoning}]}], failures }
+      return modelCatalog()
+    },
+
+    /**
+     * Warm the catalog so the first composer open is not a cold, slow read.
+     * @returns {void}
+     */
+    warm() {
+      void modelCatalog().catch(() => {})
     },
 
     /**

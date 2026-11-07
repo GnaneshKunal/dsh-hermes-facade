@@ -59,7 +59,14 @@ async function mount(ctx, config, logger) {
   const facade = createFacadeServer({ config: resolved, host, logger })
   const address = await facade.listen()
 
+  // Read the model catalog once in the background: the first composer open is
+  // otherwise a cold multi-provider query, which the app renders as a dead
+  // server when it takes too long.
+  host.warm?.()
+
   logger.info?.('hermes-facade: listening on http://' + address.host + ':' + address.port)
+  logger.info?.('hermes-facade: logs in ' + resolved.dir + ' (access: ' + (resolved.logRequests ? 'on' : 'off') +
+    ', unknown endpoints: always)')
   logger.info?.('hermes-facade: expose it with  tailscale serve --bg --https=9443 http://' + address.host + ':' + address.port)
 
   if (facade.auth.generatedPassword) {

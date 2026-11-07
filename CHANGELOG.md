@@ -5,6 +5,34 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 
 ## [Unreleased]
 
+### Added
+
+- **Diagnostics.** `~/.dsh/hermes-facade/access.log` records one JSON line per request
+  (method, path, query, status, duration, user-agent) with `unknown`/`stub`/`effort`/`error`
+  annotations, and `unknown-endpoints.log` records — always, with no flag to turn on — every call
+  to an endpoint the facade does not implement, including the request body. `client_gone: true`
+  marks a request the client abandoned before the answer, which is what a client-side timeout
+  looks like from the server. Both rotate at 1 MiB and never throw.
+- `GET /api/list` and `GET /api/file` serve the workspace file browser: a directory listing and a
+  text file's content. They were 404s, which the app renders as "the endpoint was not found".
+
+### Fixed
+
+- **Reasoning effort.** `projections.values.modelSelection` is `{lastUsed, next|pending}` in the
+  host schema, not a flat `{provider, model, reasoningEffort}`; reading it flat made the GET always
+  report `medium` and made every POST reach `session/selectModel` without a provider or model, so
+  each change was rejected with a validation error the app showed as a failed request.
+- **Effort levels** now come from the model catalog (`off/low/medium/high/max` for this
+  deployment) instead of a hard-coded OpenAI list that advertised `xhigh`, a level the adapter
+  rejects. A stale client spelling is translated (`xhigh → max`, `none → off`, `minimal → low`),
+  and an impossible level answers `200 {ok:false}` listing the real ones.
+- **Reads are bounded.** `/api/models`, `/api/workspaces`, `/api/projects` and `/api/reasoning`
+  now give up after 8 s and answer a well-formed default instead of holding the connection open;
+  the catalog is cached for 15 s and warmed at mount, so the first composer open is not a cold
+  multi-provider query.
+- `POST /api/default-model` answered twice (the handler fell through to the catch-all after
+  sending its body); it now answers once and says the default lives in dsh configuration.
+
 ## [0.1.0] - 2026-11-06
 
 First release. A DSH host plugin that impersonates a **hermes-webui** server so the stock

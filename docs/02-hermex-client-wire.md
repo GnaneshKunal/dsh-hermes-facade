@@ -352,7 +352,8 @@ struct PendingClarification { let clarifyId, question: String?; let choicesOffer
 | `GET /api/commands` | `{"commands":[{"name","description","category","aliases","args_hint","subcommands","cli_only","gateway_only"}]}` (`ServerCatalog.swift:123-148`) — all optional |
 | `GET /api/workspaces` | `{"workspaces":[{"path","name"}],"last":"/path"}` — a bare string entry is also accepted (`Workspace.swift:3-28`) |
 | `GET /api/profiles` | `{"profiles":[{"name",…}],"active":"default","single_profile_mode":true}` (`ServerCatalog.swift:590-600`) |
-| `GET /api/reasoning` | `{"effective_effort","supported_efforts":[…],"supports_reasoning_effort":bool}` |
+| `GET /api/reasoning` | `{"effective_effort","supported_efforts":[…],"supports_reasoning_effort":bool,"model","provider"}` — `supported_efforts` must be the levels the selected model declares, never a fixed list |
+| `POST /api/reasoning` | `{"effort","session_id"}` → the same body plus `ok`; `ok:false` keeps the picker usable |
 | `GET /api/file?session_id=&path=` | `{"content","path","name","language","size","lines"}` (`Workspace.swift:147-165`) |
 | `GET /api/list?session_id=&path=` | directory entries; `/api/file/raw` and `/api/media` for bytes |
 | `GET /api/session/yolo?session_id=` | `{"ok":bool,"yolo_enabled":bool}` (`Approval.swift:357-370`) |

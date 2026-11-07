@@ -111,6 +111,8 @@ curl.
 | approvals (once / deny) | full: session and always collapse to allow-once |
 | clarifications / agent questions | full |
 | model picker, reasoning effort, workspaces | full |
+| reasoning effort | full: levels come from the model catalog, not a fixed list |
+| workspace file browser (`/api/list`, `/api/file`) | full: list a directory, read a text file |
 | profiles (DSH has agent presets, not profiles) | partial |
 | session rename / pin / archive / branch (fork) | full |
 | session duplicate / export / compress / clear / undo / retry | not implemented (answers ok:false) |
@@ -133,7 +135,32 @@ GET /api/chat/cancel, GET /api/chat/stream/status,
 GET /api/approval/pending, GET /api/approval/stream, POST /api/approval/respond,
 GET /api/clarify/pending, GET /api/clarify/stream, POST /api/clarify/respond,
 GET /api/models, GET /api/commands, GET /api/workspaces, GET /api/profiles,
-GET /api/reasoning.
+GET /api/reasoning, POST /api/reasoning, POST /api/default-model,
+GET /api/list, GET /api/file, GET /api/media, GET /api/file/raw, GET /api/projects.
+
+## Diagnostics
+
+Everything the facade sees is in ~/.dsh/hermes-facade/:
+
+| File | Written | Contents |
+|---|---|---|
+| `access.log` | every request, when `logRequests: true` | method, path, query, status, ms, user-agent, plus `unknown`/`stub`/`effort`/`error` annotations |
+| `unknown-endpoints.log` | **always** | every call to an endpoint the facade does not implement, with its request body |
+| `requests.log` | every JSON body, when `logRequests: true` | the literal bodies the iOS app posts |
+
+    tail -f ~/.dsh/hermes-facade/unknown-endpoints.log   # what the app wants that we do not serve
+    tail -f ~/.dsh/hermes-facade/access.log              # status and duration of everything
+
+`client_gone: true` on an access-log line means the client hung up before the
+answer about a request the facade still finished — that is what a client-side
+timeout looks like from the server, and it explains "the app says the server is
+unreachable but the server log says 200".
+
+`stub` marks a request answered from a fixed empty/refusal payload, so a screen
+that looks broken can be traced to a route that was never implemented.
+
+Both files rotate at 1 MiB and keep one previous generation. Logging never
+throws: a full disk or an unwritable directory cannot break a request.
 
 ## Security
 
@@ -148,7 +175,9 @@ GET /api/reasoning.
 | Symptom | Cause |
 |---|---|
 | Password rejected everywhere | cookie not sent: check the URL scheme, and that Path=/ is intact |
-| The server endpoint was not found | /health not reachable: service down or wrong port |
+| "The server endpoint was not found" with /health fine | the app called a route we do not serve: `tail ~/.dsh/hermes-facade/unknown-endpoints.log` names it, with the body |
+| A screen works on the second try, fails on the first | cold catalog/workspace read outlived the client's patience: `access.log` shows the `ms` and `client_gone: true`. Reads are bounded to 8 s and the catalog is warmed at boot. |
+| Effort chip always says "medium" | fixed: the facade read the wrong projection shape, so it reported the fallback and sent effort changes without a provider/model |
 | a run hangs with no approval card | approval endpoint returned 404 instead of pending:null |
 | messages roll back instantly | /api/chat/start returned no stream_id |
 | empty session list | /api/sessions failed; the app falls back to its cache |

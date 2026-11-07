@@ -76,7 +76,17 @@ our chosen serve rule.
 | `GET /api/commands` | `{"commands":[…]}` | command catalog |
 | `GET /api/workspaces` | `{"workspaces":[{"path","name"}]}` | workspace list |
 | `GET /api/profiles` | `{"profiles":[{"name"}],"active":"default","single_profile_mode":true}` | agent presets |
-| `GET /api/reasoning` | `{"effective_effort","supported_efforts","supports_reasoning_effort"}` | session preset |
+| `GET /api/reasoning` | `{"effective_effort","supported_efforts","supports_reasoning_effort"}` | `projections.modelSelection.next|lastUsed` + `session/modelCatalog` efforts |
+| `POST /api/reasoning` | same body; `ok:false` + `error` when the model does not offer the level | `session/selectModel` (provider+model replayed; stale spellings translated) |
+| `POST /api/default-model` | `{"ok":true,...,"persisted":false}` | acknowledgement: the default lives in dsh config |
+| `GET /api/list?session_id=&path=` | `{"path","name","parent","entries":[…],"dirs":[…],"files":[…]}` | local directory listing |
+| `GET /api/file?session_id=&path=` | `{"content","path","name","language","size","lines"}` | local text file (binary → 404, use `/api/file/raw`) |
+
+Read-only host calls behind a UI route (`/api/models`, `/api/workspaces`, `/api/projects`,
+`/api/reasoning`) are bounded to 8 s and fall back to a well-formed default, because a request that
+never answers reads to the user as "the server is gone". The model catalog is cached for 15 s and
+warmed at mount. Every request is logged to `access.log` (when `logRequests` is on) and every
+unimplemented endpoint to `unknown-endpoints.log` (always) — see the README's Diagnostics section.
 
 Wire rules that are not negotiable (from the Swift decoder):
 
@@ -134,11 +144,11 @@ Legend: **FULL** = behaves as the app expects · **PARTIAL** = works with a mapp
 | Session duplicate / delete / export / compress / clear / undo / retry | ✅ | ✗ | **NONE** | 200 {ok:false, error} - a message, not a 404 banner |
 | Live title update | ✅ | ✅ projection | **FULL** | — |
 | Model picker | ✅ | ✅ `modelCatalog` | **FULL** | — |
-| Reasoning-effort picker | ✅ | ✅ preset | **PARTIAL** | — |
+| Reasoning-effort picker | ✅ | ✅ `session/selectModel` + catalog levels | **FULL** | — |
 | Slash commands | ✅ | ⚠ catalog exists | **PARTIAL** | autocomplete thinner |
 | Workspaces | ✅ | ✅ | **PARTIAL** | create/list yes, per-workspace settings no |
 | Profiles | ✅ | agent presets | **PARTIAL** | mapped |
-| File browser / attachments | ✅ | ✅ file list/download/upload | **PARTIAL** | read+upload; no git ops |
+| File browser / attachments | ✅ | ✅ list + read + raw bytes | **PARTIAL** | read; no upload/edit, no git ops |
 | Projects | ✅ | ✅ DSH workspaces (one project per workspace) | **PARTIAL** | real list, but no create/rename/delete from the phone |
 | Tasks / cron (run, pause, history, output) | ✅ | scheduled tasks + goals | **NONE** v1 | empty screen |
 | Skills browser | ✅ | skill catalog | **PARTIAL** | read-only |

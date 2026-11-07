@@ -13,6 +13,7 @@ import { createServer } from 'node:http'
 import { networkInterfaces } from 'node:os'
 import { join as join_dir } from 'node:path'
 import { COOKIE_NAME, createAuth } from './auth.mjs'
+import { clip, createRequestLog } from './log.mjs'
 import { detailOf, epochSeconds, messagesOf, normaliseEvent, summaryOf } from './map.mjs'
 import { openSse } from './sse.mjs'
 import { createStreamRegistry } from './streams.mjs'
@@ -27,8 +28,40 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024
  */
 let auditSink = null
 
-/** Effort levels offered to the composer. */
-const EFFORT_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
+/**
+ * Effort levels offered when the model catalog declares none of its own.
+ * The catalog is the source of truth: models are declared per provider with
+ * their own effort ids (this deployment offers off/low/medium/high/max), and
+ * advertising a level the adapter does not accept makes every change fail.
+ */
+const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'max']
+
+/** How long a read-only host call may block a UI request before it gives up. */
+const READ_TIMEOUT_MS = 8000
+
+/**
+ * Reject when a host call outlives the client's patience.
+ *
+ * The app shows a transport banner when a request never answers, which reads to
+ * the user as "the server is gone" even though the call is merely slow (a cold
+ * model catalog or workspace baseline can take seconds). Bounding it turns that
+ * into a fast, honest default the app can render.
+ *
+ * @param {Promise<unknown>} promise host call.
+ * @param {number} ms budget.
+ * @param {string} label what timed out, for the log.
+ * @returns {Promise<unknown>} the value, or a rejection with code "timeout".
+ */
+function withDeadline(promise, ms, label) {
+  let timer
+  const expiry = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(Object.assign(new Error(label + ' timed out after ' + String(ms) + 'ms'), { code: 'timeout' }))
+    }, ms)
+    if (typeof timer.unref === 'function') timer.unref()
+  })
+  return Promise.race([promise, expiry]).finally(() => clearTimeout(timer))
+}
 
 /** Login attempts allowed per window per address. */
 const LOGIN_LIMIT = 5
@@ -109,6 +142,13 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
       }) + '\n')
     }
   }
+  // One line per request (access.log) plus one per endpoint the app calls that
+  // we do not serve (unknown-endpoints.log). The second file is always on: it is
+  // the answer to "why did the app say the endpoint was not found?".
+  const requestLog = createRequestLog({ dir: config.dir, logger, enabled: config.logRequests })
+  if (config.logRequests) logger.info?.('hermes-facade: access log ' + requestLog.accessPath)
+  logger.info?.('hermes-facade: unknown endpoints ' + requestLog.unknownPath)
+
   const registry = createStreamRegistry()
   const loginAttempts = new Map()
   /** @type {Set<Function>} */
@@ -140,6 +180,45 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
    */
   function defaultWorkspacePath() {
     return config.defaultWorkspace ?? process.cwd()
+  }
+
+  /**
+   * Current reasoning-effort state for a session, never throwing.
+   *
+   * The effort the chip shows must be the one the host will actually use, and
+   * the levels offered must be the model's own: DSH models declare their effort
+   * ids per provider (this deployment offers off/low/medium/high/max), so a
+   * hard-coded list makes the picker send an id the adapter rejects.
+   *
+   * @param {string} sessionId session id (may be empty before a chat exists).
+   * @param {object} [overrides] explicit provider/model from the query string.
+   * @returns {Promise<{effort: string, supportedEfforts: string[], provider?: string, model?: string}>} state.
+   */
+  async function reasoningState(sessionId, overrides = {}) {
+    const fallback = { effort: 'medium', supportedEfforts: EFFORT_LEVELS }
+    if (typeof host.reasoning !== 'function') {
+      let effort = fallback.effort
+      try {
+        const selection = sessionId.length > 0 && typeof host.modelSelection === 'function'
+          ? await host.modelSelection(sessionId)
+          : undefined
+        if (typeof selection?.reasoningEffort === 'string' && selection.reasoningEffort.length > 0) effort = selection.reasoningEffort
+      } catch { /* keep the default */ }
+      return { ...fallback, effort }
+    }
+    try {
+      const info = await withDeadline(host.reasoning({ sessionId, ...overrides }), READ_TIMEOUT_MS, 'reasoning lookup')
+      return {
+        effort: typeof info?.effort === 'string' && info.effort.length > 0 ? info.effort : fallback.effort,
+        supportedEfforts: Array.isArray(info?.supportedEfforts) && info.supportedEfforts.length > 0
+          ? info.supportedEfforts.map(String)
+          : fallback.supportedEfforts,
+        ...(typeof info?.provider === 'string' && info.provider.length > 0 ? { provider: info.provider } : {}),
+        ...(typeof info?.model === 'string' && info.model.length > 0 ? { model: info.model } : {}),
+      }
+    } catch {
+      return fallback
+    }
   }
 
   /**
@@ -295,10 +374,68 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
 
   const handler = async (req, res) => {
     const started = Date.now()
+    const method = req.method ?? 'GET'
+    let url
     try {
-      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-      const path = url.pathname
-      const method = req.method ?? 'GET'
+      url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    } catch {
+      url = new URL('/', 'http://127.0.0.1')
+    }
+    const path = url.pathname
+    const query = url.search.length > 1 ? url.search.slice(1) : ''
+
+    // Annotations gathered while routing and written by the access log: this is
+    // how a stubbed or unserved endpoint stays visible instead of looking like a
+    // plain 200, and how a client-side timeout shows up as client_gone.
+    const notes = { unknown: null, stub: null, effort: null, error: null }
+    let settled = false
+
+    /**
+     * Write the access-log line once the response is over.
+     * @param {boolean} gone whether the client vanished before the response ended.
+     * @returns {void}
+     */
+    const settle = gone => {
+      if (settled) return
+      settled = true
+      const userAgent = req.headers['user-agent']
+      requestLog.request({
+        method,
+        path,
+        ...(query.length > 0 ? { query } : {}),
+        status: res.statusCode,
+        ms: Date.now() - started,
+        ...(gone ? { client_gone: true } : {}),
+        ...(userAgent === undefined ? {} : { ua: clip(String(userAgent), 200) }),
+        ...(notes.unknown === null ? {} : { unknown: notes.unknown }),
+        ...(notes.stub === null ? {} : { stub: notes.stub }),
+        ...(notes.effort === null ? {} : { effort: notes.effort }),
+        ...(notes.error === null ? {} : { error: notes.error }),
+      })
+    }
+    res.on('finish', () => settle(false))
+    res.on('close', () => settle(!res.writableFinished))
+
+    /**
+     * Record a call the facade does not implement, in its own log file.
+     * @param {string} kind how the call was handled.
+     * @param {object} [extra] response status, request body, or detail.
+     * @returns {void}
+     */
+    const noteUnknown = (kind, extra = {}) => {
+      notes.unknown = kind
+      requestLog.unknown({
+        method,
+        path,
+        ...(query.length > 0 ? { query } : {}),
+        kind,
+        ...(extra.status === undefined ? {} : { status: extra.status }),
+        ...(extra.body === undefined ? {} : { body: clip(JSON.stringify(extra.body)) }),
+        ...(extra.detail === undefined ? {} : { detail: extra.detail }),
+      })
+    }
+
+    try {
       if (config.logRequests) logger.info?.('hermes-facade: ' + method + ' ' + path)
 
       // ---- public endpoints -------------------------------------------------
@@ -461,6 +598,7 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
       // Actions DSH has no equivalent for: answer 200 with an honest error so
       // the app shows a message instead of "the server endpoint was not found".
       if (method === 'POST' && ['/api/session/delete', '/api/session/duplicate', '/api/session/compress', '/api/session/clear', '/api/session/undo', '/api/session/retry', '/api/session/truncate', '/api/session/move', '/api/session/update', '/api/session/export', '/api/session/import_cli'].includes(path)) {
+        notes.stub = 'session-action'
         sendJson(res, 200, { ok: false, error: 'Not supported by DeepSeek Harness' })
         return
       }
@@ -636,7 +774,12 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
       }
 
       if (method === 'GET' && path === '/api/models') {
-        const catalog = await host.models()
+        // A cold catalog queries every provider, which can outlast the client's
+        // patience; answer with what we have instead of going silent.
+        const catalog = await withDeadline(host.models(), READ_TIMEOUT_MS, 'model catalog').catch(error => {
+          notes.error = String(error?.message ?? error)
+          return {}
+        })
         const groups = []
         if (Array.isArray(catalog?.groups)) {
           for (const group of catalog.groups) {
@@ -672,7 +815,10 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
       }
 
       if (method === 'GET' && path === '/api/workspaces') {
-        const value = await host.workspaces()
+        const value = await withDeadline(host.workspaces(), READ_TIMEOUT_MS, 'workspace list').catch(error => {
+          notes.error = String(error?.message ?? error)
+          return { workspaces: [] }
+        })
         sendJson(res, 200, { workspaces: value.workspaces, last: value.workspaces[0]?.path ?? '' })
         return
       }
@@ -688,20 +834,24 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
 
       if (method === 'GET' && path === '/api/reasoning') {
         const sessionId = url.searchParams.get('session_id') ?? ''
-        let effort = 'medium'
-        if (sessionId.length > 0 && typeof host.modelSelection === 'function') {
-          try {
-            const selection = await host.modelSelection(sessionId)
-            if (typeof selection?.reasoningEffort === 'string') effort = selection.reasoningEffort
-          } catch { /* keep the default */ }
-        }
+        const queryModel = url.searchParams.get('model') ?? ''
+        const queryProvider = url.searchParams.get('provider') ?? ''
+        const state = await reasoningState(sessionId, {
+          ...(queryModel.length > 0 ? { model: queryModel } : {}),
+          ...(queryProvider.length > 0 ? { provider: queryProvider } : {}),
+        })
+        notes.effort = { mode: 'get', effort: state.effort, ...(state.model === undefined ? {} : { model: state.model }) }
         sendJson(res, 200, {
           ok: true,
-          effort,
-          reasoning_effort: effort,
-          effective_effort: effort,
-          supported_efforts: EFFORT_LEVELS,
+          effort: state.effort,
+          reasoning_effort: state.effort,
+          effective_effort: state.effort,
+          supported_efforts: state.supportedEfforts,
           supports_reasoning_effort: true,
+          supports_thinking_toggle: true,
+          show_reasoning: true,
+          ...(state.model === undefined ? {} : { model: state.model }),
+          ...(state.provider === undefined ? {} : { provider: state.provider }),
         })
         return
       }
@@ -710,43 +860,141 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         const body = await readJson(req)
         const sessionId = String(body.session_id ?? '')
         if (typeof body.effort === 'string' && body.effort.length > 0) {
-          try {
-            await host.setReasoningEffort({ sessionId, effort: body.effort })
+          if (sessionId.length === 0) {
+            const state = await reasoningState('')
+            notes.effort = { mode: 'set', requested: body.effort, error: 'session_id required' }
+            logger.warn?.('hermes-facade: reasoning change without a session_id: ' + body.effort)
             sendJson(res, 200, {
-              ok: true,
-              effort: body.effort,
-              reasoning_effort: body.effort,
-              effective_effort: body.effort,
-              supported_efforts: EFFORT_LEVELS,
+              ok: false,
+              error: 'session_id required',
+              effort: state.effort,
+              reasoning_effort: state.effort,
+              effective_effort: state.effort,
+              supported_efforts: state.supportedEfforts,
               supports_reasoning_effort: true,
             })
+            return
+          }
+          try {
+            const applied = await withDeadline(
+              host.setReasoningEffort({ sessionId, effort: body.effort }),
+              READ_TIMEOUT_MS,
+              'reasoning change',
+            )
+            const effort = typeof applied?.effort === 'string' && applied.effort.length > 0 ? applied.effort : body.effort
+            const supported = Array.isArray(applied?.supportedEfforts) && applied.supportedEfforts.length > 0
+              ? applied.supportedEfforts.map(String)
+              : await reasoningState(sessionId).then(state => state.supportedEfforts)
+            notes.effort = { mode: 'set', requested: body.effort, applied: effort, ...(effort === body.effort ? {} : { coerced: true }) }
+            sendJson(res, 200, {
+              ok: true,
+              effort,
+              reasoning_effort: effort,
+              effective_effort: effort,
+              supported_efforts: supported,
+              supports_reasoning_effort: true,
+              ...(typeof applied?.model === 'string' ? { model: applied.model } : {}),
+              ...(typeof applied?.provider === 'string' ? { provider: applied.provider } : {}),
+            })
           } catch (error) {
-            sendJson(res, 200, { ok: false, error: String(error?.message ?? error) })
+            // 200 + ok:false is how this surface reports a refused action; the
+            // app shows the message and keeps the picker usable.
+            const message = String(error?.message ?? error)
+            const state = await reasoningState(sessionId)
+            notes.effort = { mode: 'set', requested: body.effort, error: message }
+            logger.warn?.('hermes-facade: reasoning effort ' + JSON.stringify(body.effort) + ' for session ' + sessionId + ' failed: ' + message)
+            sendJson(res, 200, {
+              ok: false,
+              error: message,
+              effort: state.effort,
+              reasoning_effort: state.effort,
+              effective_effort: state.effort,
+              supported_efforts: state.supportedEfforts,
+              supports_reasoning_effort: true,
+              ...(state.model === undefined ? {} : { model: state.model }),
+              ...(state.provider === undefined ? {} : { provider: state.provider }),
+            })
+            notes.error = message
           }
           return
         }
         // Reasoning *display* toggle (show/hide thinking): nothing to persist.
+        const state = await reasoningState(sessionId)
         sendJson(res, 200, {
           ok: true,
           show_reasoning: body.display !== 'hidden',
-          supported_efforts: EFFORT_LEVELS,
+          supported_efforts: state.supportedEfforts,
           supports_reasoning_effort: true,
+          effort: state.effort,
+          reasoning_effort: state.effort,
+          effective_effort: state.effort,
         })
         return
       }
 
+      // DSH keeps its default model in configuration, not in a Remote: this is
+      // an acknowledgement so the model sheet does not show an endpoint error.
       if (method === 'POST' && path === '/api/default-model') {
         const body = await readJson(req)
-        sendJson(res, 200, { ok: true, default_model: body.model ?? '', provider: body.provider ?? '' })
+        notes.stub = 'default-model'
+        logger.info?.('hermes-facade: default-model asked for ' + String(body.model ?? '') +
+          ' (managed in dsh config; not persisted by the facade)')
+        sendJson(res, 200, {
+          ok: true,
+          default_model: body.model ?? '',
+          provider: body.provider ?? '',
+          persisted: false,
+          note: 'the default model lives in dsh configuration',
+        })
+        return
       }
 
       if (method === 'POST' && (path === '/api/profile/switch' || path === '/api/profile/create')) {
+        notes.stub = 'profiles'
         sendJson(res, 200, { ok: false, error: 'Profiles are not supported by DeepSeek Harness' })
         return
       }
 
       if (method === 'POST' && path === '/api/personality/set') {
+        notes.stub = 'personalities'
         sendJson(res, 200, { ok: false, error: 'Personalities are not supported by DeepSeek Harness' })
+        return
+      }
+
+      // Workspace file browser: opening a project reads a directory listing, and
+      // opening a file reads its text. Both were 404s, which the app renders as
+      // "the server endpoint was not found".
+      if (method === 'GET' && path === '/api/list') {
+        const sessionId = url.searchParams.get('session_id') ?? ''
+        const reference = url.searchParams.get('path') ?? ''
+        let listing
+        try {
+          listing = await host.listDir(sessionId, reference)
+        } catch (error) {
+          notes.error = String(error?.message ?? error)
+        }
+        if (listing === undefined) {
+          sendJson(res, 404, { error: 'not found', detail: 'directory not found', path: reference })
+          return
+        }
+        sendJson(res, 200, listing)
+        return
+      }
+
+      if (method === 'GET' && path === '/api/file') {
+        const sessionId = url.searchParams.get('session_id') ?? ''
+        const reference = url.searchParams.get('path') ?? ''
+        let file
+        try {
+          file = await host.readText(sessionId, reference)
+        } catch (error) {
+          notes.error = String(error?.message ?? error)
+        }
+        if (file === undefined) {
+          sendJson(res, 404, { error: 'not found', detail: 'file not found', path: reference })
+          return
+        }
+        sendJson(res, 200, file)
         return
       }
 
@@ -768,7 +1016,10 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
       }
 
       if (method === 'GET' && path === '/api/projects') {
-        const { workspaces } = await host.workspaces()
+        const { workspaces } = await withDeadline(host.workspaces(), READ_TIMEOUT_MS, 'workspace list').catch(error => {
+          notes.error = String(error?.message ?? error)
+          return { workspaces: [] }
+        })
         sendJson(res, 200, {
           projects: workspaces.map(workspace => ({
             project_id: workspace.id,
@@ -797,25 +1048,35 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         '/api/providers': { providers: [] },
       }
       if (method === 'GET' && Object.hasOwn(NEUTRAL, path)) {
+        notes.stub = 'neutral'
         sendJson(res, 200, NEUTRAL[path])
         return
       }
       if (path.startsWith('/api/git') || path.startsWith('/api/kanban')) {
+        notes.stub = 'unsupported-domain'
         sendJson(res, 200, { ok: false, error: 'Not supported by DeepSeek Harness' })
         return
       }
 
       // Nothing else under /api is a 404 we want the app to see: a write that
       // DSH cannot satisfy answers 200 ok:false, so the sheet shows a message
-      // instead of "the server endpoint was not found".
+      // instead of "the server endpoint was not found". The call is logged with
+      // its body, because an unknown write is the hardest kind to diagnose.
       if (method === 'POST' && path.startsWith('/api/')) {
+        let body
+        try {
+          body = await readJson(req)
+        } catch { /* unreadable body is not a reason to hide the endpoint */ }
+        noteUnknown('unsupported-write', { status: 200, body })
         sendJson(res, 200, { ok: false, error: 'Not supported by DeepSeek Harness', endpoint: path })
         return
       }
 
+      noteUnknown('no-route', { status: 404 })
       sendJson(res, 404, { error: 'not found', detail: 'not found' })
     } catch (error) {
       const status = Number.isSafeInteger(error?.statusCode) ? error.statusCode : 500
+      notes.error = String(error?.message ?? error)
       logger.warn?.('hermes-facade: ' + String(error?.stack ?? error))
       if (!res.headersSent) sendJson(res, status, { detail: String(error?.message ?? 'internal error') })
       else res.end()
@@ -853,6 +1114,9 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
     server,
     auth: authService,
     registry,
+    /** JSONL log writers; paths are useful in a bug report. */
+    log: requestLog,
+    paths: { access: requestLog.accessPath, unknown: requestLog.unknownPath },
     /**
      * Start listening.
      * @returns {Promise<{port: number, host: string}>} address.
