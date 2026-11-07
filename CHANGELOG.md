@@ -24,11 +24,26 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   50 the client asks for. A chat can be scrolled back through its whole (bounded) transcript instead
   of stopping at the newest window; `message_count` is the total, not the page length. Config
   `historyWindow` (default 800) and `historyPage` (default 200) tune it.
-- `/health` also reports `active_streams` and the `history` page/window sizes. The client ignores
-  unknown keys; they let an external check see which build is live and whether a turn is streaming.
+- `/health` also reports `active_streams`, the `history` page/window sizes and a `features` list.
+  The client ignores unknown keys; they let an external check see which build is live and whether a
+  turn is streaming.
+- **Tool results in reloaded transcripts.** `GET /api/session` now emits the client's
+  `tool_calls` list, built from the session's `tool/call` and `tool/result` events: name, a
+  bounded result preview, error verdict, duration and the anchored assistant message index. A
+  reopened chat draws completed tool cards with their output instead of bare calls. Messages stay
+  user/assistant only, so hidden `role:"tool"` rows never consume a page; arguments still ride on
+  each assistant message's `tool_calls`, and a compaction-replaced result is priced against the
+  event it replaced so its duration stays truthful.
 
 ### Fixed
 
+- **The model picker actually applies.** `POST /api/session/update` (the picker's call),
+  `POST /api/session/new` and `POST /api/chat/start` used to drop `model`/`model_provider`; the
+  chip showed a model the next turn did not use. They now resolve the client's id against the DSH
+  model catalog (including `@provider:` and `provider/model` spellings) and apply it through
+  `session/selectModel`, carrying the reasoning effort over when the new model offers it. An
+  unavailable model answers 400 with the catalog error instead of silently keeping the old one.
+  `/api/models` also sends each group's `provider_id`, so the picker reports the route it chose.
 - **Reasoning effort.** `projections.values.modelSelection` is `{lastUsed, next|pending}` in the
   host schema, not a flat `{provider, model, reasoningEffort}`; reading it flat made the GET always
   report `medium` and made every POST reach `session/selectModel` without a provider or model, so

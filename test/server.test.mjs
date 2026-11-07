@@ -511,7 +511,7 @@ test('chat/start adopts the session into the workspace the app names', async t =
   const started = await (await fetch(base + '/api/chat/start', {
     method: 'POST', headers: { 'content-type': 'application/json', cookie },
     body: JSON.stringify({
-      model: 'deepseek/deepseek-v4.1-flash-1017',
+      model: 'deepseek-v4-pro',
       profile: 'default',
       message: 'hi',
       workspace: '/Users/gnanesh/setu/litellm-super-openrouter',
@@ -552,6 +552,7 @@ test('composer catalogs and unknown paths', async t => {
   const models = await (await fetch(base + '/api/models', { headers: { cookie } })).json()
   assert.equal(typeof models.models[0].id, 'string', 'flat list is emitted alongside groups')
   assert.equal(models.groups[0].models[0].id, 'deepseek-v4-pro')
+  assert.equal(models.groups[0].provider_id, 'deepseek-official', 'the picker needs the provider route')
   assert.equal(models.models[0].label, 'DeepSeek V4 Pro')
   assert.equal(models.default_model, 'deepseek-v4-pro')
   assert.equal(models.active_provider, 'deepseek-official')
@@ -567,6 +568,128 @@ test('composer catalogs and unknown paths', async t => {
 
   const missing = await fetch(base + '/api/does-not-exist', { headers: { cookie } })
   assert.equal(missing.status, 404)
+})
+
+test('the model picker applies through session/update', async t => {
+  const { facade, host, base, password } = await boot()
+  t.after(() => facade.close())
+  const login = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }),
+  })
+  const cookie = cookieOf(login)
+
+  const updated = await fetch(base + '/api/session/update', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ session_id: 'sess-mock', model: 'deepseek-v4-pro', model_provider: 'deepseek-official' }),
+  })
+  assert.equal(updated.status, 200)
+  const body = await updated.json()
+  assert.equal(body.ok, true)
+  assert.equal(body.session.model, 'deepseek-v4-pro')
+  assert.equal(body.session.model_provider, 'deepseek-official')
+  assert.equal(host.lastSelectedModel.model, 'deepseek-v4-pro', 'the host selection actually changed')
+
+  const list = await (await fetch(base + '/api/sessions', { headers: { cookie } })).json()
+  assert.equal(list.sessions[0].model, 'deepseek-v4-pro')
+  assert.equal(list.sessions[0].model_provider, 'deepseek-official')
+})
+
+test('an unavailable model is a 400 instead of a silent no-op', async t => {
+  const { facade, host, base, password } = await boot()
+  t.after(() => facade.close())
+  const login = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }),
+  })
+  const cookie = cookieOf(login)
+
+  const rejected = await fetch(base + '/api/session/update', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ session_id: 'sess-mock', model: 'gpt-nowhere' }),
+  })
+  assert.equal(rejected.status, 400)
+  assert.match((await rejected.json()).error, /not available in the model catalog/)
+  assert.equal(host.lastSelectedModel, undefined)
+})
+
+test('chat start applies a model chosen before the session existed', async t => {
+  const { facade, host, base, password } = await boot()
+  t.after(() => facade.close())
+  const login = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }),
+  })
+  const cookie = cookieOf(login)
+
+  const start = await fetch(base + '/api/chat/start', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({
+      session_id: 'sess-mock', message: 'hello', model: 'deepseek-v4-pro', model_provider: 'deepseek-official',
+    }),
+  })
+  assert.equal(start.status, 200)
+  assert.equal(host.lastSelectedModel.model, 'deepseek-v4-pro')
+
+  const bad = await fetch(base + '/api/chat/start', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ session_id: 'sess-mock', message: 'hello', model: 'nope' }),
+  })
+  assert.equal(bad.status, 400)
+  assert.equal(typeof (await bad.json()).detail, 'string')
+})
+
+test('session/new applies the requested model', async t => {
+  const { facade, host, base, password } = await boot()
+  t.after(() => facade.close())
+  const login = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }),
+  })
+  const cookie = cookieOf(login)
+
+  const created = await fetch(base + '/api/session/new', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ model: 'deepseek-v4-pro', model_provider: 'deepseek-official' }),
+  })
+  assert.equal(created.status, 200)
+  const body = await created.json()
+  assert.equal(body.session.model, 'deepseek-v4-pro')
+  assert.equal(host.lastSelectedModel.model, 'deepseek-v4-pro')
+})
+
+test('a reloaded transcript carries tool results as persisted tool calls', async t => {
+  const { facade, host, base, password } = await boot()
+  t.after(() => facade.close())
+  host.seed('sess-mock', [
+    { type: 'user/message', seq: 0, time: 1800000000000, data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'list files' }] } },
+    {
+      type: 'assistant/message', seq: 1, time: 1800000001000,
+      data: { message: { content: [{ type: 'text', text: 'Running' }, { type: 'tool-call', id: 'c1', name: 'bash', arguments: '{"command":"ls"}' }] } },
+    },
+    { type: 'tool/call', seq: 2, time: 1800000001000, data: { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' } },
+    {
+      type: 'tool/result', seq: 3, time: 1800000002500,
+      data: { message: { toolCallId: 'c1', content: [{ type: 'tool-result', content: [{ type: 'text', text: 'file.txt' }] }] } },
+    },
+  ])
+  const login = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }),
+  })
+  const cookie = cookieOf(login)
+
+  const res = await fetch(base + '/api/session?session_id=sess-mock&messages=1&msg_limit=50', { headers: { cookie } })
+  const body = await res.json()
+  assert.equal(body.session.tool_calls.length, 1)
+  const call = body.session.tool_calls[0]
+  assert.equal(call.tid, 'c1')
+  assert.equal(call.name, 'bash')
+  assert.equal(call.snippet, 'file.txt')
+  assert.equal(call.is_error, false)
+  assert.equal(call.assistant_msg_idx, 1)
+  assert.equal(call.duration, 1.5)
+  assert.equal(body.session.messages.some(message => message.role === 'tool'), false)
 })
 
 test('the workspace file browser lists a directory and reads a text file', async t => {

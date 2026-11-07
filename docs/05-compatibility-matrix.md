@@ -1,6 +1,7 @@
 # 05 — Hermex 2.0 compatibility matrix
 
-Last verified: **2026-11-07** · client: Hermex **2.0.1** source (`ec066d9`) · facade: **a810043** ·
+Last verified: **2026-11-07** · client: Hermex **2.0.1** source (`ec066d9`) · facade: **main** (history
+paging, tool results, model switching; see CHANGELOG) ·
 DSH `0.2.2-rc.1` · protocol: hermes-webui HTTP + SSE.
 
 This is the honest accounting of what the stock Hermex iOS app can do against this facade, what it
@@ -35,7 +36,7 @@ points to your configured server." Only the 408/502/503/504 statuses fall back t
 | Session list, grouping by project | `GET /api/sessions` | **WORKS** | rows grouped into project lanes | — |
 | Pinned / archived state | same | **PARTIAL** | every row reports `pinned:false, archived:false`; pin/archive writes land in DSH but the list never shows them, and Archived is always empty | yes: read `pinnedSessionIds`/`archivedSessionIds` from the workspace baseline, honour `include_archived` |
 | Session search | `GET /api/sessions/search` | **404** | "endpoint not found"; only the local title filter still works | yes: `session/search` |
-| Open chat / history | `GET /api/session` | **PARTIAL** | newest **200** messages, then 50-message scroll-back pages, within the newest **800**; older messages beyond that window are not reachable | yes (bigger window or `session/page` walk) |
+| Open chat / history | `GET /api/session` | **WORKS** (bounded) | newest **200** messages, then 50-message scroll-back pages, within the newest **800**; tool results, error verdicts and durations ride along as persisted tool calls | unbounded history still needs a `session/page` walk |
 | Rename | `POST /api/session/rename` | **WORKS** | title updates | — |
 | Branch / fork | `POST /api/session/branch` | **WORKS** | child session; needs a completed turn | — |
 | Pin / archive (action) | `POST /api/session/pin`, `POST /api/session/archive` | **PARTIAL** | accepted, then invisible (see above) | yes |
@@ -43,7 +44,8 @@ points to your configured server." Only the 408/502/503/504 statuses fall back t
 | Duplicate | `POST /api/session/duplicate` | **STUB** | same refusal | needs DSH: no session import/copy RPC |
 | Export / share | `GET /api/session/export` | **404** | "endpoint not found" (only POST is stubbed) | yes: render JSON/HTML from the transcript |
 | Compress / clear / undo / retry / truncate / move / update | `POST /api/session/*` | **STUB** | "Not supported"; edit, regenerate, undo, clear and project-move are unavailable | mostly needs DSH; `update` (model/workspace) is bridgeable |
-| Model + workspace switch | `POST /api/session/update`, `model` on `chat/start` and `session/new` | **PARTIAL** | the chip shows the new model but the run keeps the old one; workspace is adopted on the next send | yes: `session/selectModel` + `workspace/insertSessionBefore` |
+| Model picker / switch | `POST /api/session/update`, `model` on `chat/start` and `session/new` | **WORKS** | applied through `session/selectModel`; catalog id and provider are resolved, reasoning effort carried over | — |
+| Chat workspace switch | `POST /api/session/update` with `workspace` | **PARTIAL** | the session is filed under the chosen project (grouping), but DSH cannot change a started session's cwd | needs a DSH cwd-change primitive |
 | YOLO / approval bypass | `GET/POST /api/session/yolo` | **PARTIAL** | GET is a 404; POST always reports `yolo_enabled:false`, so "skip all" never sticks | yes |
 | Projects (lanes) | `GET /api/projects` | **PARTIAL** | real read-only list | yes for CRUD: `workspace/*` |
 | Project create / rename / delete | `POST /api/projects/*` | **STUB** | refusal message in the sheet | yes |
@@ -59,7 +61,7 @@ points to your configured server." Only the 408/502/503/504 statuses fall back t
 | Provider quota | `GET /api/provider/quota` | **404** | quota cards silently absent | needs a quota source; DSH has none |
 | Settings (server page) | `GET/POST /api/settings`, `/api/updates/*`, `/api/default-model` | **PARTIAL / STUB** | version "Unknown", update check 404, settings save refused, default model acknowledged but not persisted | partly: settings/default-model via DSH config |
 | Chat start / stream / stop / status / reconnect | `POST /api/chat/start`, `GET /api/chat/{stream,stream/status,cancel}` | **WORKS** | tokens, thinking, live tool cards, stop, replay after reconnect | — |
-| Message fields on chat start | `model`, `model_provider`, `profile`, `attachments` | **PARTIAL** | ignored (no error), so model/profile/attachments are silently lost | model via `selectModel`; attachments via upload + image blocks |
+| Message fields on chat start | `model`, `model_provider`, `profile`, `attachments` | **PARTIAL** | model is applied; `profile` and `attachments` are still ignored without an error | attachments via upload + image blocks; profile needs a DSH mapping |
 | Steer / queue while running | `POST /api/chat/steer` | **WORKS** | mid-run message queued | — |
 | `/btw` side question | `POST /api/btw` | **STUB** | "Not supported" in the side panel | yes-ish: a side session; DSH has no btw primitive |
 | `/background` task | `POST /api/background`, `GET /api/background/status` | **STUB / 404** | start refused; status 404 | needs a DSH background-agent primitive |
@@ -98,21 +100,21 @@ gateway we do not implement.
    renders as an approval card whose respond can never succeed.
 2. **Approval payload/expiry.** `GET pending` and `initial` carry only `approval_id`; a GUI-side or
    timed-out resolution never reaches the phone, and there is no `409 {"stale":true}`.
-3. **Silent model/profile/attachment loss** on `chat/start` and `session/new` (see above).
-4. **Reloaded transcripts lose tool results.** `tool/result` events are not reconstructed, so a
-   reopened chat shows tool calls without their output; `session.toolCalls` is never sent either.
-5. **Turn outcome.** `turn/end.reason` is ignored, so a failed or cancelled turn is reported as
+3. **Silent profile/attachment loss** on `chat/start` and `session/new` (the model is applied now).
+4. **Turn outcome.** `turn/end.reason` is ignored, so a failed or cancelled turn is reported as
    `done` (success).
-6. **History is bounded at 800 messages** by the recent-window read; paging works inside it.
-7. **Stream registry never pruned.** `streams.mjs` has `prune()` but nothing calls it, so finished
+5. **History is bounded at 800 messages** by the recent-window read; paging works inside it.
+6. **Stream registry never pruned.** `streams.mjs` has `prune()` but nothing calls it, so finished
    stream journals stay in memory for the process lifetime.
-8. **Export is a method mismatch.** The app GETs `/api/session/export`; only POST was stubbed.
+7. **Export is a method mismatch.** The app GETs `/api/session/export`; only POST was stubbed.
 
 ## Verifying a build
 
 ```bash
 curl -s http://127.0.0.1:9120/health
-# {"status":"ok","active_streams":0,"history":{"page":200,"window":800}}
+# {"status":"ok","active_streams":0,
+#  "features":["history-paging","tool-results","model-switch"],
+#  "history":{"page":200,"window":800}}
 
 cd ~/self/dsh-hermes-facade && npm run check && npm test
 node scripts/standalone.mjs --port 9199     # mock host; probe the wire contract by curl

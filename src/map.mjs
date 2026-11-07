@@ -77,16 +77,42 @@ export function titleOf(item) {
 }
 
 /**
+ * Unwrap the recorded model-selection projection.
+ *
+ * DSH projects `values.modelSelection = {lastUsed, next|pending}`; older drafts
+ * used a flat `{provider, model, reasoningEffort}`. Reading only the flat shape
+ * loses both the model and its provider on current deployments.
+ * @param {object} item session list item.
+ * @returns {object|undefined} chosen selection.
+ */
+function selectionOf(item) {
+  const projection = item?.projections?.values?.modelSelection
+  if (projection === null || typeof projection !== 'object') return undefined
+  const chosen = projection.next ?? projection.pending ?? projection.lastUsed ?? projection
+  return chosen !== null && typeof chosen === 'object' ? chosen : undefined
+}
+
+/**
  * Model id from a session's projections.
  * @param {object} item session list item.
  * @returns {string|undefined} model id.
  */
 export function modelOf(item) {
-  const selection = item?.projections?.values?.modelSelection
-  const model = selection?.model ?? selection
+  const chosen = selectionOf(item)
+  const model = chosen?.model ?? chosen
   if (typeof model === 'string') return model
   if (model && typeof model.id === 'string') return model.id
   return undefined
+}
+
+/**
+ * Provider route id from a session's projections.
+ * @param {object} item session list item.
+ * @returns {string|undefined} provider id.
+ */
+export function modelProviderOf(item) {
+  const chosen = selectionOf(item)
+  return typeof chosen?.provider === 'string' && chosen.provider.length > 0 ? chosen.provider : undefined
 }
 
 /**
@@ -119,6 +145,7 @@ export function summaryOf(item, workspace) {
     is_cli_session: false,
     read_only: false,
     model: modelOf(item),
+    ...(modelProviderOf(item) === undefined ? {} : { model_provider: modelProviderOf(item) }),
     ...(typeof item?.parentSessionId === 'string' ? { parent_session_id: item.parentSessionId } : {}),
   }
 }
@@ -177,9 +204,10 @@ export function pageMessages(messages, { limit = 50, before, initial = 200 } = {
  * @param {Array<object>} messages ChatMessage array (one page).
  * @param {object} [workspace] workspace row for project grouping.
  * @param {object} [paging] page cursor: {offset, truncated, total}.
+ * @param {Array<object>} [toolCalls] persisted tool calls for the loaded window.
  * @returns {object} snake_case detail.
  */
-export function detailOf(item, messages, workspace, paging = {}) {
+export function detailOf(item, messages, workspace, paging = {}, toolCalls = []) {
   const summary = summaryOf(item, workspace)
   return {
     ...summary,
@@ -187,6 +215,7 @@ export function detailOf(item, messages, workspace, paging = {}) {
     messages,
     messages_offset: Number.isSafeInteger(paging.offset) ? paging.offset : 0,
     messages_truncated: paging.truncated === true,
+    ...(Array.isArray(toolCalls) && toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
   }
 }
 
@@ -228,13 +257,85 @@ export function imageRefsOf(content) {
   return refs
 }
 
-export function messagesOf(events) {
+/**
+ * Longest tool-result preview sent in a session detail.
+ *
+ * The client draws a tool row's snippet, not a full log dump; a compact preview
+ * keeps a tool-heavy transcript's page small enough for a mobile link while the
+ * arguments still travel on each assistant message's tool_calls.
+ */
+const TOOL_SNIPPET_LIMIT = 500
+
+/**
+ * Text and verdict of one tool/result event.
+ * @param {object|undefined} data event data.
+ * @returns {{callId?: string, isError: boolean, preview: string}} result.
+ */
+export function toolResultOf(data) {
+  let preview = ''
+  for (const block of data?.message?.content ?? []) {
+    const inner = block?.type === 'tool-result' ? block.content ?? [] : [block]
+    for (const part of inner) if (part?.type === 'text' && typeof part.text === 'string') preview += part.text
+  }
+  return {
+    callId: data?.message?.toolCallId ?? data?.message?.source?.callId,
+    isError: data?.message?.isError === true || Boolean(data?.error),
+    preview: preview.length > 4000 ? preview.slice(0, 4000) + '…' : preview,
+  }
+}
+
+/**
+ * Turn durable DSH session events into the transcript Hermex renders.
+ *
+ * Messages are user/assistant rows only: a bare role:"tool" row would render as
+ * an empty bubble. Tool output is carried separately as `tool_calls` entries
+ * (the client's PersistedToolCall), which the app draws as completed tool cards
+ * anchored to the assistant message that issued each call.
+ *
+ * @param {Array<object>} events normalised events ({type, seq, time, data}).
+ * @returns {{messages: Array<object>, toolCalls: Array<object>}} transcript.
+ */
+export function timelineOf(events) {
   const messages = []
+  /** Persisted tool calls, snake_case, anchored by assistant message index. */
+  const toolCalls = []
+  /** callId -> persisted entry (one entry per call, first appearance wins). */
+  const callEntries = new Map()
+  /** persisted entry -> call time in ms, for duration. */
+  const callTimes = new Map()
+  /** event seq -> its time in ms, so a compaction replacement can price its result. */
+  const eventTimes = new Map()
   /** Last assistant message, so tool calls attach to the row that issued them. */
   let lastAssistant
+  let lastAssistantIndex = -1
+
+  /**
+   * Record one tool call against the assistant message that issued it.
+   * @param {object} call call shape ({id, name, arguments}).
+   * @param {number} messageIndex assistant message index.
+   * @param {number|undefined} time call time (epoch ms).
+   * @returns {void}
+   */
+  function recordCall(call, messageIndex, time) {
+    if (messageIndex < 0) return
+    const callId = String(call?.id ?? '')
+    if (callId.length > 0 && callEntries.has(callId)) return
+    const entry = {
+      ...(typeof call?.name === 'string' && call.name.length > 0 ? { name: call.name } : {}),
+      ...(callId.length > 0 ? { tid: callId } : {}),
+      assistant_msg_idx: messageIndex,
+    }
+    toolCalls.push(entry)
+    if (callId.length > 0) callEntries.set(callId, entry)
+    if (typeof time === 'number' && Number.isFinite(time)) callTimes.set(entry, time > 1e12 ? time : time * 1000)
+  }
+
   for (const event of events) {
     const data = event?.data ?? {}
     const timestamp = epochSeconds(event?.time)
+    if (Number.isSafeInteger(event?.seq) && typeof event.time === 'number' && Number.isFinite(event.time)) {
+      eventTimes.set(event.seq, event.time > 1e12 ? event.time : event.time * 1000)
+    }
     if (event.type === 'user/message') {
       // DSH stores injected context as user/message with a source.kind. Only
       // kind "user" (or an unlabelled message) is a real message from the
@@ -256,6 +357,7 @@ export function messagesOf(events) {
             const message = { role: 'assistant', content: markdown, timestamp }
             messages.push(message)
             lastAssistant = message
+            lastAssistantIndex = messages.length - 1
           }
         }
         continue
@@ -270,43 +372,89 @@ export function messagesOf(events) {
       const content = data.message?.content ?? []
       const text = textOf(content)
       const reasoning = reasoningOf(content)
-      const toolCalls = toolCallsOf(content)
-      if (!text && !reasoning && toolCalls.length === 0) continue
+      const messageToolCalls = toolCallsOf(content)
+      if (!text && !reasoning && messageToolCalls.length === 0) continue
       const assistantMessage = {
         role: 'assistant',
         content: text,
         timestamp,
         ...(reasoning ? { reasoning } : {}),
-        ...(toolCalls.length
-          ? { tool_calls: toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: typeof call.arguments === 'string' ? call.arguments : JSON.stringify(call.arguments ?? {}) } })) }
+        ...(messageToolCalls.length
+          ? { tool_calls: messageToolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: typeof call.arguments === 'string' ? call.arguments : JSON.stringify(call.arguments ?? {}) } })) }
           : {}),
       }
       messages.push(assistantMessage)
       lastAssistant = assistantMessage
+      lastAssistantIndex = messages.length - 1
+      for (const call of messageToolCalls) recordCall(call, lastAssistantIndex, event?.time)
       continue
     }
     if (event.type === 'tool/call') {
       // Tool calls belong on the assistant message that issued them, not as a
       // separate row: a bare role:"tool" message renders as an empty bubble.
-      const call = {
-        id: String(data.callId ?? ''),
+      const callId = String(data.callId ?? '')
+      const callName = String(data.name ?? '')
+      const callArguments = typeof data.arguments === 'string' ? data.arguments : JSON.stringify(data.arguments ?? {})
+      const openAICall = {
+        id: callId,
         type: 'function',
-        function: {
-          name: String(data.name ?? ''),
-          arguments: typeof data.arguments === 'string' ? data.arguments : JSON.stringify(data.arguments ?? {}),
-        },
+        function: { name: callName, arguments: callArguments },
       }
       if (lastAssistant !== undefined) {
-        lastAssistant.tool_calls = Array.isArray(lastAssistant.tool_calls) ? [...lastAssistant.tool_calls, call] : [call]
+        const already = Array.isArray(lastAssistant.tool_calls)
+          && lastAssistant.tool_calls.some(entry => entry?.id !== undefined && String(entry.id) === callId)
+        if (!already) {
+          lastAssistant.tool_calls = Array.isArray(lastAssistant.tool_calls) ? [...lastAssistant.tool_calls, openAICall] : [openAICall]
+        }
+        recordCall({ id: callId, name: callName, arguments: callArguments }, lastAssistantIndex, event?.time)
       } else {
-        const message = { role: 'assistant', content: '', timestamp, tool_calls: [call] }
+        const message = { role: 'assistant', content: '', timestamp, tool_calls: [openAICall] }
         messages.push(message)
         lastAssistant = message
+        lastAssistantIndex = messages.length - 1
+        recordCall({ id: callId, name: callName, arguments: callArguments }, lastAssistantIndex, event?.time)
+      }
+      continue
+    }
+    if (event.type === 'tool/result') {
+      const result = toolResultOf(data)
+      const callId = String(result.callId ?? '')
+      const entry = callId.length > 0 ? callEntries.get(callId) : undefined
+      if (entry === undefined) continue
+      if (result.preview.length > 0) {
+        entry.snippet = result.preview.length > TOOL_SNIPPET_LIMIT
+          ? result.preview.slice(0, TOOL_SNIPPET_LIMIT) + '…'
+          : result.preview
+      }
+      entry.is_error = result.isError
+      const callTime = callTimes.get(entry)
+      const resultTime = event?.time > 1e12 ? event.time : (typeof event?.time === 'number' ? event.time * 1000 : undefined)
+      // Compaction re-surfaces a pruned result as a replacement node whose own
+      // time is "now"; price the call against the result it replaced instead.
+      const sources = Array.isArray(event?.sourceEventSeqs) ? event.sourceEventSeqs : []
+      const replacedTime = sources
+        .map(seq => eventTimes.get(seq))
+        .filter(time => typeof time === 'number')
+        .sort((left, right) => left - right)[0]
+      const pricedTime = (event?.surfaceOp !== undefined && event.surfaceOp !== 'append' && replacedTime !== undefined)
+        ? replacedTime
+        : resultTime
+      if (typeof callTime === 'number' && typeof pricedTime === 'number' && pricedTime >= callTime) {
+        entry.duration = Math.round(((pricedTime - callTime) / 1000) * 100) / 100
       }
       continue
     }
   }
-  return messages
+  return { messages, toolCalls }
+}
+
+/**
+ * Backwards-compatible message-only view of {@link timelineOf}.
+ * @param {Array<object>} events normalised events.
+ * @returns {Array<object>} ChatMessage array.
+ */
+export function messagesOf(events) {
+  return timelineOf(events).messages
 }
 
 /**
@@ -332,11 +480,7 @@ export function normaliseEvent(event) {
     return { type: 'tool/call', seq: event.seq, time: event.time, data: { turn: data.turn, step: data.step, callId: data.callId, name: data.name, arguments: data.arguments } }
   }
   if (event?.type === 'tool/result') {
-    let preview = ''
-    for (const block of data.message?.content ?? []) {
-      const inner = block?.type === 'tool-result' ? block.content ?? [] : [block]
-      for (const part of inner) if (part?.type === 'text' && typeof part.text === 'string') preview += part.text
-    }
+    const result = toolResultOf(data)
     return {
       type: 'tool/result',
       seq: event.seq,
@@ -344,9 +488,9 @@ export function normaliseEvent(event) {
       data: {
         turn: data.turn,
         step: data.step,
-        callId: data.message?.toolCallId ?? data.message?.source?.callId,
-        isError: data.message?.isError === true || Boolean(data.error),
-        preview: preview.length > 4000 ? preview.slice(0, 4000) + '…' : preview,
+        callId: result.callId,
+        isError: result.isError,
+        preview: result.preview,
       },
     }
   }
