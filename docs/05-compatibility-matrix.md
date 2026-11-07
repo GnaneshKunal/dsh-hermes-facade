@@ -149,3 +149,33 @@ node scripts/standalone.mjs --port 9199     # mock host; probe the wire contract
 
 `/health` carries the build marker, so after a hot reload (dsh-hmr) or a restart it is obvious
 which code is live. The app ignores the extra keys.
+
+## Hermes host (gateway) — served by the :9121 listener
+
+Since 0.3.0 the plugin can also present itself as a **Hermes host** on a second
+port, so Hermex 2.x files it as a native server instead of a Legacy webui one.
+The contract is REST + JSON-RPC over `/api/ws`; details and method tables are in
+[docs/06-hermes-gateway.md](06-hermes-gateway.md). Every answer still comes from
+this facade over loopback, so the *DSH* mapping below is unchanged.
+
+| Surface | Endpoint(s) | State | Notes |
+|---|---|---|---|
+| Add server / sign in | `/api/status`, `POST /auth/password-login`, `/api/auth/me`, `POST /api/auth/ws-ticket` | **WORKS** | cookie session + 30 s single-use socket ticket, same password file as :9120 |
+| Socket handshake | `GET /api/ws` | **WORKS** | ticket in `Sec-WebSocket-Protocol`; `gateway.ready` carries `replay_epoch`, `session_authority:false` |
+| Session list / open / paging | `GET /api/sessions`, `/api/sessions/{id}`, `/api/sessions/{id}/messages` | **WORKS** | `order`, `archived`, `limit`, `offset` honoured; transcript rows in the host's shape |
+| Rename / pin / archive | `PATCH /api/sessions/{id}`, `session.title` | **WORKS** | through the facade's own routes |
+| Branch / export | `session.branch`, `GET /api/sessions/{id}/export` | **WORKS** | branch needs a completed turn; export forwards the JSON transcript |
+| Delete / import | `DELETE /api/sessions/{id}`, `POST /api/sessions/import` | **REFUSED** | 400 with the reason: DSH has no delete and no transcript injection, so Move to Hermes cannot land here yet |
+| Chat / streaming / stop / steer | `prompt.submit`, `session.interrupt`, `session.steer`, socket events | **WORKS** | message.start/delta/interim, reasoning.delta, tool.start/complete, message.complete, session.info |
+| Approvals | server->client `approval` + `approval.respond` | **WORKS** | once/session/always/deny; the facade's standing-grant behaviour carries over |
+| Clarify | server->client `clarify` + `request.answer`/`clarify.lock` | **WORKS** | single-question cards |
+| Models / commands | `model.options`, `commands.catalog` | **WORKS** | from the DSH catalogs; reasoning levels travel in the projectors' shape |
+| Profiles | `profiles.list`, `GET /api/profiles/active` | **PARTIAL** | one Profile, `default`; DSH has presets, not Profiles |
+| Files / media | `/api/fs/*`, `/api/files/*` | **404** | not implemented on the Hermes listener yet (the webui `/api/list`+`/api/file` do work on :9120) |
+| Tasks, Kanban, Skills, Memory, Usage, Git, Bots, Bot screen | gateway RPC / plugin routes | **404 / -32601** | different backends; DSH has no memory or kanban store at all. The client hides a control after a -32601 |
+| Move to Hermes | destination import | **N/A** | the invite is webui-only, so a Hermes-kind server never shows it |
+
+The registers are independent: :9120 keeps its own state (pinned/archived files,
+stream journals) and :9121 keeps its event ring and reverse-request queue. Both
+read DSH sessions, so a chat started on one is visible on the other after a
+reopen.

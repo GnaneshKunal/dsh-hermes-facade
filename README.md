@@ -49,8 +49,13 @@ delete that file and restart.
 
 Tailnet only, never Funnel:
 
-    tailscale serve --bg --https=9443 http://127.0.0.1:9120
+    tailscale serve --bg --https=9443 http://127.0.0.1:9120     # webui contract
+    tailscale serve --bg --https=9444 http://127.0.0.1:9121     # Hermes contract
     tailscale serve status
+
+The second rule is only useful once you add the Hermes-protocol listener below as
+a **separate server** on the phone: the app decides a server's kind once, from
+`GET /api/status`, so one URL cannot be both.
 
 In Hermex: **Add server**, URL = https://<machine>.<tailnet>.ts.net:9443,
 password = the one from first boot.
@@ -100,6 +105,37 @@ on the wire contract, run the same server standalone against a mock agent:
 That is what npm test uses, and it exercises the whole HTTP/SSE surface with
 curl.
 
+## Hermes-protocol listener (Hermex 2.x)
+
+Hermex 2.0 talks to a Hermes host by default (REST + JSON-RPC over a WebSocket)
+and marks webui servers as Legacy. This plugin can serve both contracts, on two
+ports, from one process:
+
+| Port | Contract | In the app |
+|---|---|---|
+| 9120 | hermes-webui (HTTP + SSE) | the original server, marked **Legacy**; shows the one-time Move to Hermes invite |
+| 9121 | Hermes host (REST + WS JSON-RPC) | a native **Hermes** server; no invite, no Legacy badge |
+
+The gateway listener does not reimplement DSH: it translates to the webui facade
+over loopback with an internal token, so sessions, streaming, approvals,
+clarifications and export keep one implementation. It covers chat, sessions,
+approvals, clarifications, models, commands and export; Tasks, Skills, Memory,
+Usage, Files, Git, Bots and session import are not implemented and answer
+`-32601` (the app hides those controls). Details, endpoint table and gaps:
+[docs/06-hermes-gateway.md](docs/06-hermes-gateway.md).
+
+```yaml
+config:
+  gatewayEnabled: true      # false keeps only the webui listener
+  gatewayPort: 9121
+  gatewayBindHost: 127.0.0.1
+  gatewayLanHost: auto      # also bind Wi-Fi LAN + Tailscale IPv4 (plain HTTP)
+```
+
+Both listeners share the password file, the cookie secret and the state directory.
+Expose the second one with `tailscale serve --bg --https=9444 http://127.0.0.1:9121`
+and add it in Hermex as its own server.
+
 ## What is supported
 
 | Surface | State |
@@ -123,6 +159,7 @@ curl.
 | projects (one per DSH workspace) | partial: read-only list |
 | tasks/cron, skills, memory, insights, kanban, git panel | stubbed: screens open empty or unavailable |
 | bots, push, Move to Hermes | different transport (Hermes gateway); not served |
+| Hermes host contract (second listener, :9121) | v1: chat/streaming, sessions, approvals, clarifications, models, commands, export; files/git/tasks/skills/memory/kanban/bots and import answer -32601 or 400 (see docs/06) |
 
 The verified matrix — every surface, the endpoint behind it, what the phone shows, and whether it is
 bridgeable here — is [docs/05-compatibility-matrix.md](docs/05-compatibility-matrix.md). docs/00 is
@@ -143,6 +180,14 @@ GET /api/models, GET /api/commands, GET /api/workspaces, GET /api/profiles,
 GET /api/reasoning, POST /api/reasoning, POST /api/default-model,
 GET /api/list, GET /api/file, GET /api/media, GET /api/file/raw, GET /api/projects,
 GET /api/session/export, GET /api/models/live, GET /api/providers.
+
+Hermes listener (:9121): GET /api/status, GET /api/health,
+POST /auth/password-login, POST /auth/logout, GET /api/auth/me,
+POST /api/auth/ws-ticket, GET /api/auth/providers, GET /api/profiles/active,
+GET /api/profiles, GET /api/config, GET /api/models, GET /api/commands,
+GET /api/sessions, GET /api/sessions/{id}, GET /api/sessions/{id}/messages,
+GET /api/sessions/{id}/export, PATCH /api/sessions/{id}, POST /api/sessions/import,
+WS /api/ws (JSON-RPC with server-to-client approval/clarify requests).
 
 ## Diagnostics
 
@@ -196,6 +241,7 @@ throws: a full disk or an unwritable directory cannot break a request.
 
 * [docs/00-DESIGN.md](docs/00-DESIGN.md): architecture, mapping tables, design snapshot
 * [docs/05-compatibility-matrix.md](docs/05-compatibility-matrix.md): verified Hermex 2.0 surface matrix
+* [docs/06-hermes-gateway.md](docs/06-hermes-gateway.md): the Hermes-protocol listener (port 9121), its methods, events and gaps
 * docs/01-webui-api-contract.md: hermes-webui server contract
 * docs/02-hermex-client-wire.md: the client decoder, read from Swift
 * docs/03-dsh-host-integration.md: dsh host API surface

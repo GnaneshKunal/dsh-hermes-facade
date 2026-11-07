@@ -11,6 +11,7 @@
 import { resolveConfig } from './src/config.mjs'
 import { createDshHost } from './src/host.mjs'
 import { createFacadeServer } from './src/server.mjs'
+import { createGatewayServer } from './src/hermes/server.mjs'
 
 /** Plugin name used by the loader patch. */
 export const name = 'hermes-facade'
@@ -74,12 +75,36 @@ async function mount(ctx, config, logger) {
     logger.info?.('hermes-facade: stored hashed at ' + facade.auth.passwordPath)
   }
 
+  // The Hermes-protocol listener (Hermex 2.x hosts). It is a second port with its
+  // own auth routes and its own socket; every answer still comes from the facade
+  // above, so DSH stays integrated in one place. Disabled with gatewayEnabled:false.
+  let gateway
+  if (resolved.gatewayEnabled) {
+    try {
+      gateway = createGatewayServer({
+        config: resolved,
+        facadeUrl: 'http://127.0.0.1:' + address.port,
+        facadeAuth: facade.auth,
+        logger,
+      })
+      const gatewayAddress = await gateway.listen()
+      logger.info?.('hermes-gateway: Hermes host on http://' + gatewayAddress.host + ':' + gatewayAddress.port)
+      logger.info?.('hermes-gateway: expose it with  tailscale serve --bg --https=9444 http://' +
+        gatewayAddress.host + ':' + gatewayAddress.port)
+    } catch (error) {
+      // A gateway failure must not take the webui facade down with it.
+      logger.warn?.('hermes-gateway: not mounted: ' + String(error?.stack ?? error))
+      gateway = undefined
+    }
+  }
+
   // Return the close promise: on a hot reload cordis awaits the disposer
   // before starting the replacement, and the replacement must find the port
   // free. Firing it off unawaited races the new listener into EADDRINUSE.
   ctx.effect(() => () => {
     host.dispose()
-    return facade.close().then(() => {
+    const stopped = gateway === undefined ? Promise.resolve() : gateway.close()
+    return stopped.then(() => facade.close()).then(() => {
       logger.info?.('hermes-facade: stopped')
     })
   })

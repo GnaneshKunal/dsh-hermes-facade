@@ -1,8 +1,8 @@
 {
   "name": "dsh-hermes-facade",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "Drive a local DeepSeek Harness agent from the Hermex iOS app — a host plugin that makes dsh look like a hermes-webui server (HTTP + SSE): sessions, streaming tokens, thinking, tool cards, approvals, clarifications, images, projects.",
+  "description": "Drive a local DeepSeek Harness agent from the Hermex iOS app — a host plugin that makes dsh look like a hermes-webui server (HTTP + SSE) on one port and like a Hermes host (REST + JSON-RPC over WebSocket) on a second: sessions, streaming tokens, thinking, tool cards, approvals, clarifications, images, projects.",
   "keywords": [
     "deepseek",
     "harness",
@@ -13,6 +13,9 @@
     "ios",
     "mobile",
     "hermes-webui",
+    "hermes-agent",
+    "json-rpc",
+    "websocket",
     "sse",
     "agent",
     "self-hosted"

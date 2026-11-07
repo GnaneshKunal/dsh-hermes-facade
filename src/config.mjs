@@ -15,6 +15,9 @@ export const DEFAULT_PORT = 9120
 /** Default bind address; loopback only. */
 export const DEFAULT_BIND = '127.0.0.1'
 
+/** Default loopback port for the Hermes-protocol (gateway) listener. */
+export const DEFAULT_GATEWAY_PORT = 9121
+
 /**
  * Resolve the facade state directory.
  * @param {string} [override] explicit directory.
@@ -34,11 +37,44 @@ export function stateDir(override) {
 export function resolveConfig(raw = {}) {
   const port = Number.isSafeInteger(raw.port) && raw.port > 0 && raw.port < 65536 ? raw.port : DEFAULT_PORT
   const bindHost = typeof raw.bindHost === 'string' && raw.bindHost.length > 0 ? raw.bindHost : DEFAULT_BIND
+  const dir = stateDir(raw.dir)
+  // Never inherit a widened bindHost here: setting bindHost to 0.0.0.0 (or a LAN
+  // address) for the webui listener must not also publish the Hermes listener.
+  // It takes an explicit gatewayBindHost to widen it.
+  const gatewayBindHost = typeof raw.gatewayBindHost === 'string' && raw.gatewayBindHost.length > 0
+    ? raw.gatewayBindHost
+    : DEFAULT_BIND
+  const lanHost = raw.lanHost === 'auto'
+    ? 'auto'
+    : (typeof raw.lanHost === 'string' && raw.lanHost.length > 0 ? raw.lanHost : undefined)
+  // The Hermes listener follows the webui listener's LAN policy unless it says
+  // otherwise: with lanHost: auto (or a host), it is widened the same way.
+  // gatewayLanHost: 'off' forces loopback-only again.
+  const gatewayLanHostRaw = raw.gatewayLanHost
+  const gatewayLanHost = gatewayLanHostRaw === 'auto'
+    ? 'auto'
+    : (typeof gatewayLanHostRaw === 'string' && gatewayLanHostRaw.length > 0
+      ? (gatewayLanHostRaw === 'off' ? undefined : gatewayLanHostRaw)
+      : lanHost)
   return {
     enabled: raw.enabled !== false,
     port,
     bindHost,
-    dir: stateDir(raw.dir),
+    dir,
+    // Hermes-protocol listener: a second, independent port for Hermex 2.x hosts.
+    // Disabled with gatewayEnabled:false; the webui listener is unaffected either way.
+    gatewayEnabled: raw.gatewayEnabled !== false,
+    gatewayPort: Number.isSafeInteger(raw.gatewayPort) && raw.gatewayPort > 0 && raw.gatewayPort < 65536
+      ? raw.gatewayPort
+      : DEFAULT_GATEWAY_PORT,
+    gatewayBindHost,
+    // "auto" (or a host) also binds every non-loopback IPv4 for the Hermes
+    // listener; it inherits lanHost unless set, and 'off' forces loopback-only.
+    gatewayLanHost,
+    // Shared secret the two listeners use to talk to each other over loopback.
+    // Never leaves the machine: the gateway forwards to the facade with it
+    // instead of replaying the phone's cookie.
+    internalToken: ensureSecret(join(dir, 'internal.token')),
     tokenTtlSeconds: Number.isSafeInteger(raw.tokenTtlSeconds) && raw.tokenTtlSeconds > 0
       ? raw.tokenTtlSeconds
       : 30 * 24 * 60 * 60,
@@ -64,9 +100,7 @@ export function resolveConfig(raw = {}) {
     streamRetainMs: Number.isSafeInteger(raw.streamRetainMs) && raw.streamRetainMs >= 0
       ? raw.streamRetainMs
       : undefined,
-    lanHost: raw.lanHost === 'auto'
-      ? 'auto'
-      : (typeof raw.lanHost === 'string' && raw.lanHost.length > 0 ? raw.lanHost : undefined),
+    lanHost,
   }
 }
 

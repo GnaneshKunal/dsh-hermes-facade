@@ -24,3 +24,13 @@
         # line per request (method/path/status/ms/client_gone) to access.log.
         # Unimplemented endpoints are always logged to unknown-endpoints.log.
         logRequests: true
+        # Hermes-protocol listener (Hermex 2.x "Hermes" server kind): REST +
+        # JSON-RPC over a WebSocket, on its own port. It translates to the webui
+        # facade above over loopback. Serve it tailnet-only with:
+        #   tailscale serve --bg --https=9444 http://127.0.0.1:9121
+        gatewayEnabled: true
+        gatewayPort: 9121
+        gatewayBindHost: 127.0.0.1
+        # also bind the Wi-Fi LAN and Tailscale addresses (plain HTTP), so the
+        # phone can use http://<lan-ip>:9121 exactly as it does for :9120
+        gatewayLanHost: auto

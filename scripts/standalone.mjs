@@ -15,6 +15,7 @@
  */
 
 import { createFacadeServer } from '../src/server.mjs'
+import { createGatewayServer } from '../src/hermes/server.mjs'
 import { resolveConfig } from '../src/config.mjs'
 import { approvalDecision } from '../src/host.mjs'
 
@@ -70,6 +71,8 @@ export function createMockHost() {
   let seq = 0
   /** How the next mocked turns end: 'completed', 'failed' or 'cancelled'. */
   let turnOutcome = 'completed'
+  /** Delay before a mocked reply streams, so a test can interleave. */
+  let turnDelay = 10
 
   /**
    * Whether a standing grant answers this ask without a new card.
@@ -180,7 +183,7 @@ export function createMockHost() {
         queue.push({ type: 'event', event: { type: 'assistant/message', seq: seq++, time: Date.now(), data: { message: { content: [{ type: 'text', text: reply }] } } } })
         queue.push({ type: 'event', event: { type: 'turn/end', seq: seq++, time: Date.now(), data: { turn: 1, reason } } })
         record.running = false
-      }, 10)
+      }, turnDelay)
       return { accepted: true }
     },
     async cancel(sessionId) { const record = sessions.get(sessionId); if (record) record.running = false },
@@ -414,6 +417,13 @@ export function createMockHost() {
     },
     dispose() {},
     /**
+     * Delay before each mocked reply streams, so a test can interleave a host
+     * request (approval, clarification) with an open chat stream.
+     * @param {number} value milliseconds.
+     * @returns {void}
+     */
+    setTurnDelay(value) { turnDelay = Number.isFinite(value) ? value : 10 },
+    /**
      * Simulate an agent asking for approval. A standing grant from an earlier
      * "session"/"always" answer means no card is recorded.
      * @param {string} sessionId session id.
@@ -479,18 +489,36 @@ if (isMain) {
   const lan = process.argv.includes('--lan')
   const outcomeArg = process.argv.indexOf('--turn-outcome')
   const turnOutcome = outcomeArg > 0 ? process.argv[outcomeArg + 1] : undefined
-  const config = resolveConfig({ port, dir: process.env.HERMES_FACADE_DIR, lanHost: lan ? 'auto' : undefined })
+  const gatewayArg = process.argv.indexOf('--gateway-port')
+  const gatewayPort = gatewayArg > 0 ? Number.parseInt(process.argv[gatewayArg + 1], 10) : undefined
+  const config = resolveConfig({
+    port,
+    dir: process.env.HERMES_FACADE_DIR,
+    lanHost: lan ? 'auto' : undefined,
+    gatewayEnabled: gatewayPort !== undefined,
+    ...(gatewayPort === undefined ? {} : { gatewayPort }),
+  })
   const host = createMockHost()
   if (turnOutcome !== undefined) host.setTurnOutcome(turnOutcome)
   const facade = createFacadeServer({ config, host })
-  await facade.listen()
+  const address = await facade.listen()
   for (const bound of facade.addresses ?? []) {
     console.log('hermes-facade (standalone, MOCK agent) on http://' + bound.host + ':' + bound.port)
+  }
+  let gateway
+  if (gatewayPort !== undefined) {
+    gateway = createGatewayServer({
+      config,
+      facadeUrl: 'http://127.0.0.1:' + address.port,
+      facadeAuth: facade.auth,
+    })
+    const gatewayAddress = await gateway.listen()
+    console.log('hermes-gateway (standalone, MOCK agent) on http://' + gatewayAddress.host + ':' + gatewayAddress.port)
   }
   if (facade.auth.generatedPassword) console.log('password: ' + facade.auth.generatedPassword)
   else console.log('password: (existing) see ' + facade.auth.passwordPath)
   if (turnOutcome !== undefined) console.log('mock turn outcome: ' + turnOutcome + ' (every turn ends this way)')
-  const shutdown = async () => { await facade.close(); process.exit(0) }
+  const shutdown = async () => { if (gateway !== undefined) await gateway.close(); await facade.close(); process.exit(0) }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
 }
