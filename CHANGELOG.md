@@ -15,6 +15,10 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   looks like from the server. Both rotate at 1 MiB and never throw.
 - `GET /api/list` and `GET /api/file` serve the workspace file browser: a directory listing and a
   text file's content. They were 404s, which the app renders as "the endpoint was not found".
+- **Compatibility matrix.** [docs/05-compatibility-matrix.md](docs/05-compatibility-matrix.md)
+  records every Hermex 2.0.1 surface, the endpoint behind it, the current state, what the phone
+  shows, and whether the gap is bridgeable in this plugin, needs a DSH primitive, or belongs to the
+  Hermes gateway transport. README's support table and docs/00's design snapshot now point at it.
 - **Transcript paging.** `GET /api/session` now honours `msg_before` and returns a real
   `messages_offset`/`messages_truncated` cursor, and the first page is 200 messages instead of the
   50 the client asks for. A chat can be scrolled back through its whole (bounded) transcript instead

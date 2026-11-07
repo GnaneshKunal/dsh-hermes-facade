@@ -76,7 +76,7 @@ our chosen serve rule.
 | `GET /api/commands` | `{"commands":[…]}` | command catalog |
 | `GET /api/workspaces` | `{"workspaces":[{"path","name"}]}` | workspace list |
 | `GET /api/profiles` | `{"profiles":[{"name"}],"active":"default","single_profile_mode":true}` | agent presets |
-| `GET /api/reasoning` | `{"effective_effort","supported_efforts","supports_reasoning_effort"}` | `projections.modelSelection.next|lastUsed` + `session/modelCatalog` efforts |
+| `GET /api/reasoning` | `{"effective_effort","supported_efforts","supports_reasoning_effort"}` | `projections.modelSelection.{next,lastUsed}` + `session/modelCatalog` efforts |
 | `POST /api/reasoning` | same body; `ok:false` + `error` when the model does not offer the level | `session/selectModel` (provider+model replayed; stale spellings translated) |
 | `POST /api/default-model` | `{"ok":true,...,"persisted":false}` | acknowledgement: the default lives in dsh config |
 | `GET /api/list?session_id=&path=` | `{"path","name","parent","entries":[…],"dirs":[…],"files":[…]}` | local directory listing |
@@ -125,6 +125,11 @@ silence is treated as a dead transport). `id:` carries the resume sequence, repl
 
 Hermex was built for Hermes. DSH is a different harness: many Hermes surfaces have no DSH
 equivalent. This is the honest accounting.
+
+> **Superseded.** This section is the 2026-11-06 design snapshot. The runtime probe later found
+> several rows overstated (pin/archive, the model picker, approvals, clarifications) and history
+> paging has since landed. The current verified matrix is
+> [05-compatibility-matrix.md](05-compatibility-matrix.md).
 
 Legend: **FULL** = behaves as the app expects · **PARTIAL** = works with a mapping, some UI dead ·
 **NONE** = not implemented; app shows an empty screen / banner · **LATER** = deferred

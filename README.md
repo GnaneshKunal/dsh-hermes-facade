@@ -105,27 +105,30 @@ curl.
 | Surface | State |
 |---|---|
 | health, auth (password + signed cookie) | full |
-| session list, session detail, history | full: newest 800 messages; scroll-back pages via `msg_before` within that window |
-| chat start / SSE stream / cancel / stream status | full |
-| token deltas, thinking, tool call + result cards | full |
-| approvals (once / deny) | full: session and always collapse to allow-once |
-| clarifications / agent questions | full |
-| model picker, reasoning effort, workspaces | full |
-| reasoning effort | full: levels come from the model catalog, not a fixed list |
-| workspace file browser (`/api/list`, `/api/file`) | full: list a directory, read a text file |
-| profiles (DSH has agent presets, not profiles) | partial |
-| session rename / pin / archive / branch (fork) | full |
-| session duplicate / export / compress / clear / undo / retry | not implemented (answers ok:false) |
-| projects (one per DSH workspace, read-only) | partial |
-| tasks/cron, skills, memory, insights, kanban, git panel, bots, push | not implemented (screens stay empty) |
+| session list, session detail, history | full: newest 200 + 50-message scroll-back pages within the newest 800 |
+| chat start / SSE stream / cancel / stream status | full; `model`/`profile`/`attachments` in the start body are ignored |
+| token deltas, thinking, live tool cards | full; reloaded transcripts lack tool-result text |
+| approvals (once / deny) | partial: session/always collapse to once; details are lost after reconnect; no stale/retraction |
+| clarifications / agent questions | partial: live works; a re-attached pending renders as an approval |
+| reasoning effort | full: levels come from the model catalog |
+| model picker | partial: the pick is not applied to the run |
+| workspaces | partial: list only; add/remove/rename/reorder refused or 404 |
+| workspace file browser (`/api/list`, `/api/file`) | full: read-only |
+| profiles (DSH has agent presets, not profiles) | partial: one static profile |
+| session rename / branch (fork) | full |
+| session pin / archive | partial: writes land, the list never shows them |
+| session delete / duplicate / export / compress / clear / undo / retry / truncate / move / update | not implemented (refusals; export is a 404 because the app GETs it) |
+| projects (one per DSH workspace) | partial: read-only list |
+| tasks/cron, skills, memory, insights, kanban, git panel | stubbed: screens open empty or unavailable |
+| bots, push, Move to Hermes | different transport (Hermes gateway); not served |
 
-The full matrix, including what each gap looks like on the phone, is in
-[docs/00-DESIGN.md](docs/00-DESIGN.md).
+The verified matrix — every surface, the endpoint behind it, what the phone shows, and whether it is
+bridgeable here — is [docs/05-compatibility-matrix.md](docs/05-compatibility-matrix.md). docs/00 is
+the frozen design note.
 
-Nothing unimplemented breaks the app: Hermex treats a 404 on those screens as
-empty. The one exception is the approval/clarify family, which must always
-answer a pending:null body; a 404 there silently hangs the agent, so the facade
-never 404s on those.
+A 404 is not an empty state: Hermex shows "The server endpoint was not found. Check that the URL
+points to your configured server.", and only 408/502/503/504 fall back to cached rows. The
+approval/clarify family must never 404 — an unanswered pending hangs the run.
 
 ## Endpoints
 
@@ -188,7 +191,8 @@ throws: a full disk or an unwritable directory cannot break a request.
 
 ## Docs
 
-* [docs/00-DESIGN.md](docs/00-DESIGN.md): architecture, mapping tables, support matrix
+* [docs/00-DESIGN.md](docs/00-DESIGN.md): architecture, mapping tables, design snapshot
+* [docs/05-compatibility-matrix.md](docs/05-compatibility-matrix.md): verified Hermex 2.0 surface matrix
 * docs/01-webui-api-contract.md: hermes-webui server contract
 * docs/02-hermex-client-wire.md: the client decoder, read from Swift
 * docs/03-dsh-host-integration.md: dsh host API surface
