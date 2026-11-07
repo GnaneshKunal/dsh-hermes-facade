@@ -76,7 +76,7 @@ Effort: **S** = one route/method over an existing facade primitive; **M** = new 
 | 7 | Git read | see what changed, diffs | `/api/fs/git-root`, `/api/git/status`, `review/list`, `review/diff`, `file-diff`, `rev-parse`, `branches` | exec `git` in the session folder | M | done |
 | 8 | Git write | stage / commit / push | `review/{stage,unstage,revert,commit,push}`, `branch/switch` | exec `git`, with the idle guard the client already expects | M | later |
 | 9 | Skills | browse skills and their files | `/api/skills`, `/api/skills/content` | `skills/list` (read-only) + the catalog SKILL.md path | S/M | done (read-only) |
-| 10 | Usage / Insights | token and session usage | `/api/analytics/{usage,models}`, `insights.get` | a facade ledger over the session projections; **no cost data** | M/L | done (token-only) |
+| 10 | Usage / Insights | token and session usage | `/api/analytics/{usage,models}`, `insights.get` | a facade ledger over the session projections, plus `dsh-cost-meter` cost when installed | M/L | done (tokens + cost) |
 | 11 | Attachments | send a photo or a file | `POST /api/chat/image-upload`, `file.attach` | `fileUploads/upload` returns a receipt, not a path — needs a staging convention | M | later |
 | 12 | Goal / loop / heartbeat | the goal menu | `session.control.read`, `session.control` | `goal` projection only; no loop/heartbeat | M/L | later |
 | 13 | `/btw`, `/background` | side questions and background runs | `prompt.btw`, `prompt.background` | no DSH primitive | L | later |
@@ -182,7 +182,7 @@ the host vocabulary: `session.usage` mid-turn and `usage` on `message.complete`,
 context_used, context_max}`. Legacy's `done.usage` is the context-window snapshot the app already decodes
 (`input_tokens`, `output_tokens`, `context_length`, `last_prompt_tokens`), so both transports fill the same ring.
 There is **no cost**: DSH reports tokens, not prices, and Hermex's chat snapshot ignores cost even when present —
-Usage/Insights now reads that same projection data per session; it remains token-only. `partial`/`persisted_turn` remain absent because the
+Usage/Insights reads that same projection data per session, and takes cost from `dsh-cost-meter` where installed. `partial`/`persisted_turn` remain absent because the
 saved row ids are not in the turn event. The facade's `/api/session` detail and JSON export carry the same snapshot
 (`context_length`, `last_prompt_tokens`, `input_tokens`, `output_tokens`), so the Legacy ring survives the app's
 post-turn transcript refresh and a later chat open. Tests cover the Legacy SSE usage frame, the done payload, the
@@ -221,17 +221,19 @@ are the client's `/api/fs/*` reads from the SKILL.md folder; they appear only wh
 fenced roots, so a skill under `$DSH_HOME` opens without them. Tests cover the list, the content, the 404 and the
 refused toggle.
 
-**Usage/Insights (token-only).** `GET /api/analytics/usage` and `/models` aggregate DSH's cached session
+**Usage/Insights.** `GET /api/analytics/usage` and `/models` aggregate DSH's cached session
 projections: sessions, input/output/cache-read tokens, per-model rows and a UTC daily chart for the requested
 window (1-365 days). DSH has no per-day ledger, so a session's cumulative tokens are attributed to its last prompt
 day (falling back to the row's `updatedAt`); its last-used model names its row. Archived and subagent sessions are
 included because their tokens are real usage, and a session with no model still counts in totals/daily but has no
-model row. There is **no cost**: DSH has no pricing, so the cost cells read 0 rather
-than a fabricated estimate. `insights.get` answers `{messages:0}` because DSH exposes no message count; the screen
+model row. Cost comes from the **`dsh-cost-meter`** plugin when it is installed on the same host: its ledger's
+total, daily and per-model amounts are converted from the plugin's display currency to USD. Without the plugin the
+cost fields stay absent (the screen reads 0). OpenRouter Plus's exact per-request `usage.cost` is not merged yet, so
+the figure is the plugin's estimate. `insights.get` answers `{messages:0}` because DSH exposes no message count; the screen
 already marks its Messages total approximate. No sessions in the window is a real empty state. Tests cover the host
 aggregation, both routes and the RPC.
 
-Verify: `npm run check && npm test` (202 tests), then rename a chat from the phone's list, pin it, archive it,
+Verify: `npm run check && npm test` (204 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---

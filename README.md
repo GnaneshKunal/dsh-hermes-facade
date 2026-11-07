@@ -121,8 +121,8 @@ over loopback with an internal token, so sessions, streaming, approvals,
 clarifications and export keep one implementation. It covers chat, sessions,
 approvals, clarifications, models, commands, export and the session write
 fence the list's rename/pin/archive actions read first, the read-only in-chat Files browser and the read-only Git
-menu, Tasks/cron, Memory and Skills (both read-only) and Usage (token-only); Bots and session import are not
-implemented and answer `-32601` (the app hides those controls). Details, endpoint table and gaps:
+menu, Tasks/cron, Memory and Skills (both read-only) and Usage (tokens + cost from `dsh-cost-meter`); Bots and
+session import are not implemented and answer `-32601` (the app hides those controls). Details, endpoint table and gaps:
 [docs/06-hermes-gateway.md](docs/06-hermes-gateway.md).
 
 ```yaml
@@ -165,10 +165,10 @@ and add it in Hermex as its own server.
 | Tasks/cron on the Hermes listener (`/api/cron/*`) | full: list/create/edit/pause/resume/trigger/delete, run history; local delivery only, no cost |
 | Memory on the Hermes listener | read-only: the global `$DSH_HOME/AGENTS.md` as MEMORY.md; no USER.md, no soul, saves refused |
 | Skills on the Hermes listener | read-only: DSH's catalogue (newest session) and each SKILL.md; the disable toggle is refused |
-| Usage/Insights on the Hermes listener | token-only: sessions (archived + subagent), input/output/cache tokens, per-model rows, daily chart; cost 0 and messages ≈0 |
+| Usage/Insights on the Hermes listener | sessions (archived + subagent), input/output/cache tokens, per-model rows, daily chart; cost from `dsh-cost-meter` (USD), messages ≈0 |
 | insights (Legacy), kanban | stubbed: screens open empty or unavailable |
 | bots, push, Move to Hermes | different transport (Hermes gateway); not served |
-| Hermes host contract (second listener, :9121) | v1.10: chat/streaming with context/token telemetry, sessions incl. the write fence the list actions need and the list's search, approvals, clarifications, models, commands, export, Tasks/cron (local delivery only, no cost), Memory and Skills (read-only), Usage/Insights (token-only), the read-only in-chat Files browser (fenced to the chat folder) and the read-only Git menu; Git writes, kanban/bots and import answer -32601 or 400 (the per-surface state and plan are docs/05 §2 and docs/07) |
+| Hermes host contract (second listener, :9121) | v1.11: chat/streaming with context/token telemetry, sessions incl. the write fence the list actions need and the list's search, approvals, clarifications, models, commands, export, Tasks/cron (local delivery only, no cost), Memory and Skills (read-only), Usage/Insights (tokens + `dsh-cost-meter` cost), the read-only in-chat Files browser (fenced to the chat folder) and the read-only Git menu; Git writes, kanban/bots and import answer -32601 or 400 (the per-surface state and plan are docs/05 §2 and docs/07) |
 
 The verified matrix — every surface, the endpoint behind it, what the phone shows, and whether it is
 bridgeable here — is [docs/05-compatibility-matrix.md](docs/05-compatibility-matrix.md). docs/00 is

@@ -84,6 +84,7 @@ function build(existingWorkspaces = {}, options = {}) {
       if (request.namespace === 'session' && request.method === 'create') return { sessionId: 'created-1' }
       if (request.method === 'prompt') return { accepted: true }
       if (request.method === 'cancel') return { accepted: true }
+      if (request.namespace === 'costMeter' && request.method === 'getState') return options.costState
       if (request.namespace === 'skills' && request.method === 'list') {
         return { skills: [{ name: 'demo', description: 'D', path: options.skillPath ?? '/nonexistent/SKILL.md' }] }
       }
@@ -764,6 +765,32 @@ test('skills come from the newest session catalog and read only its SKILL.md', a
   assert.equal(await host.readSkill('missing'), null)
   const call = calls.find(entry => entry.namespace === 'skills' && entry.method === 'list')
   assert.deepEqual(call.args, { request: { sessionId: 's1' } })
+})
+
+test('usage merges dsh-cost-meter cost in USD, day and model', async () => {
+  const now = Date.now()
+  const day = new Date(now).toISOString().slice(0, 10)
+  const state = {
+    config: { currency: 'CNY', fxRates: { USD: 1, CNY: 7.2, EUR: 0.92 }, exchangeRate: 7.2 },
+    history: [{
+      date: day, cost: 7.2, input: 100, output: 50, cacheRead: 10,
+      byProviderModel: {
+        'deepseek-official:deepseek-v4-pro': { cost: 7.2, input: 100, output: 50, cacheRead: 10 },
+      },
+    }],
+  }
+  const { host } = build({}, { updatedAt: now, costState: state })
+  const report = await host.usageReport(30)
+  assert.equal(report.usage.totals.total_estimated_cost, 1)
+  assert.equal(report.usage.daily[0].estimated_cost, 1)
+  assert.equal(report.models.models[0].estimated_cost, 1)
+})
+
+test('usage stays token-only when dsh-cost-meter is absent', async () => {
+  const { host } = build({}, { updatedAt: Date.now() })
+  const report = await host.usageReport(30)
+  assert.equal('total_estimated_cost' in report.usage.totals, false)
+  assert.equal('estimated_cost' in report.usage.daily[0], false)
 })
 
 test('usage includes subagent sessions, excludes the window and attributes last-prompt days', async () => {

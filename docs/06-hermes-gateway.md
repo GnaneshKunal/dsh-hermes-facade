@@ -9,11 +9,11 @@ Hermes host contract, so the same iOS app can be pointed at DeepSeek Harness as
 a native Hermes server. It is additive: port 9120 keeps serving the webui
 contract unchanged.
 
-Status: **v1.10** (2026-11-07). Chat (with context/token telemetry), sessions
+Status: **v1.11** (2026-11-07). Chat (with context/token telemetry), sessions
 (including the write fence the session list needs and the list's search),
 approvals, clarifications, models, commands, export, Tasks/cron, Memory and
-Skills (both read-only), Usage/Insights (token-only), the read-only in-chat Files
-browser and the read-only Git menu.
+Skills (both read-only), Usage/Insights (tokens, and cost from `dsh-cost-meter`
+where installed), the read-only in-chat Files browser and the read-only Git menu.
 The 2026-11-07 audit's wire defects (turn status, stop vocabulary, title read,
 list rows, multi-field PATCH, collection 404s, source matching, `limit=0`,
 capability-gated reverse requests, forwarded-client rate limiting, prompt races,
@@ -154,7 +154,7 @@ session only; sequence gaps make the client rebuild from a snapshot, so the ring
 | `tool.start` | `{name, args, tool_id}` |
 | `tool.complete` | `{name, tool_id, result, is_error?}` |
 | `session.title` | `{session_id, title}` |
-| `session.usage` | `{usage: {input, output, context_used, context_max}}`; the live context ring, sent with the assistant message and again inside `message.complete`. No `estimated_cost`: DSH has no pricing |
+| `session.usage` | `{usage: {input, output, context_used, context_max}}`; the live context ring, sent with the assistant message and again inside `message.complete`. No `estimated_cost`: chat telemetry has no pricing; the Usage screen reads cost from `dsh-cost-meter` instead |
 | `message.complete` | `{status: complete|error|interrupted, text, usage?}`; `usage` is `{input, output, context_used, context_max}` |
 | `request.cancel` | `{id, method, reason}`; withdraws an unanswered card |
 
@@ -191,7 +191,7 @@ with reason `resolved`, like the `approval.respond`/`request.answer` path.
 | `GET /api/config` | `{platform_hints:{}, profile, memory:{memory_enabled:true, user_profile_enabled:false, limits}}`; only the memory block is meaningful, and the app's platform note is advisory and not stored |
 | `GET /api/profiles/{name}/soul`, `PUT …` | `{content:"",exists:false}` for `default`; a PUT answers 400 (this host has no SOUL.md) |
 | `GET /api/files/read?path=…`, `POST /api/files/upload` | Memory's managed file routes. Only a path ending `/memories/MEMORY.md` is served, as `$DSH_HOME/AGENTS.md` in a `data_url` (a missing file is 404); `/memories/USER.md` and every other path are 404, so this is not a second file browser. Upload answers 400 (read-only). `profiles.list[].path` is the absolute `$DSH_HOME` path; only the suffix is ever opened |
-| `GET /api/analytics/usage`, `GET /api/analytics/models` | `{totals:{total_input,total_output,total_cache_read,total_sessions}, daily:[{day,input_tokens,output_tokens,cache_read_tokens,sessions}], period_days}` and `{models:[{model,provider,input_tokens,output_tokens,cache_read_tokens,sessions}], period_days}`. DSH has no per-day ledger (a session's cumulative tokens land on its last prompt day, falling back to the row's `updatedAt`), no pricing fields, and no message count: `insights.get` returns `{messages:0}`. Archived and subagent sessions are included; a session with no model counts in totals/daily but adds no model row |
+| `GET /api/analytics/usage`, `GET /api/analytics/models` | `{totals:{total_input,total_output,total_cache_read,total_sessions, total_estimated_cost?}, daily:[{day,input_tokens,output_tokens,cache_read_tokens,sessions,estimated_cost?}], period_days}` and `{models:[{model,provider,input_tokens,output_tokens,cache_read_tokens,sessions,estimated_cost?}], period_days}`. Tokens come from cached session projections; DSH has no per-day ledger (a session's cumulative tokens land on its last prompt day, falling back to the row's `updatedAt`), and archived/subagent sessions are included (a model-less session counts in totals/daily but adds no model row). When `dsh-cost-meter` is installed, `costMeter.getState` supplies total/daily/model cost, converted to USD; without it the cost fields are absent. `insights.get` returns `{messages:0}` because DSH exposes no message count |
 | `GET /api/profiles/active`, `GET /api/profiles` | the single Profile |
 | `GET /api/skills` | a bare array of DSH's catalogue for the newest session (`name`, `description`, `enabled: true`); no sessions means `[]` |
 | `GET /api/skills/content`, `PUT /api/skills/toggle` | `{name, content, path}` for a catalog skill's SKILL.md (404 when the name is not in the catalogue); the toggle answers 400 (DSH has no skill-disable primitive) |
@@ -240,8 +240,8 @@ answers `403`, and the all-add fallback runs only for an untracked file.
   and the Tasks screen (list/create/edit/pause/resume/trigger/delete and run
   history; local delivery only), Memory (the global `$DSH_HOME/AGENTS.md` as
   MEMORY.md, read-only), Skills (the DSH catalogue and each skill's SKILL.md;
-  the toggle is refused) and Usage/Insights (tokens and sessions only; cost 0
-  because DSH has no pricing, and the Messages total is approximate 0).
+  the toggle is refused) and Usage/Insights (tokens and sessions, plus cost from
+  `dsh-cost-meter` where installed; the Messages total is approximate 0).
 - **Partial:** the session rows carry no `preview`; Fast and yolo are refused, so their controls
   revert instead of showing a false state; Git is read-only (stage/commit/push
   and branch switch answer 400 with a reason).
@@ -323,10 +323,11 @@ The full surface state and the plan for the missing screens are
 5. **Protocol drift.** The client pins 0.22.5; the contract at HEAD already has
    more methods. Re-read `/tmp/hermex` (the client source) before chasing a new
    build; do not implement from the 261-method OpenRPC document.
-6. **No persisted-turn receipt and no cost.** `message.complete` now carries
-   `usage` and a live `session.usage` fills the ring, but `partial`/`persisted_turn`
-   are absent (DSH does not expose the saved row ids), and cost is unavailable:
-   DSH has token usage but no pricing, so Usage/Insights stays token-only.
+6. **No persisted-turn receipt; chat telemetry has no cost.** `message.complete`
+   now carries `usage` and a live `session.usage` fills the ring, but
+   `partial`/`persisted_turn` are absent (DSH does not expose the saved row ids),
+   and chat payloads carry no cost. Usage/Insights reads cost separately from
+   `dsh-cost-meter` where it is installed, so the ring/turn stay token-only.
 7. **The Legacy file browser is still unfenced.** The `:9121` Files routes use the
    shared realpath fence (chat folders only, state and secret directories denied),
    but `:9120`'s `/api/{list,file,file/raw,media}` accept any absolute path, as
