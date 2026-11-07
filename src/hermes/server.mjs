@@ -13,7 +13,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
-import { mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, networkInterfaces } from 'node:os'
 import { basename, extname, join, resolve, sep } from 'node:path'
 
@@ -95,6 +95,22 @@ async function readMemoryText(home) {
     return await readFile(join(home, 'AGENTS.md'), 'utf8')
   } catch (error) {
     if (error?.code === 'ENOENT') return null
+    throw error
+  }
+}
+
+/**
+ * Whether the global AGENTS.md exists. A create-only save asks about the file,
+ * not its text, so this is one stat rather than a whole read.
+ * @param {string} home DSH home.
+ * @returns {Promise<boolean>} exists.
+ */
+async function memoryExists(home) {
+  try {
+    await stat(join(home, 'AGENTS.md'))
+    return true
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false
     throw error
   }
 }
@@ -1100,6 +1116,14 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, host, conve
       const bytes = decodeMemoryBody(body.data_url)
       if (bytes === null) {
         sendJson(res, 400, { detail: 'data_url must be a base64 text/plain file of at most 2 MiB' })
+        return
+      }
+      // The Memory screen always overwrites; a caller that passes
+      // overwrite:false asks for create-only, so an existing AGENTS.md is a
+      // conflict rather than a silent replacement. The detail starts with the
+      // managed name and carries no path, so the app shows it verbatim.
+      if (body.overwrite === false && await memoryExists(memoryHome)) {
+        sendJson(res, 409, { detail: 'MEMORY.md already exists; overwrite is required to replace it.' })
         return
       }
       await writeMemoryText(memoryHome, bytes)
