@@ -9,7 +9,7 @@ function assistantWith(messages) {
 
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { detailOf, epochSeconds, messagesOf, modelOf, modelProviderOf, normaliseEvent, pageMessages, summaryOf, textOf, timelineOf } from '../src/map.mjs'
+import { detailOf, epochSeconds, messagesOf, modelOf, modelProviderOf, normaliseEvent, pageMessages, summaryOf, textOf, timelineOf, turnOutcomeOf } from '../src/map.mjs'
 
 test('epochSeconds converts milliseconds and leaves seconds alone', () => {
   assert.equal(epochSeconds(1700000000000), 1700000000)
@@ -278,4 +278,42 @@ test('normaliseEvent flattens tool result previews', () => {
   assert.equal(event.data.callId, 'c1')
   assert.equal(event.data.preview, 'done!')
   assert.equal(event.data.isError, false)
+})
+
+test('turn/end classifies a completed turn as success', () => {
+  const event = normaliseEvent({ type: 'turn/end', seq: 9, time: 1, data: { turn: 1, reason: { kind: 'completed' } } })
+  assert.deepEqual(event.data.outcome, { status: 'completed' })
+})
+
+test('turn/end keeps success when the host records no reason', () => {
+  // An older host, or an event synthesized without one, carries no verdict: the
+  // phone must not be told the turn failed on a guess.
+  assert.deepEqual(turnOutcomeOf(undefined), { status: 'completed' })
+  assert.deepEqual(normaliseEvent({ type: 'turn/end', seq: 9, time: 1, data: { turn: 1 } }).data.outcome, { status: 'completed' })
+})
+
+test('turn/end aborted for any cause is a cancellation', () => {
+  for (const cause of ['user', 'parent', 'disposed', 'legacy']) {
+    assert.deepEqual(turnOutcomeOf({ kind: 'aborted', reason: { kind: cause } }), { status: 'cancelled' })
+  }
+})
+
+test('turn/end error carries the provider detail in the failure', () => {
+  const outcome = turnOutcomeOf({ kind: 'error', error: { message: '429 Too Many Requests', code: 'RATE_LIMIT' } })
+  assert.equal(outcome.status, 'failed')
+  assert.match(outcome.message, /429 Too Many Requests/)
+  // Logs written by older builds nest the same facts under `failure`.
+  assert.match(turnOutcomeOf({ kind: 'error', failure: { message: 'legacy shape' } }).message, /legacy shape/)
+  assert.match(turnOutcomeOf({ kind: 'error' }).message, /failed before it finished/)
+})
+
+test('turn/end names every other non-success reason', () => {
+  for (const kind of ['max-tokens', 'blocked', 'interrupted']) {
+    assert.equal(turnOutcomeOf({ kind }).status, 'failed')
+  }
+  assert.match(turnOutcomeOf({ kind: 'max-tokens' }).message, /output-token limit/)
+  // A reason a host plugin adds still fails honestly instead of reporting done.
+  const unknown = turnOutcomeOf({ kind: 'quota-exceeded' })
+  assert.equal(unknown.status, 'failed')
+  assert.match(unknown.message, /quota-exceeded/)
 })

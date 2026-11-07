@@ -372,11 +372,31 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
           registry.publish(stream, 'title', { session_id: stream.sessionId, title: event.data.title })
         }
         return false
-      case 'turn/end':
+      case 'turn/end': {
+        // The turn is over and DSH says why. Hermex knows one completion and two
+        // failure terminals: `error` (the run failed) and `cancel` (it was
+        // stopped). Reporting every turn as `done` is what made the phone show a
+        // provider error, a blocked turn or the Stop button as a success.
+        const outcome = event.data.outcome ?? { status: 'completed' }
+        if (stream.terminal !== null) return true
+        if (outcome.status === 'cancelled') {
+          // cancel/error are closing frames for the client — it tears the
+          // transport down on them — so no trailing `stream_end`: that would land
+          // as a second, completing teardown of a run that did not complete.
+          registry.publish(stream, 'cancel', {})
+          registry.finish(stream, 'cancelled')
+          return true
+        }
+        if (outcome.status === 'failed') {
+          registry.publish(stream, 'error', { message: String(outcome.message ?? 'The turn failed.') })
+          registry.finish(stream, 'failed')
+          return true
+        }
         registry.publish(stream, 'done', { usage: {}, session: { session_id: stream.sessionId } })
         registry.publish(stream, 'stream_end', {})
         registry.finish(stream, 'completed')
         return true
+      }
       default:
         return false
     }

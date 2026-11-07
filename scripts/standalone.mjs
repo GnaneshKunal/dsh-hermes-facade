@@ -7,8 +7,9 @@
  *
  *   node scripts/standalone.mjs --port 9120
  *
- * The mock agent streams a canned reply token by token and can simulate an
- * approval with a POST to /mock/approval.
+ * The mock agent streams a canned reply token by token, an approval arrives
+ * through the mock host's pending-approval switch, and `--turn-outcome failed`
+ * (or `cancelled`) makes every turn end the way a real failure or Stop does.
  *
  * @module dsh-hermes-facade/scripts/standalone
  */
@@ -57,6 +58,8 @@ export function createMockHost() {
   const listeners = new Set()
   const pendingApprovals = new Map()
   let seq = 0
+  /** How the next mocked turns end: 'completed', 'failed' or 'cancelled'. */
+  let turnOutcome = 'completed'
 
   /**
    * Notify interaction listeners.
@@ -122,17 +125,33 @@ export function createMockHost() {
       record.events.push({ type: 'user/message', seq: seq++, time: Date.now(), data: { content: [{ type: 'text', text }] } })
       const queue = queues.get(sessionId)
       const reply = 'Echo: ' + text
+      // A failure still streams its partial answer, then closes with the reason a
+      // real provider error carries; a cancel mirrors what the Stop button does.
+      const reason = turnOutcome === 'failed'
+        ? { kind: 'error', error: { message: 'mock provider failure', code: 'UNKNOWN' } }
+        : turnOutcome === 'cancelled'
+          ? { kind: 'aborted', reason: { kind: 'user' } }
+          : { kind: 'completed' }
       setTimeout(() => {
         for (const word of reply.split(' ')) {
           queue.push({ type: 'assistant-stream', frame: { type: 'chunk', chunk: { type: 'text-delta', index: 0, text: word + ' ' } } })
         }
         queue.push({ type: 'event', event: { type: 'assistant/message', seq: seq++, time: Date.now(), data: { message: { content: [{ type: 'text', text: reply }] } } } })
-        queue.push({ type: 'event', event: { type: 'turn/end', seq: seq++, time: Date.now(), data: { turn: 1, reason: { kind: 'stop' } } } })
+        queue.push({ type: 'event', event: { type: 'turn/end', seq: seq++, time: Date.now(), data: { turn: 1, reason } } })
         record.running = false
       }, 10)
       return { accepted: true }
     },
     async cancel(sessionId) { const record = sessions.get(sessionId); if (record) record.running = false },
+    /**
+     * Choose how every subsequent mocked turn ends, so the failed and cancelled
+     * terminal paths are exercisable without a real provider error or a GUI.
+     * @param {'completed'|'failed'|'cancelled'} outcome outcome.
+     * @returns {void}
+     */
+    setTurnOutcome(outcome) {
+      turnOutcome = outcome === 'failed' || outcome === 'cancelled' ? outcome : 'completed'
+    },
     follow(sessionId) { return queues.get(sessionId) ?? createQueue() },
     async models() {
       // Mirrors the real ModelCatalog shape (groups/default), not a flat list.
@@ -334,8 +353,11 @@ if (isMain) {
   const portArg = process.argv.indexOf('--port')
   const port = portArg > 0 ? Number.parseInt(process.argv[portArg + 1], 10) : undefined
   const lan = process.argv.includes('--lan')
+  const outcomeArg = process.argv.indexOf('--turn-outcome')
+  const turnOutcome = outcomeArg > 0 ? process.argv[outcomeArg + 1] : undefined
   const config = resolveConfig({ port, dir: process.env.HERMES_FACADE_DIR, lanHost: lan ? 'auto' : undefined })
   const host = createMockHost()
+  if (turnOutcome !== undefined) host.setTurnOutcome(turnOutcome)
   const facade = createFacadeServer({ config, host })
   await facade.listen()
   for (const bound of facade.addresses ?? []) {
@@ -343,6 +365,7 @@ if (isMain) {
   }
   if (facade.auth.generatedPassword) console.log('password: ' + facade.auth.generatedPassword)
   else console.log('password: (existing) see ' + facade.auth.passwordPath)
+  if (turnOutcome !== undefined) console.log('mock turn outcome: ' + turnOutcome + ' (every turn ends this way)')
   const shutdown = async () => { await facade.close(); process.exit(0) }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)

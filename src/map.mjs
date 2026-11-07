@@ -457,6 +457,73 @@ export function messagesOf(events) {
   return timelineOf(events).messages
 }
 
+/** Longest provider error detail carried into the phone failure banner. */
+const TURN_ERROR_DETAIL_LIMIT = 400
+
+/**
+ * Plain phrases for turn-ending reasons that are not a provider error.
+ * @type {Record<string, string>}
+ */
+const TURN_REASON_NOTES = {
+  'max-tokens': 'The turn stopped at the model output-token limit.',
+  blocked: 'The turn was blocked before it ran.',
+  interrupted: 'The turn was interrupted before it finished.',
+  forked: 'The turn was closed at a fork boundary.',
+}
+
+/**
+ * Human-readable detail out of a failed turn/end reason.
+ *
+ * DSH records {kind:"error", error: LlmFailure}; logs written by older builds
+ * carry the same facts under "failure", so both spellings are read.
+ * @param {object|undefined} reason raw reason.
+ * @returns {string} detail, possibly empty.
+ */
+function failureDetailOf(reason) {
+  const candidates = [
+    reason?.error?.message,
+    reason?.failure?.message,
+    typeof reason?.error === 'string' ? reason.error : undefined,
+    reason?.message,
+  ]
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') continue
+    const detail = candidate.trim()
+    if (detail.length === 0) continue
+    return detail.length > TURN_ERROR_DETAIL_LIMIT ? detail.slice(0, TURN_ERROR_DETAIL_LIMIT) + '…' : detail
+  }
+  return ''
+}
+
+/**
+ * Classify a turn/end reason as one of the three outcomes the phone knows.
+ *
+ * A webui stream ends in exactly one way: "done" (the run completed), "error"
+ * (it failed) or "cancel" (it was stopped). DSH records why the turn ended in
+ * turn/end.reason; only kind:"completed" is a success. A missing reason (an
+ * older host, or an event synthesized without one) carries no verdict, so it
+ * keeps the completed path. Every other kind is a non-completion: "aborted" is
+ * the cancellation family, everything else is a failure ("error", "blocked",
+ * "max-tokens", and any reason a host plugin adds).
+ *
+ * @param {object|undefined} reason turn/end reason.
+ * @returns {{status: 'completed'|'cancelled'|'failed', message?: string}} outcome.
+ */
+export function turnOutcomeOf(reason) {
+  const kind = typeof reason?.kind === 'string' ? reason.kind : ''
+  if (kind.length === 0 || kind === 'completed') return { status: 'completed' }
+  // aborted: user / parent / hook / disposed, or a legacy record without a cause.
+  if (kind === 'aborted') return { status: 'cancelled' }
+  if (kind === 'error') {
+    const detail = failureDetailOf(reason)
+    return {
+      status: 'failed',
+      message: detail.length > 0 ? 'The turn failed: ' + detail : 'The turn failed before it finished.',
+    }
+  }
+  return { status: 'failed', message: TURN_REASON_NOTES[kind] ?? 'The turn ended with reason "' + kind + '".' }
+}
+
 /**
  * Normalise one raw DSH session event into the subset the facade needs.
  * @param {object} event raw event ({type, seq, time, data}).
@@ -498,7 +565,12 @@ export function normaliseEvent(event) {
     return { type: 'session/title', seq: event.seq, time: event.time, data: { title: data.title } }
   }
   if (event?.type === 'turn/end') {
-    return { type: 'turn/end', seq: event.seq, time: event.time, data: { turn: data.turn, reason: data.reason } }
+    return {
+      type: 'turn/end',
+      seq: event.seq,
+      time: event.time,
+      data: { turn: data.turn, reason: data.reason, outcome: turnOutcomeOf(data.reason) },
+    }
   }
   return { type: String(event?.type ?? 'unknown'), seq: event?.seq, time: event?.time, data }
 }
