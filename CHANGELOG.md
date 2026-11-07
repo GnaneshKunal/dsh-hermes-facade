@@ -87,7 +87,7 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   no session provenance. Tests cover the mapping and the full lifecycle through
   the gateway and the facade.
 - **Memory (read-only).** The Memory screen now loads on the Hermes listener: `profiles.list`
-  carries a virtual `dsh://memory` path, `GET /api/config` turns on only the memory
+  carries the real, absolute `$DSH_HOME` path, `GET /api/config` turns on only the memory
   section, `GET /api/profiles/default/soul` is an empty soul, and
   `GET /api/files/read` serves `.../memories/MEMORY.md` as the global
   `$DSH_HOME/AGENTS.md` (a missing file answers 404, so a fresh host is an honest

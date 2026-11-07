@@ -7,6 +7,7 @@
 
 import { randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 /** Version reported to Hermex. The app gate is at least 0.21.3; its pin is 0.22.5. */
@@ -122,9 +123,10 @@ export function profileRow() {
     is_default: true,
     is_active: true,
     home: PROFILE_NAME,
-    // The Memory screen derives <path>/memories/MEMORY.md; the gateway maps that
-    // exact suffix to the global AGENTS.md, so no real home path is sent.
-    path: 'dsh://memory',
+    // Hermex treats this as a host path (it derives <path>/memories/MEMORY.md),
+    // so it must be absolute; the gateway maps that exact suffix to the global
+    // AGENTS.md rather than opening whatever this path names.
+    path: process.env.DSH_HOME || join(homedir(), '.dsh'),
     avatar: null,
     created_at: null,
     session_count: null,
