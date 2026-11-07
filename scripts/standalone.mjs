@@ -150,6 +150,13 @@ export function createMockHost({ cwd = process.cwd() } = {}) {
       return { input_tokens: 1234, output_tokens: 56, context_length: 200000, last_prompt_tokens: 4321 }
     },
     setSessionUsage(values) { sessionUsageOverride = values },
+    async listSkills() {
+      return [{ name: 'demo-skill', description: 'A demo skill', path: '/virtual/demo-skill/SKILL.md' }]
+    },
+    async readSkill(name) {
+      if (name !== 'demo-skill') return null
+      return { name, content: '# Demo skill\n', path: '/virtual/demo-skill/SKILL.md' }
+    },
     async listSchedules() { return [...schedules.values()] },
     async createSchedule(request) {
       if (request?.prompt === 'reject me') {

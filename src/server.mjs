@@ -24,6 +24,22 @@ import { createStreamRegistry } from './streams.mjs'
 const MAX_BODY_BYTES = 2 * 1024 * 1024
 
 /**
+ * One skill catalogue row in the host's shape.
+ * @param {object} skill DSH skill row.
+ * @returns {object} host row.
+ */
+function skillRowOf(skill) {
+  return {
+    name: String(skill?.name ?? ''),
+    description: String(skill?.description ?? ''),
+    ...(typeof skill?.category === 'string' ? { category: skill.category } : {}),
+    enabled: true,
+    ...(typeof skill?.path === 'string' && skill.path.length > 0 ? { path: skill.path } : {}),
+  }
+}
+
+
+/**
  * Optional request-body audit hook, set by createFacadeServer when logging is
  * on. Used to see exactly what the iOS client sends on a create.
  * @type {((req: import('node:http').IncomingMessage, body: object) => void) | null}
@@ -1748,6 +1764,24 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         return
       }
 
+      // Skills: a read-only catalogue and SKILL.md from DSH's per-session
+      // catalog. DSH has no disable primitive, so the toggle is refused.
+      if (method === 'GET' && path === '/api/skills') {
+        const rows = await host.listSkills()
+        sendJson(res, 200, { skills: rows.map(skillRowOf) })
+        return
+      }
+      if (method === 'GET' && path === '/api/skills/content') {
+        const name = (url.searchParams.get('name') ?? '').trim()
+        const detail = await host.readSkill(name)
+        if (detail === null) { sendJson(res, 404, { detail: 'Skill not found.' }); return }
+        sendJson(res, 200, detail)
+        return
+      }
+      if (method === 'PUT' && path === '/api/skills/toggle') {
+        sendJson(res, 400, { detail: 'Skills cannot be disabled on this host: DSH has no skill toggle.' })
+        return
+      }
       // Screens DSH has no data for. Answer with an empty, well-formed payload
       // so the app renders an empty state instead of its 404 banner.
       const NEUTRAL = {
@@ -1756,7 +1790,6 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         '/api/crons/recent': { runs: [] },
         '/api/insights': { days: [], totals: {}, sessions: [] },
         '/api/memory': { entries: [], memories: [] },
-        '/api/skills': { skills: [], enabled: [] },
         '/api/kanban/boards': { boards: [] },
         '/api/kanban/config': {},
         '/api/settings': {},

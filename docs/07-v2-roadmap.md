@@ -8,7 +8,7 @@ The goal has two parts, in this order:
 
 1. **Parity.** Anything the **Legacy** server (`:9120`, hermes-webui) already does for the phone must also work on
    the **Hermes host** (`:9121`). That is the "similar to how V1 was" bar.
-2. **Full V2.** Then add the surfaces only a Hermes host unlocks (Skills, Usage, Git writes, Bots,
+2. **Full V2.** Then add the surfaces only a Hermes host unlocks (Usage, Git writes, Bots,
 session search, attachments),
    but only where DSH has a real primitive to back them. A screen that half-renders is worse than one that is
    cleanly hidden.
@@ -36,7 +36,7 @@ The gaps split cleanly:
 |---|---|---|
 | Chat telemetry | `usage` on turn events, `terminal_backend`, canonical turn status | the context ring and token counts work (no cost); Files/Git now appear |
 | Disabled feature that exists on the other transport | YOLO honesty | V2 is worse than V1 for that one feature |
-| Screens with no backend yet | Skills, Usage, Git writes, Bots, attachments | the screen errors (the sidebar toggles are local, not probes) |
+| Screens with no backend yet | Usage, Git writes, Bots, attachments | the screen errors (the sidebar toggles are local, not probes) |
 | Silent misbehaviour | edit/regenerate appends, fast/yolo echo | the phone believes something happened that did not |
 
 ---
@@ -75,7 +75,7 @@ Effort: **S** = one route/method over an existing facade primitive; **M** = new 
 | 6 | Memory | edit what the agent remembers | `/api/memory`, `files/read`, `files/upload`, `profiles/{n}/soul`, `profiles.list[].path` | `$DSH_HOME/AGENTS.md` + the project AGENTS.md chain (a real memory) | M | done (read-only, global) |
 | 7 | Git read | see what changed, diffs | `/api/fs/git-root`, `/api/git/status`, `review/list`, `review/diff`, `file-diff`, `rev-parse`, `branches` | exec `git` in the session folder | M | done |
 | 8 | Git write | stage / commit / push | `review/{stage,unstage,revert,commit,push}`, `branch/switch` | exec `git`, with the idle guard the client already expects | M | later |
-| 9 | Skills | browse skills and their files | `/api/skills`, `/api/skills/content` | `skills/list` (read-only) + `workspaceFiles/read` | S/M | next |
+| 9 | Skills | browse skills and their files | `/api/skills`, `/api/skills/content` | `skills/list` (read-only) + `workspaceFiles/read` | S/M | done (read-only) |
 | 10 | Usage / Insights | token and session usage | `/api/analytics/{usage,models}`, `insights.get` | a facade ledger over `assistant/message.usage`; **no cost data** | M/L | later |
 | 11 | Attachments | send a photo or a file | `POST /api/chat/image-upload`, `file.attach` | `fileUploads/upload` returns a receipt, not a path — needs a staging convention | M | later |
 | 12 | Goal / loop / heartbeat | the goal menu | `session.control.read`, `session.control` | `goal` projection only; no loop/heartbeat | M/L | later |
@@ -212,24 +212,25 @@ chain (`$DSH_HOME/AGENTS.md` then `$DSH_AGENTS_HOME/AGENTS.md`) is represented b
 `memory_char_limit` in the config is the editor's ceiling, not a DSH cap, and the read is not size-limited.
 Tests cover the loaded document, the empty state, the 404s and both refused writes.
 
-Verify: `npm run check && npm test` (194 tests), then rename a chat from the phone's list, pin it, archive it,
+**Skills (read-only).** `GET /api/skills` maps DSH's per-session catalogue to the bare array the screen decodes
+(`enabled: true`, because every skill DSH lists is invocable), and `GET /api/skills/content` returns the named
+skill's SKILL.md plus its catalog path; an unknown name is a 404, so a missing skill is an honest error. DSH's
+catalogue is scoped to a session composition, so the newest chat supplies the cwd/preset; no sessions means an empty
+catalogue. `PUT /api/skills/toggle` answers 400 with the reason: DSH has no skill-disable primitive. Linked files
+are the client's `/api/fs/*` reads from the SKILL.md folder; they appear only when that folder sits inside a chat's
+fenced roots, so a skill under `$DSH_HOME` opens without them. Tests cover the list, the content, the 404 and the
+refused toggle.
+
+Verify: `npm run check && npm test` (196 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---
 
 ## 5. Next picks, with acceptance criteria
 
-Files, Git read, session search, chat telemetry, Tasks and Memory are done (see §4). The next three, in order:
+Files, Git read, session search, chat telemetry, Tasks, Memory and Skills are done (see §4). The next three, in order:
 
-### Pick 1 — Skills
-
-Calls: `GET /api/skills`, `/api/skills/content`, the toggle route and a Task's skills picker. Backing:
-`skills/list` (read-only catalogue, already available to the host) plus `workspaceFiles/read` for a skill's files,
-behind the same fence. Done when: the Skills screen lists the host's skills with descriptions, opening one shows
-its file, an empty catalogue is a real empty state, and the toggle is refused with an honest reason (DSH has no
-plugin-disable primitive) instead of a switch that flips back.
-
-### Pick 2 — Usage / Insights
+### Pick 1 — Usage / Insights
 
 Calls: `GET /api/analytics/{usage,models}?days=&profile=` and `insights.get`. Backing: a facade ledger over the
 `tokenUsage` projections and the sessions list (sessions, tokens, cache reads, daily chart). **No cost**: DSH has no
@@ -237,19 +238,25 @@ pricing, so `estimated_cost`/`actual_cost` stay absent rather than a fabricated 
 a separate decision if real numbers are wanted. Done when: the Usage screen shows totals, per-model rows and a
 daily chart in tokens, an empty window is a real empty state, and cost cells are omitted rather than zeroed.
 
-### Pick 3 — Attachments
+### Pick 2 — Attachments
 
 Calls: the composer's image/document upload and the `MEDIA` references the transcript renders. Backing: DSH's own
 attachment parts plus a staging convention under the session workspace. Done when: an image the phone attaches is
 visible to the agent and in the phone transcript, a file the agent references opens from the chat, and an
 unsupported or too-large upload is refused with a reason.
 
+### Pick 3 — Side tasks (`/btw`, `/background`)
+
+Calls: `prompt.btw`/`prompt.background` and the side-chain frames. Backing: DSH's btw sidechains/background jobs
+where they are exposed; otherwise the socket keeps answering `-32601` honestly. Done when: a side prompt runs
+without disturbing the main turn and its result has its own panel.
+
 ---
 
 ## 6. Sequencing and cross-cutting work
 
-Order after this change: **Skills → Usage → attachments → goal/btw/background →
-Git write → Bots**.
+Order after this change: **Usage → attachments → goal/btw/background → Git write →
+Bots**.
 
 Cross-cutting items that should ride the first task that touches them. The capability gate, the honest refusals,
 the rate-limit key and the prompt-concurrency guards landed in the bugfix pass; these remain:
