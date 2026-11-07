@@ -13,7 +13,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
-import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir, networkInterfaces } from 'node:os'
 import { basename, extname, join, resolve, sep } from 'node:path'
 
@@ -77,6 +77,46 @@ async function readMemoryText(home) {
   }
 }
 
+/** Largest memory file the Memory screen may save. */
+const MEMORY_MAX_BYTES = 2 * 1024 * 1024
+
+/**
+ * Decode the Memory screen's save body: a base64 `data:text/plain` URL.
+ *
+ * Empty content is a real save (the screen clears the file), so it decodes to
+ * an empty buffer. Anything that is not a base64 text/plain data URL, or whose
+ * bytes exceed the cap, is null.
+ * @param {unknown} value client data_url.
+ * @returns {Buffer|null} bytes, or null when malformed or too large.
+ */
+function decodeMemoryBody(value) {
+  const match = /^data:text\/plain;base64,([A-Za-z0-9+/=]*)$/.exec(String(value ?? ''))
+  if (match === null) return null
+  const bytes = Buffer.from(match[1], 'base64')
+  if (bytes.length > MEMORY_MAX_BYTES) return null
+  // The file is read back as UTF-8, so only text that round-trips is a save:
+  // binary bytes would not match what the screen re-reads after writing.
+  return Buffer.from(bytes.toString('utf8'), 'utf8').equals(bytes) ? bytes : null
+}
+
+/**
+ * Replace the global AGENTS.md atomically: a private temp file in the same
+ * directory, then a rename. A failed write leaves the previous file untouched.
+ * @param {string} home DSH home.
+ * @param {Buffer} bytes UTF-8 memory text.
+ * @returns {Promise<void>} resolves once the new file is in place.
+ */
+async function writeMemoryText(home, bytes) {
+  await mkdir(home, { recursive: true, mode: 0o700 })
+  const target = join(home, 'AGENTS.md')
+  const temporary = join(home, '.AGENTS.md.' + randomUUID() + '.tmp')
+  try {
+    await writeFile(temporary, bytes, { mode: 0o600, flag: 'wx' })
+    await rename(temporary, target)
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {})
+  }
+}
 
 /**
  * Send a JSON answer.
@@ -917,9 +957,28 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
       return
     }
     if (method === 'POST' && path === '/api/files/upload') {
-      const body = await readJson(req)
-      if (memoryKindOf(body.path) === null) { sendJson(res, 404, { detail: 'Not Found' }); return }
-      sendJson(res, 400, { detail: 'Memory is read-only on this host; edit AGENTS.md in the DSH home or the workspace.' })
+      // The Memory screen saves MEMORY.md through this route; it is the global
+      // AGENTS.md. USER.md and every other path keep the 404 they answer today,
+      // and the requested path never names a file to open, so no other file is
+      // writable. The body is the screen's own base64 text/plain data URL.
+      let body
+      try {
+        body = await readJson(req)
+      } catch {
+        sendJson(res, 400, { detail: 'Memory file is too large' })
+        return
+      }
+      // A body with no path at all is malformed, not a request for some other
+      // file; a path that is merely not the managed MEMORY.md keeps its 404.
+      if (typeof body.path !== 'string') { sendJson(res, 400, { detail: 'path must be the managed MEMORY.md path' }); return }
+      if (memoryKindOf(body.path) !== 'memory') { sendJson(res, 404, { detail: 'Not Found' }); return }
+      const bytes = decodeMemoryBody(body.data_url)
+      if (bytes === null) {
+        sendJson(res, 400, { detail: 'data_url must be a base64 text/plain file of at most 2 MiB' })
+        return
+      }
+      await writeMemoryText(memoryHome, bytes)
+      sendJson(res, 200, { ok: true })
       return
     }
     const soulMatch = /^\/api\/profiles\/([^/]+)\/soul$/.exec(path)

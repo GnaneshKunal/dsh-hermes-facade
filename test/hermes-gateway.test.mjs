@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -88,6 +88,24 @@ async function signIn(base, password) {
   const cookies = reply.headers.getSetCookie()
   assert.ok(cookies.length >= 1, 'login must set a cookie')
   return cookies.map(cookie => cookie.split(';')[0]).join('; ')
+}
+
+/**
+ * The UTF-8 text behind a `data:text/plain;base64` URL.
+ * @param {string} url data URL.
+ * @returns {string} text.
+ */
+function memoryText(url) {
+  return Buffer.from(String(url ?? '').split(',')[1] ?? '', 'base64').toString('utf8')
+}
+
+/**
+ * The data URL the Memory screen sends for a save.
+ * @param {string} text memory text.
+ * @returns {string} data URL.
+ */
+function textDataUrl(text) {
+  return 'data:text/plain;base64,' + Buffer.from(text, 'utf8').toString('base64')
 }
 
 /**
@@ -2107,7 +2125,7 @@ test('the Tasks screen lists, edits, runs and deletes schedules', async () => {
   }
 })
 
-test('Memory shows the global AGENTS.md read-only', async () => {
+test('Memory shows the global AGENTS.md and saves MEMORY.md', async () => {
   const harness = await boot()
   try {
     writeFileSync(join(harness.dir, 'AGENTS.md'), '# Memory\n\nBe nice.\n')
@@ -2133,25 +2151,78 @@ test('Memory shows the global AGENTS.md read-only', async () => {
     const memoryPath = encodeURIComponent('dsh://memory/memories/MEMORY.md')
     const read = await api(harness.base, '/api/files/read?path=' + memoryPath, { cookie })
     assert.equal(read.status, 200)
-    const encoded = read.json.data_url.split(',')[1]
-    assert.equal(Buffer.from(encoded, 'base64').toString('utf8'), '# Memory\n\nBe nice.\n')
+    assert.equal(memoryText(read.json.data_url), '# Memory\n\nBe nice.\n')
 
-    const user = await api(harness.base, '/api/files/read?path=' + encodeURIComponent('dsh://memory/memories/USER.md'), { cookie })
-    assert.equal(user.status, 404)
-    const arbitrary = await api(harness.base, '/api/files/read?path=' + encodeURIComponent('/etc/passwd'), { cookie })
-    assert.equal(arbitrary.status, 404)
-
+    // The Memory screen saves MEMORY.md through the managed file route; it is
+    // the global AGENTS.md, written atomically and readable back through the
+    // same route.
     const write = await api(harness.base, '/api/files/upload', { cookie, method: 'POST', body: {
-      path: 'dsh://memory/memories/MEMORY.md', overwrite: true, data_url: 'data:text/plain;base64,aGk=',
+      path: 'dsh://memory/memories/MEMORY.md', overwrite: true, data_url: textDataUrl('# Memory\n\nBe kind.\n'),
     } })
-    assert.equal(write.status, 400)
-    assert.match(write.json.detail, /read-only/)
+    assert.equal(write.status, 200)
+    assert.deepEqual(write.json, { ok: true })
+    const saved = await api(harness.base, '/api/files/read?path=' + memoryPath, { cookie })
+    assert.equal(saved.status, 200)
+    assert.equal(memoryText(saved.json.data_url), '# Memory\n\nBe kind.\n')
+    assert.equal(readFileSync(join(harness.dir, 'AGENTS.md'), 'utf8'), '# Memory\n\nBe kind.\n')
+    assert.equal(statSync(join(harness.dir, 'AGENTS.md')).mode & 0o777, 0o600, 'the memory file is private')
+    assert.deepEqual(readdirSync(harness.dir).filter(name => name.startsWith('.AGENTS.md.')), [], 'no temp file is left behind')
+
+    // An emptied editor is a real save: it clears the file.
+    const clear = await api(harness.base, '/api/files/upload', { cookie, method: 'POST', body: {
+      path: 'dsh://memory/memories/MEMORY.md', overwrite: true, data_url: 'data:text/plain;base64,',
+    } })
+    assert.equal(clear.status, 200)
+    assert.deepEqual(clear.json, { ok: true })
+    const cleared = await api(harness.base, '/api/files/read?path=' + memoryPath, { cookie })
+    assert.equal(cleared.status, 200)
+    assert.equal(memoryText(cleared.json.data_url), '')
+
     const soulWrite = await api(harness.base, '/api/profiles/default/soul', { cookie, method: 'PUT', body: { content: 'x' } })
     assert.equal(soulWrite.status, 400)
 
     rmSync(join(harness.dir, 'AGENTS.md'))
     const missing = await api(harness.base, '/api/files/read?path=' + memoryPath, { cookie })
     assert.equal(missing.status, 404)
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('Memory saves stay on MEMORY.md and refuse bad bodies', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const upload = body => api(harness.base, '/api/files/upload', { cookie, method: 'POST', body })
+
+    // USER.md is hidden on this host and every other path is not a file the app
+    // may write, so only MEMORY.md's managed path reaches the disk.
+    const user = await upload({ path: 'dsh://memory/memories/USER.md', overwrite: true, data_url: textDataUrl('hi') })
+    assert.equal(user.status, 404)
+    const otherMemory = await upload({ path: 'dsh://memory/memories/OTHER.md', overwrite: true, data_url: textDataUrl('hi') })
+    assert.equal(otherMemory.status, 404)
+    const arbitrary = await upload({ path: '/tmp/not-memory.txt', overwrite: true, data_url: textDataUrl('hi') })
+    assert.equal(arbitrary.status, 404)
+
+    // A body with no usable path is malformed rather than a request for another
+    // file; a non-string path is malformed too.
+    const noPath = await upload({ overwrite: true, data_url: textDataUrl('hi') })
+    assert.equal(noPath.status, 400)
+    const badPath = await upload({ path: 7, overwrite: true, data_url: textDataUrl('hi') })
+    assert.equal(badPath.status, 400)
+
+    // Malformed bodies are refused, and the file they would have replaced stays.
+    writeFileSync(join(harness.dir, 'AGENTS.md'), 'keep me\n')
+    for (const dataUrl of [undefined, 'not a data url', 'data:text/plain,hi', 'data:text/markdown;base64,aGk=', 'data:text/plain;base64,!!!', 'data:text/plain;base64,//79']) {
+      const refused = await upload({ path: 'dsh://memory/memories/MEMORY.md', overwrite: true, data_url: dataUrl })
+      assert.equal(refused.status, 400, String(dataUrl))
+    }
+    // The cap is 2 MiB; one byte more is refused and does not touch the file.
+    const oversized = 'data:text/plain;base64,' + Buffer.alloc(2 * 1024 * 1024 + 1, 0x61).toString('base64')
+    const tooBig = await upload({ path: 'dsh://memory/memories/MEMORY.md', overwrite: true, data_url: oversized })
+    assert.equal(tooBig.status, 400)
+    assert.equal(readFileSync(join(harness.dir, 'AGENTS.md'), 'utf8'), 'keep me\n')
   } finally {
     await harness.gateway.close()
     await harness.facade.close()
