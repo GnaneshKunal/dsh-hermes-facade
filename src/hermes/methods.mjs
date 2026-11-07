@@ -195,8 +195,10 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
   /**
    * The live sessions for session.active_list.
    *
-   * Idle sessions are omitted: the client draws only Working (a turn runs) and
-   * Input/Needs you (an approval or question is unanswered).
+   * Idle sessions are omitted: the client draws Working for a turn that is
+   * starting or running, and Input/Needs you for an unanswered approval or
+   * question. A start that races its own active turn reads as streaming, and
+   * an open request outranks both.
    *
    * @returns {Array<{session_key: string, status: string}>} rows.
    */
@@ -206,12 +208,17 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
     for (const entry of requests.open.values()) {
       if (typeof entry.sessionId === 'string' && entry.sessionId.length > 0) asked.add(entry.sessionId)
     }
-    /** key -> status; waiting is the more urgent state of one conversation. */
+    /** The urgency order of one conversation's states: Input outranks Working. */
+    const priority = { starting: 0, streaming: 1, waiting: 2 }
+    /** key -> status. */
     const states = new Map()
-    for (const sessionId of new Set([...runner.active.keys(), ...asked])) {
-      const status = asked.has(sessionId) ? 'waiting' : 'streaming'
+    for (const sessionId of new Set([...runner.active.keys(), ...runner.starting, ...asked])) {
+      const status = asked.has(sessionId) ? 'waiting'
+        : runner.active.has(sessionId) ? 'streaming'
+          : 'starting'
       for (const key of activeKeysOf(sessionId)) {
-        if (status === 'waiting' || states.get(key) === undefined) states.set(key, status)
+        const previous = states.get(key)
+        if (previous === undefined || priority[status] > priority[previous]) states.set(key, status)
       }
     }
     return [...states].map(([session_key, status]) => ({ session_key, status }))

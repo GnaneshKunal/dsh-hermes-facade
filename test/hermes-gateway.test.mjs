@@ -2400,6 +2400,98 @@ test('session.active_list names a promoted draft by its chat id and stored sessi
   }
 })
 
+test('session.active_list shows starting between prompt.submit accepting and the live turn', async () => {
+  const harness = await boot()
+  harness.host.setTurnDelay(1200)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      // Widen the runner's start window deterministically: infoPayload reads the
+      // session list between the facade accepting the turn and active.set.
+      const listSessions = harness.host.listSessions.bind(harness.host)
+      harness.host.listSessions = async () => {
+        await new Promise(resolve => setTimeout(resolve, 250))
+        return listSessions()
+      }
+
+      const submitted = socket.call('prompt.submit', { session_id: 'sess-mock', text: 'start me' })
+      // A status read during the gap must say starting, not nothing.
+      let row
+      const deadline = Date.now() + 3000
+      while (row === undefined && Date.now() < deadline) {
+        const reply = await socket.call('session.active_list', {})
+        row = reply.result.sessions.find(item => item.session_key === 'sess-mock')
+        if (row === undefined) await new Promise(resolve => setTimeout(resolve, 5))
+      }
+      assert.deepEqual(row, { session_key: 'sess-mock', status: 'starting' })
+
+      const accepted = await submitted
+      assert.equal(accepted.result.status, 'streaming')
+      // The live turn replaces the start window; it must not read as starting.
+      const live = await socket.call('session.active_list', {})
+      assert.deepEqual(live.result.sessions, [{ session_key: 'sess-mock', status: 'streaming' }])
+
+      // Completion removes the row entirely.
+      await socket.waitFor(frame => frame.params?.type === 'message.complete')
+      const finished = await socket.call('session.active_list', {})
+      assert.deepEqual(finished.result, { sessions: [] })
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('a rejected submit leaves no starting row and never wedges the runner', async () => {
+  const harness = await boot()
+  harness.host.setTurnDelay(30)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+
+      // Refused before the runner is touched.
+      const blank = await socket.call('prompt.submit', { session_id: 'sess-mock', text: '   ' })
+      assert.equal(blank.error.code, -32602)
+      assert.equal(harness.gateway.runner.isStarting('sess-mock'), false)
+      assert.deepEqual((await socket.call('session.active_list', {})).result, { sessions: [] })
+
+      // Refused by the host after the runner entered the start window: the
+      // starting state is dropped on the failure path instead of leaking.
+      const call = harness.gateway.backend.call.bind(harness.gateway.backend)
+      harness.gateway.backend.call = async (method, path, options) => {
+        if (method === 'POST' && path === '/api/chat/start') {
+          return { status: 500, json: { detail: 'provider refused' } }
+        }
+        return call(method, path, options)
+      }
+      const failed = await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'refuse me' })
+      assert.equal(failed.error.code, -32000)
+      assert.match(String(failed.error.message), /provider refused/i)
+      assert.equal(harness.gateway.runner.isStarting('sess-mock'), false)
+      assert.equal(harness.gateway.runner.starting.size, 0)
+      assert.deepEqual((await socket.call('session.active_list', {})).result, { sessions: [] })
+      harness.gateway.backend.call = call
+
+      // A leaked marker would queue this submit behind a phantom start instead.
+      const accepted = await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'try again' })
+      assert.equal(accepted.result.status, 'streaming')
+      await socket.waitFor(frame => frame.params?.type === 'message.complete')
+      assert.deepEqual((await socket.call('session.active_list', {})).result, { sessions: [] })
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
 
 
 
