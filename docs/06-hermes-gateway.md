@@ -197,9 +197,9 @@ state directory, `$DSH_HOME`, `~/.ssh`, `~/.aws` and `~/.gnupg` are never
 served, even if a chat folder were opened inside one; a symlink resolves first,
 so it cannot point out. Credential material the host's own Files guard refuses
 (`.env`, `.env.*`, `.envrc`, `.git-credentials`, `auth.json`, `credentials`,
-`config.yaml`, and any `mcp-tokens`/`pairing` component) is refused wherever it
-sits, and the same names plus the host's build/VCS caches are hidden from a
-listing. A denied path answers `403 {"detail":"Path is outside the session
+`config.yaml`, the four secret-cache stores, and any `mcp-tokens`/`pairing`
+component) is refused wherever it sits, and the same names plus the host's
+build/VCS caches are hidden from a listing. A denied path answers `403 {"detail":"Path is outside the session
 workspace"}`; credential material answers `403 {"detail":"Access to sensitive
 files is not allowed"}`.
 

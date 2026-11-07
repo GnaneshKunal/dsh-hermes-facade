@@ -34,8 +34,9 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   same names plus the host's build/VCS caches are hidden from listings. A denied
   path answers `403 {"detail":"Path is outside the session workspace"}`; a
   credential answers `403 {"detail":"Access to sensitive files is not allowed"}`.
-  Git and Memory will reuse this fence. The Legacy `:9120` file routes are
-  unchanged.
+  The host's secret-cache basenames (`bws_cache.json`, `bws_cache.enc.json`,
+  `op_cache.json`, `photon-sidecar.json`) are included in that guard. Git and
+  Memory will reuse this fence. The Legacy `:9120` file routes are unchanged.
 
 ### Fixed
 
