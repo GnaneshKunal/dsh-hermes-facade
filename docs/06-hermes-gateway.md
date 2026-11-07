@@ -9,13 +9,14 @@ Hermes host contract, so the same iOS app can be pointed at DeepSeek Harness as
 a native Hermes server. It is additive: port 9120 keeps serving the webui
 contract unchanged.
 
-Status: **v1.13** (2026-11-07). Chat (with context/token telemetry and image/
+Status: **v1.14** (2026-11-07). Chat (with context/token telemetry and image/
 document attachments), sessions (including the write fence the session list needs
-and the list's search), approvals, clarifications, models, commands, export,
-Tasks/cron, Memory and Skills (both read-only), Usage/Insights (tokens, and cost
-from `dsh-cost-meter` where installed), the read-only in-chat Files browser and
-the in-chat Git menu (reads plus stage/unstage/revert, commit, push and branch
-switch behind an idle-turn guard).
+and the list's search), live session state (`session.active_list` and
+`sessions.changed`), approvals, clarifications, models, commands, export,
+Tasks/cron, Memory (read/write), Skills (read-only), Usage/Insights (tokens, and
+cost from `dsh-cost-meter` where installed), dictation over `speech/transcribe`,
+the read-only in-chat Files browser and the in-chat Git menu (reads plus
+stage/unstage/revert, commit, push and branch switch behind an idle-turn guard).
 The 2026-11-07 audit's wire defects (turn status, stop vocabulary, title read,
 list rows, multi-field PATCH, collection 404s, source matching, `limit=0`,
 capability-gated reverse requests, forwarded-client rate limiting, prompt races,
@@ -130,6 +131,7 @@ refusing it withdraws approvals silently.
 | `session.interrupt` | stops the running turn; answers `{status: interrupted|not_interrupted, interrupted}` |
 | `session.steer` | queues a mid-run message |
 | `session.delete` | refused: DSH has no session-delete primitive |
+| `session.active_list` | `{sessions:[{session_key, status}]}` for the live dots: a running turn is `streaming`, an open approval/clarify is `waiting`, idle sessions are omitted. A promoted draft is listed under both its draft id and its stored DSH session id |
 | `session.events.since` | `{latest_seq, epoch, truncated, events}`, contiguous per session |
 | `prompt.submit` | starts a turn and returns `{status: streaming|queued}`; a second submit while one runs is queued, not refused. Each image-upload path inside the facade uploads root (realpath-checked) becomes a native image part; the app's two-line vision reference stays in the user text so Hermex rebuilds the chip after reload |
 | `images` on `/api/chat/start` | only the loopback Hermes listener may name a `path` (or send any image): a cookie request carrying at least one valid image entry answers 400, so the Legacy listener remains attachment-free and no host file can be named from a browser session. An empty array, or one whose entries all fail the mediaType/data/path filter, is ignored and the text still starts |
@@ -146,7 +148,9 @@ refusing it withdraws approvals silently.
 Every event is `{"jsonrpc":"2.0","method":"event","params":{type, seq, session_id, payload}}`
 with **per-session**, contiguous `seq` starting at 1. Screens admit their own
 session only; sequence gaps make the client rebuild from a snapshot, so the ring
-(`src/hermes/events.mjs`) keeps 1000 events per session.
+(`src/hermes/events.mjs`) keeps 1000 events per session. The one exception is
+`sessions.changed`: it is process-wide (no `session_id`, `seq:0`) and live-only,
+because a screen that missed it re-reads `session.active_list` on reattach.
 
 | Type | Payload |
 |---|---|
@@ -158,6 +162,7 @@ session only; sequence gaps make the client rebuild from a snapshot, so the ring
 | `tool.start` | `{name, args, tool_id}` |
 | `tool.complete` | `{name, tool_id, result, is_error?}` |
 | `session.title` | `{session_id, title}` |
+| `sessions.changed` | `{}`; broadcast on turn start/end and request open/settle, no replay |
 | `session.usage` | `{usage: {input, output, context_used, context_max}}`; the live context ring, sent with the assistant message and again inside `message.complete`. No `estimated_cost`: chat telemetry has no pricing; the Usage screen reads cost from `dsh-cost-meter` instead |
 | `message.complete` | `{status: complete|error|interrupted, text, usage?}`; `usage` is `{input, output, context_used, context_max}` |
 | `request.cancel` | `{id, method, reason}`; withdraws an unanswered card |
@@ -194,7 +199,8 @@ with reason `resolved`, like the `approval.respond`/`request.answer` path.
 | `GET /api/cron/jobs/{id}/runs`, `GET /api/cron/delivery-targets` | run rows from the schedule's delivery history (`id` is the target session, `started_at`/`ended_at`, `is_active`), and `{targets:[local]}` |
 | `GET /api/config` | `{platform_hints:{}, profile, memory:{memory_enabled:true, user_profile_enabled:false, limits}}`; only the memory block is meaningful, and the app's platform note is advisory and not stored |
 | `GET /api/profiles/{name}/soul`, `PUT …` | `{content:"",exists:false}` for `default`; a PUT answers 400 (this host has no SOUL.md) |
-| `GET /api/files/read?path=…`, `POST /api/files/upload` | Memory's managed file routes. Only a path ending `/memories/MEMORY.md` is served, as `$DSH_HOME/AGENTS.md` in a `data_url` (a missing file is 404); `/memories/USER.md` and every other path are 404, so this is not a second file browser. Upload answers 400 (read-only). `profiles.list[].path` is the absolute `$DSH_HOME` path; only the suffix is ever opened |
+| `GET /api/files/read?path=…`, `POST /api/files/upload` | Memory's managed file routes. Only a path ending `/memories/MEMORY.md` is served, as `$DSH_HOME/AGENTS.md` in a `data_url` (a missing file is 404); `/memories/USER.md` and every other path are 404, so this is not a second file browser. Upload saves that same path through the same suffix check: base64 `text/plain`, empty content clears, 2 MiB cap, atomic 0600 temp + rename, `{ok:true}`. `profiles.list[].path` is the absolute `$DSH_HOME` path; only the suffix is ever opened |
+| `POST /api/audio/transcribe?profile=` | JSON `{data_url, mime_type}`. WAV (`audio/wav|x-wav|wave`) is forwarded; `audio/m4a|mp4|aac` (and any other audio type) is converted to canonical 16 kHz mono PCM16 WAV with `/usr/bin/afconvert` on darwin or `ffmpeg` when present, then sent to DSH `speech/transcribe`. Answers `{ok:true, transcript, provider?}`; an empty transcript is a real silence. Malformed/too-large audio, a missing converter, conversion failure, provider refusal or an unmounted speech Remote answer 400 with a detail (no transcript); an unknown profile is 404; an unexpected failure is 500 `Transcription failed`. Bounds: 25 MiB recording / 36 MiB body |
 | `GET /api/analytics/usage`, `GET /api/analytics/models` | `{totals:{total_input,total_output,total_cache_read,total_sessions, total_estimated_cost?}, daily:[{day,input_tokens,output_tokens,cache_read_tokens,sessions,estimated_cost?}], period_days}` and `{models:[{model,provider,input_tokens,output_tokens,cache_read_tokens,sessions,estimated_cost?}], period_days}`. Tokens come from cached session projections; DSH has no per-day ledger (a session's cumulative tokens land on its last prompt day, falling back to the row's `updatedAt`), and archived/subagent sessions are included (a model-less session counts in totals/daily but adds no model row). When `dsh-cost-meter` is installed, `costMeter.getBillingStatistics` supplies total/daily/model cost over its retained ledger in USD (the plugin's display currency does not change it; the query uses the host-local day the ledger writes; empty-date zero entries are dropped and cost-only rows carry zero tokens); without it the cost fields are absent. `insights.get` returns `{messages:0}` because DSH exposes no message count |
 | `GET /api/profiles/active`, `GET /api/profiles` | the single Profile |
 | `GET /api/skills` | a bare array of DSH's catalogue for the newest session (`name`, `description`, `enabled: true`); no sessions means `[]` |
@@ -241,21 +247,26 @@ answers `403`, and the all-add fallback runs only for an untracked file.
   (once/session/always/deny), the context ring (context used/max and input/output
   tokens; no cost, because DSH has no pricing), clarifications, session list,
   open, rename, pin,
-  archive (the write-fence route above is what lets those three work), branch,
-  export, model picker, slash commands, the session list's search, the in-chat
+  archive (the write-fence route above is what lets those three work), live
+  Working/Needs-you state, branch, export, model picker, slash commands, the
+  session list's search, the in-chat
   Files browser (`session.info.terminal_backend:"local"` plus the fenced
   `/api/fs/*` routes), the in-chat Git menu (status, changes, diffs, branches
   and the writes above)
   and the Tasks screen (list/create/edit/pause/resume/trigger/delete and run
   history; local delivery only), Memory (the global `$DSH_HOME/AGENTS.md` as
-  MEMORY.md, read-only), Skills (the DSH catalogue and each skill's SKILL.md;
-  the toggle is refused) and Usage/Insights (tokens and sessions, plus cost from
-  `dsh-cost-meter` where installed; the Messages total is approximate 0).
+  MEMORY.md, read and atomically saved), Skills (the DSH catalogue and each
+  skill's SKILL.md; the toggle is refused), dictation over `speech/transcribe`
+  (m4a converted to canonical WAV) and Usage/Insights (tokens and sessions, plus
+  cost from `dsh-cost-meter` where installed; the Messages total is approximate 0).
 - **Partial:** the session rows carry no `preview`; Fast and yolo are refused, so their controls
-  revert instead of showing a false state. Git writes are wired, but push needs
-  an upstream/`origin` and non-interactive credentials, commit hooks have a 60 s
-  timeout, and the idle guard refuses while **any** turn runs, not only a turn in
-  that repository.
+  revert instead of showing a false state. Git writes are wired, but push needs an
+  upstream/`origin` and non-interactive credentials, commit hooks have a 60 s
+  timeout, and the idle guard refuses while a turn started on this listener runs
+  (it cannot see GUI/scheduler turns), not only a turn in that repository. Dictation needs a WAV
+  converter (`afconvert` on macOS, `ffmpeg` elsewhere) and the stock speech
+  Remote's 4 MiB/120 s default can refuse a recording the route's own 25 MiB
+  bound allows; spoken replies still have no primitive.
 - **Empty/absent:** Kanban, Bots, Bot
   screen. Those screens exist on a Hermes host; here they have no backend, and
   unimplemented methods make their controls hide rather than error (the sidebar
@@ -322,9 +333,10 @@ The full surface state and the plan for the missing screens are
    `/api/profile/switch`, so a move cannot even read its source yet.
 2. **No kanban/bots.** Each is a separate backend (and DSH has no kanban store
    at all). Skills is read-only: the catalogue and SKILL.md come from DSH, the
-   disable toggle is refused, and the list is the newest session's composition. Memory is read-only and global: it shows `$DSH_HOME/AGENTS.md`
-   as MEMORY.md, has no USER.md or soul, refuses saves, and does not show the
-   per-workspace AGENTS.md chain. Files and Git are read-only; Tasks writes go
+   disable toggle is refused, and the list is the newest session's composition. Memory is read/write and global: it shows and saves `$DSH_HOME/AGENTS.md`
+   as MEMORY.md, has no USER.md or soul, and does not show the
+   per-workspace AGENTS.md chain. Files is read-only; Git supports the writes in
+   its row above; Tasks writes go
    to DSH schedules, but delivery is local only, model/provider/skills are
    refused, and a run is a session/delivery record rather than a host output file.
 3. **One Profile.** Everything is filed under `default`; DSH has agent presets,

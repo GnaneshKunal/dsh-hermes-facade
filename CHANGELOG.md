@@ -7,6 +7,35 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **Live Working / Needs-you on the Hermes listener.** `session.active_list`
+  answers `{sessions:[{session_key,status}]}`: a running turn is `streaming`
+  (Working), an open approval/clarify is `waiting` (Input / Needs you), and
+  idle sessions are omitted. `sessions.changed` is broadcast on turn and
+  request boundaries so the list refreshes without a poll; it carries no
+  session id and is not replayed, because a reattaching screen re-reads the
+  list. A promoted draft is listed under both its draft id and its stored DSH
+  session id so the row and the open chat resolve the same state.
+- **Memory saves on the Hermes listener.** `POST /api/files/upload` now writes
+  the managed `.../memories/MEMORY.md` path through to
+  `$DSH_HOME/AGENTS.md`: base64 `text/plain`, empty content clears, 2 MiB cap,
+  valid UTF-8, and an atomic 0600 temp + rename. USER.md and every other path
+  keep their 404; the requested path is never opened, so no arbitrary write is
+  exposed. The screen's read-back resolves the new text.
+- **Host dictation on the Hermes listener.** `POST /api/audio/transcribe`
+  now uses DSH's real `speech/transcribe` instead of 404ing. Hermex records
+  `audio/m4a`, so compressed audio is converted to canonical 16 kHz mono PCM16
+  WAV with `/usr/bin/afconvert` on macOS or `ffmpeg` when installed, then sent
+  to the Remote; WAV passes through. A host with no converter answers 400 with
+  a detail (never a fabricated transcript); provider refusals are 400, an
+  unknown profile 404, an unexpected failure 500. Bounds are 25 MiB recording
+  / 36 MiB body; the stock speech Remote's 4 MiB/120 s default still applies.
+- **Git polish.** Push now derives its target from
+  `branch.<name>.remote`/`merge`, so a remote name containing `/`
+  (`team/origin`) is no longer misread from `@{u}`; the explicit
+  `branch:upstream` refspec still ignores `push.default=matching`. Status and
+  review reads pass `--untracked-files=all`, so an untracked directory lists
+  its files (still capped at 500 and hidden-filtered) and the one-file stage
+  guard can stage one.
 - **The in-chat Files browser on the Hermes listener (read-only).** Hermex
   offers a workspace browser for a chat whose `session.info` names a local
   terminal backend, so `session.info` (drafts, resume snapshots and live
@@ -36,11 +65,10 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   a symlink is refused, and a deny-root (the state dir, `$DSH_HOME`, `~/.ssh`, …)
   or `.ssh`/`.aws`/`.gnupg`/`.dsh` component is hidden and refused. The all-add
   fallback runs only for a genuinely untracked file, so an unchanged tracked file
-  is never served whole; a deleted (uncommitted) row still diffs. Writes
-  (stage/unstage/revert/commit/push, branch switch) answer `400 Git writes are
-  not supported…`, and `ship-info` answers no pull request, so the panel stays
-  honest about being read-only. Tests use a temporary repository and cover the
-  ref-injection, symlink-escape and deny-tree attacks plus a deleted file.
+  is never served whole; a deleted (uncommitted) row still diffs. This change
+  kept the panel read-only; the Git-writes entry below supersedes that sentence.
+  `ship-info` still answers no pull request. Tests use a temporary repository and
+  cover the ref-injection, symlink-escape and deny-tree attacks plus a deleted file.
 - **Session search on both listeners.** `GET /api/sessions/search` now backs the
   session list's search field on `:9120` and `:9121`. One facade reply carries
   the Hermes host's `results` (session row, `match_type`, `lineage_root`) and the
@@ -86,13 +114,13 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   or per-run cost. `sources=cron` on the agenda stays empty because DSH stores
   no session provenance. Tests cover the mapping and the full lifecycle through
   the gateway and the facade.
-- **Memory (read-only).** The Memory screen now loads on the Hermes listener: `profiles.list`
+- **Memory (now read/write).** The Memory screen now loads on the Hermes listener: `profiles.list`
   carries the real, absolute `$DSH_HOME` path, `GET /api/config` turns on only the memory
   section, `GET /api/profiles/default/soul` is an empty soul, and
   `GET /api/files/read` serves `.../memories/MEMORY.md` as the global
   `$DSH_HOME/AGENTS.md` (a missing file answers 404, so a fresh host is an honest
   empty state). There is no USER.md (the section is off; DSH has no user-profile
-  file) and no soul, and both writes answer 400 with the reason. `/api/files/read`
+  file) and no soul; saves use `POST /api/files/upload` (see the newer Memory entry above). `/api/files/read`
   serves only that allowlisted suffix — every other path is 404 — so Memory is not
   a second file browser and does not bypass the Files fence for arbitrary paths.
   Per-workspace `AGENTS.md` files are not part of this global screen. Tests cover
