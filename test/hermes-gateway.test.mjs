@@ -1269,6 +1269,11 @@ test('the in-chat Files surface lists, previews and downloads inside a chat fold
       assert.equal(missing.status, 404)
       assert.equal(missing.json.detail, 'Path not found')
 
+      // The client maps this exact detail to its "this is a folder" error.
+      const directory = await api(harness.base, '/api/fs/read-text?path=' + enc(join(folder, 'sub')), { cookie })
+      assert.equal(directory.status, 400)
+      assert.equal(directory.json.detail, 'Path points to a directory')
+
       const raw = await fetch(harness.base + '/api/fs/download?path=' + enc(join(folder, 'demo.md')), { headers: { cookie } })
       assert.equal(raw.status, 200)
       assert.match(raw.headers.get('content-type'), /text\/plain/)
