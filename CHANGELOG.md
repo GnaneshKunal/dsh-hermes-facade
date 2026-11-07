@@ -107,6 +107,16 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   the SKILL.md folder and appear only when that folder is inside a chat's fenced
   roots. The Skills route is also served on the Legacy listener. Tests cover the
   list, the content, the 404 and the refused toggle.
+- **Usage/Insights (token-only).** The Usage screen now reads
+  `/api/analytics/usage` and `/api/analytics/models` from DSH's cached session
+  projections: sessions, input/output/cache-read tokens, per-model rows and a
+  UTC daily chart, for the requested 1-365 day window. DSH has no per-day
+  ledger, so a session's cumulative tokens land on its last active day and its
+  last-used model names its row. There is **no cost**: DSH has no pricing, so
+  the cost cells read 0 rather than a fabricated estimate. `insights.get`
+  answers `{messages:0}` because DSH exposes no message count; the screen
+  already marks its Messages total approximate. No sessions in the window is a
+  real empty state. Tests cover the host aggregation, both routes and the RPC.
 - **A shared path fence for file surfaces** (`src/hermes/fence.mjs`). Hermex
   sends absolute host paths and its own check is explicitly not a security
   boundary, so a path is served only when its realpath is inside a chat folder

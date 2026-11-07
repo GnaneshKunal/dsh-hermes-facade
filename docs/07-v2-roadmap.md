@@ -8,7 +8,7 @@ The goal has two parts, in this order:
 
 1. **Parity.** Anything the **Legacy** server (`:9120`, hermes-webui) already does for the phone must also work on
    the **Hermes host** (`:9121`). That is the "similar to how V1 was" bar.
-2. **Full V2.** Then add the surfaces only a Hermes host unlocks (Usage, Git writes, Bots,
+2. **Full V2.** Then add the surfaces only a Hermes host unlocks (Git writes, Bots,
 session search, attachments),
    but only where DSH has a real primitive to back them. A screen that half-renders is worse than one that is
    cleanly hidden.
@@ -36,7 +36,7 @@ The gaps split cleanly:
 |---|---|---|
 | Chat telemetry | `usage` on turn events, `terminal_backend`, canonical turn status | the context ring and token counts work (no cost); Files/Git now appear |
 | Disabled feature that exists on the other transport | YOLO honesty | V2 is worse than V1 for that one feature |
-| Screens with no backend yet | Usage, Git writes, Bots, attachments | the screen errors (the sidebar toggles are local, not probes) |
+| Screens with no backend yet | Git writes, Bots, attachments | the screen errors (the sidebar toggles are local, not probes) |
 | Silent misbehaviour | edit/regenerate appends, fast/yolo echo | the phone believes something happened that did not |
 
 ---
@@ -76,7 +76,7 @@ Effort: **S** = one route/method over an existing facade primitive; **M** = new 
 | 7 | Git read | see what changed, diffs | `/api/fs/git-root`, `/api/git/status`, `review/list`, `review/diff`, `file-diff`, `rev-parse`, `branches` | exec `git` in the session folder | M | done |
 | 8 | Git write | stage / commit / push | `review/{stage,unstage,revert,commit,push}`, `branch/switch` | exec `git`, with the idle guard the client already expects | M | later |
 | 9 | Skills | browse skills and their files | `/api/skills`, `/api/skills/content` | `skills/list` (read-only) + the catalog SKILL.md path | S/M | done (read-only) |
-| 10 | Usage / Insights | token and session usage | `/api/analytics/{usage,models}`, `insights.get` | a facade ledger over `assistant/message.usage`; **no cost data** | M/L | later |
+| 10 | Usage / Insights | token and session usage | `/api/analytics/{usage,models}`, `insights.get` | a facade ledger over the session projections; **no cost data** | M/L | done (token-only) |
 | 11 | Attachments | send a photo or a file | `POST /api/chat/image-upload`, `file.attach` | `fileUploads/upload` returns a receipt, not a path — needs a staging convention | M | later |
 | 12 | Goal / loop / heartbeat | the goal menu | `session.control.read`, `session.control` | `goal` projection only; no loop/heartbeat | M/L | later |
 | 13 | `/btw`, `/background` | side questions and background runs | `prompt.btw`, `prompt.background` | no DSH primitive | L | later |
@@ -182,7 +182,7 @@ the host vocabulary: `session.usage` mid-turn and `usage` on `message.complete`,
 context_used, context_max}`. Legacy's `done.usage` is the context-window snapshot the app already decodes
 (`input_tokens`, `output_tokens`, `context_length`, `last_prompt_tokens`), so both transports fill the same ring.
 There is **no cost**: DSH reports tokens, not prices, and Hermex's chat snapshot ignores cost even when present —
-Usage/Insights remains a later item and stays token-only. `partial`/`persisted_turn` remain absent because the
+Usage/Insights now reads that same projection data per session; it remains token-only. `partial`/`persisted_turn` remain absent because the
 saved row ids are not in the turn event. The facade's `/api/session` detail and JSON export carry the same snapshot
 (`context_length`, `last_prompt_tokens`, `input_tokens`, `output_tokens`), so the Legacy ring survives the app's
 post-turn transcript refresh and a later chat open. Tests cover the Legacy SSE usage frame, the done payload, the
@@ -221,42 +221,47 @@ are the client's `/api/fs/*` reads from the SKILL.md folder; they appear only wh
 fenced roots, so a skill under `$DSH_HOME` opens without them. Tests cover the list, the content, the 404 and the
 refused toggle.
 
-Verify: `npm run check && npm test` (198 tests), then rename a chat from the phone's list, pin it, archive it,
+**Usage/Insights (token-only).** `GET /api/analytics/usage` and `/models` aggregate DSH's cached session
+projections: sessions, input/output/cache-read tokens, per-model rows and a UTC daily chart for the requested
+window (1-365 days). DSH has no per-day ledger, so a session's cumulative tokens are attributed to its last active
+day; its last-used model names its row. There is **no cost**: DSH has no pricing, so the cost cells read 0 rather
+than a fabricated estimate. `insights.get` answers `{messages:0}` because DSH exposes no message count; the screen
+already marks its Messages total approximate. No sessions in the window is a real empty state. Tests cover the host
+aggregation, both routes and the RPC.
+
+Verify: `npm run check && npm test` (200 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---
 
 ## 5. Next picks, with acceptance criteria
 
-Files, Git read, session search, chat telemetry, Tasks, Memory and Skills are done (see §4). The next three, in order:
+Files, Git read, session search, chat telemetry, Tasks, Memory, Skills and Usage are done (see §4). The next three, in order:
 
-### Pick 1 — Usage / Insights
-
-Calls: `GET /api/analytics/{usage,models}?days=&profile=` and `insights.get`. Backing: a facade ledger over the
-`tokenUsage` projections and the sessions list (sessions, tokens, cache reads, daily chart). **No cost**: DSH has no
-pricing, so `estimated_cost`/`actual_cost` stay absent rather than a fabricated `$0.00`; a per-model price table is
-a separate decision if real numbers are wanted. Done when: the Usage screen shows totals, per-model rows and a
-daily chart in tokens, an empty window is a real empty state, and cost cells are omitted rather than zeroed.
-
-### Pick 2 — Attachments
+### Pick 1 — Attachments
 
 Calls: the composer's image/document upload and the `MEDIA` references the transcript renders. Backing: DSH's own
 attachment parts plus a staging convention under the session workspace. Done when: an image the phone attaches is
 visible to the agent and in the phone transcript, a file the agent references opens from the chat, and an
 unsupported or too-large upload is refused with a reason.
 
-### Pick 3 — Side tasks (`/btw`, `/background`)
+### Pick 2 — Side tasks (`/btw`, `/background`)
 
 Calls: `prompt.btw`/`prompt.background` and the side-chain frames. Backing: DSH's btw sidechains/background jobs
 where they are exposed; otherwise the socket keeps answering `-32601` honestly. Done when: a side prompt runs
 without disturbing the main turn and its result has its own panel.
 
+### Pick 3 — Git writes
+
+Calls: `/api/git/review/{stage,commit,push}` and branch switch. Backing: the read-only Git routes plus an idle-turn
+guard; every write is staged inside the chat's repo and refused while a turn runs. Done when: stage/commit/push
+round-trip from the phone, a running turn refuses the write with a reason, and the diff refreshes after.
+
 ---
 
 ## 6. Sequencing and cross-cutting work
 
-Order after this change: **Usage → attachments → goal/btw/background → Git write →
-Bots**.
+Order after this change: **attachments → goal/btw/background → Git write → Bots**.
 
 Cross-cutting items that should ride the first task that touches them. The capability gate, the honest refusals,
 the rate-limit key and the prompt-concurrency guards landed in the bugfix pass; these remain:

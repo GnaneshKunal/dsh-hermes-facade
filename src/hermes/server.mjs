@@ -1039,6 +1039,12 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
       res.end(reply.text)
       return
     }
+    if (path.startsWith('/api/analytics/')) {
+      const query = Object.fromEntries(url.searchParams)
+      const reply = await backend.call('GET', path, { query })
+      sendJson(res, reply.status, reply.json ?? { detail: 'Analytics unavailable' })
+      return
+    }
     if (path === '/api/cron' || path.startsWith('/api/cron/')) {
       // Tasks/cron is one mapping, done by the facade (which also serves the
       // Legacy listener's future callers), so the gateway only forwards it.

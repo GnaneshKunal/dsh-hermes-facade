@@ -197,8 +197,8 @@ test('websocket handshake, capabilities and session list', async () => {
       const list = await socket.call('session.list', { profile: 'default' })
       assert.equal(list.result.sessions[0].id, 'sess-mock')
 
-      const missing = await socket.call('insights.get', {})
-      assert.equal(missing.error.code, -32601)
+      const insights = await socket.call('insights.get', {})
+      assert.deepEqual(insights.result, { messages: 0 })
     } finally {
       socket.ws.close()
     }
@@ -1873,6 +1873,34 @@ test('Memory shows the global AGENTS.md read-only', async () => {
     rmSync(join(harness.dir, 'AGENTS.md'))
     const missing = await api(harness.base, '/api/files/read?path=' + memoryPath, { cookie })
     assert.equal(missing.status, 404)
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('the Usage screen reads token analytics and the message count', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const usage = await api(harness.base, '/api/analytics/usage?days=30&profile=default', { cookie })
+    assert.equal(usage.status, 200)
+    assert.deepEqual(usage.json.totals, { total_input: 1200, total_output: 300, total_cache_read: 100, total_sessions: 2 })
+    assert.equal(usage.json.period_days, 30)
+    assert.equal(usage.json.daily[0].day, '2026-11-07')
+
+    const models = await api(harness.base, '/api/analytics/models?days=30&profile=default', { cookie })
+    assert.equal(models.status, 200)
+    assert.equal(models.json.models[0].model, 'deepseek-v4-pro')
+
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const counts = await socket.call('insights.get', { days: 30, profile: 'default' })
+      assert.deepEqual(counts.result, { messages: 0 })
+    } finally {
+      socket.ws.close()
+    }
   } finally {
     await harness.gateway.close()
     await harness.facade.close()

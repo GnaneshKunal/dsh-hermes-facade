@@ -1764,6 +1764,16 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         return
       }
 
+      // Usage/Insights: token and session aggregates from DSH's cached session
+      // projections. DSH has no per-day ledger or price table, so a session's
+      // cumulative tokens land on its last active day and cost stays absent.
+      if (method === 'GET' && (path === '/api/analytics/usage' || path === '/api/analytics/models')) {
+        const parsed = Number.parseInt(url.searchParams.get('days') ?? '', 10)
+        const days = Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 365) : 30
+        const report = await host.usageReport(days)
+        sendJson(res, 200, path.endsWith('/models') ? report.models : report.usage)
+        return
+      }
       // Skills: a read-only catalogue and SKILL.md from DSH's per-session
       // catalog. DSH has no disable primitive, so the toggle is refused.
       if (method === 'GET' && path === '/api/skills') {

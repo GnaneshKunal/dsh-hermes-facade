@@ -66,10 +66,10 @@ function build(existingWorkspaces = {}, options = {}) {
   }
   const rows = options.noSessions === true ? [] : [{
     sessionId: 's1',
-    updatedAt: 1700000000000,
+    updatedAt: options.updatedAt ?? 1700000000000,
     running: false,
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-    projections: { values: { modelSelection: selection } },
+    projections: { values: { modelSelection: selection, tokenUsage: { uncachedInputTokens: 100, outputTokens: 50, cacheReadTokens: 10, cacheWriteTokens: 0 } } },
   }, ...(options.extraRows ?? [])]
   const gateway = {
     async invoke(request) {
@@ -764,6 +764,21 @@ test('skills come from the newest session catalog and read only its SKILL.md', a
   assert.equal(await host.readSkill('missing'), null)
   const call = calls.find(entry => entry.namespace === 'skills' && entry.method === 'list')
   assert.deepEqual(call.args, { request: { sessionId: 's1' } })
+})
+
+test('usage reports tokens by day and model from session projections', async () => {
+  const { host } = build({}, { updatedAt: Date.now() })
+  const report = await host.usageReport(30)
+  assert.deepEqual(report.usage.totals, {
+    total_input: 100, total_output: 50, total_cache_read: 10, total_sessions: 1,
+  })
+  assert.equal(report.usage.period_days, 30)
+  assert.equal(report.usage.daily.length, 1)
+  assert.equal(report.usage.daily[0].sessions, 1)
+  assert.equal(report.usage.daily[0].input_tokens, 100)
+  assert.equal(report.models.models[0].model, 'deepseek-v4-pro')
+  assert.equal(report.models.models[0].provider, 'deepseek-official')
+  assert.equal(report.models.models[0].sessions, 1)
 })
 
 test('skills are empty when the host has no sessions', async () => {

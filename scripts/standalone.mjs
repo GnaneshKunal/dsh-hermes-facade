@@ -150,6 +150,19 @@ export function createMockHost({ cwd = process.cwd() } = {}) {
       return { input_tokens: 1234, output_tokens: 56, context_length: 200000, last_prompt_tokens: 4321 }
     },
     setSessionUsage(values) { sessionUsageOverride = values },
+    async usageReport(days = 30) {
+      return {
+        usage: {
+          totals: { total_input: 1200, total_output: 300, total_cache_read: 100, total_sessions: 2 },
+          daily: [{ day: '2026-11-07', input_tokens: 1200, output_tokens: 300, cache_read_tokens: 100, sessions: 2 }],
+          period_days: days,
+        },
+        models: {
+          models: [{ model: 'deepseek-v4-pro', provider: 'deepseek-official', input_tokens: 1200, output_tokens: 300, cache_read_tokens: 100, sessions: 2 }],
+          period_days: days,
+        },
+      }
+    },
     async listSkills() {
       return [{ name: 'demo-skill', description: 'A demo skill', path: '/virtual/demo-skill/SKILL.md' }]
     },
