@@ -121,8 +121,8 @@ over loopback with an internal token, so sessions, streaming, approvals,
 clarifications and export keep one implementation. It covers chat, sessions,
 approvals, clarifications, models, commands, export and the session write
 fence the list's rename/pin/archive actions read first, the read-only in-chat Files browser and the read-only Git
-menu; Tasks, Skills, Memory, Usage, Bots and session import are not implemented and answer `-32601` (the app
-hides those controls). Details, endpoint table and gaps:
+menu and Tasks/cron; Skills, Memory, Usage, Bots and session import are not implemented and answer `-32601` (the
+app hides those controls). Details, endpoint table and gaps:
 [docs/06-hermes-gateway.md](docs/06-hermes-gateway.md).
 
 ```yaml
@@ -162,9 +162,10 @@ and add it in Hermex as its own server.
 | session export | full (bounded): JSON, HTML or markdown download with the filename in `Content-Disposition` |
 | session delete / duplicate / compress / clear / undo / retry / truncate / move / update | not implemented (refusals) |
 | projects (one per DSH workspace) | partial: read-only list |
-| tasks/cron, skills, memory, insights, kanban | stubbed: screens open empty or unavailable |
+| Tasks/cron on the Hermes listener (`/api/cron/*`) | full: list/create/edit/pause/resume/trigger/delete, run history; local delivery only, no cost |
+| skills, memory, insights, kanban | stubbed: screens open empty or unavailable |
 | bots, push, Move to Hermes | different transport (Hermes gateway); not served |
-| Hermes host contract (second listener, :9121) | v1.6: chat/streaming with context/token telemetry, sessions incl. the write fence the list actions need and the list's search, approvals, clarifications, models, commands, export, the read-only in-chat Files browser (fenced to the chat folder) and the read-only Git menu; Git writes, tasks/skills/memory/usage/kanban/bots and import answer -32601 or 400 (the per-surface state and plan are docs/05 §2 and docs/07) |
+| Hermes host contract (second listener, :9121) | v1.7: chat/streaming with context/token telemetry, sessions incl. the write fence the list actions need and the list's search, approvals, clarifications, models, commands, export, Tasks/cron (local delivery only, no cost), the read-only in-chat Files browser (fenced to the chat folder) and the read-only Git menu; Git writes, tasks/skills/memory/usage/kanban/bots and import answer -32601 or 400 (the per-surface state and plan are docs/05 §2 and docs/07) |
 
 The verified matrix — every surface, the endpoint behind it, what the phone shows, and whether it is
 bridgeable here — is [docs/05-compatibility-matrix.md](docs/05-compatibility-matrix.md). docs/00 is
@@ -198,6 +199,9 @@ GET /api/fs/download (read-only, fenced to the chat folder),
 GET /api/fs/git-root, GET /api/git/status, GET /api/git/branches,
 GET /api/git/review/list, GET /api/git/review/diff, GET /api/git/file-diff,
 GET /api/git/review/rev-parse (read-only; the Git panel's routes),
+GET /api/cron/jobs, POST /api/cron/jobs, GET/PUT/DELETE /api/cron/jobs/{id},
+POST /api/cron/jobs/{id}/{pause,resume,trigger}, GET /api/cron/jobs/{id}/runs,
+GET /api/cron/delivery-targets (Tasks; local delivery only),
 WS /api/ws (JSON-RPC with server-to-client approval/clarify requests).
 
 ## Diagnostics

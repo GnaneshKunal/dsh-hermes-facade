@@ -1752,6 +1752,76 @@ test('a turn without a usage measurement carries no usage field', async () => {
     await harness.facade.close()
   }
 })
+test('the Tasks screen lists, edits, runs and deletes schedules', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const jobs = '/api/cron/jobs'
+    const empty = await api(harness.base, jobs, { cookie })
+    assert.equal(empty.status, 200)
+    assert.deepEqual(empty.json, [])
+
+    const created = await api(harness.base, jobs, { cookie, method: 'POST', body: {
+      prompt: 'write the daily report', schedule: 'every 5m', name: 'Report',
+      deliver: 'local', skills: [], model: '', provider: '',
+    } })
+    assert.equal(created.status, 200)
+    const id = created.json.job_id
+    assert.match(id, /^sched-/)
+    assert.equal(created.json.name, 'Report')
+    assert.equal(created.json.schedule_display, 'Every 5m')
+    assert.equal(created.json.enabled, true)
+    assert.equal(typeof created.json.next_run_at, 'string')
+
+    const listed = await api(harness.base, jobs, { cookie })
+    assert.equal(listed.json.length, 1)
+
+    const updated = await api(harness.base, '/api/cron/jobs/' + id, { cookie, method: 'PUT', body: {
+      updates: { prompt: 'new prompt', name: 'Renamed' },
+    } })
+    assert.equal(updated.status, 200)
+    assert.equal(updated.json.prompt, 'new prompt')
+    assert.equal(updated.json.name, 'Renamed')
+
+    const paused = await api(harness.base, '/api/cron/jobs/' + id + '/pause', { cookie, method: 'POST', body: {} })
+    assert.equal(paused.json.enabled, false)
+    assert.equal(paused.json.state, 'paused')
+    const resumed = await api(harness.base, '/api/cron/jobs/' + id + '/resume', { cookie, method: 'POST', body: {} })
+    assert.equal(resumed.json.enabled, true)
+
+    const triggered = await api(harness.base, '/api/cron/jobs/' + id + '/trigger', { cookie, method: 'POST', body: {} })
+    assert.equal(triggered.status, 200)
+    assert.equal(typeof triggered.json.last_run_at, 'string')
+
+    const runs = await api(harness.base, '/api/cron/jobs/' + id + '/runs?limit=100', { cookie })
+    assert.equal(runs.status, 200)
+    assert.equal(runs.json.runs.length, 1)
+    assert.equal(runs.json.runs[0].id, 'sess-mock')
+
+    const targets = await api(harness.base, '/api/cron/delivery-targets', { cookie })
+    assert.equal(targets.status, 200)
+    assert.equal(targets.json.targets[0].id, 'local')
+
+    const badSchedule = await api(harness.base, jobs, { cookie, method: 'POST', body: { prompt: 'x', schedule: 'whenever' } })
+    assert.equal(badSchedule.status, 400)
+    assert.match(badSchedule.json.detail, /schedule must be/)
+    const badModel = await api(harness.base, jobs, { cookie, method: 'POST', body: { prompt: 'x', schedule: 'every 5m', model: 'deepseek-v4-pro' } })
+    assert.equal(badModel.status, 400)
+    assert.match(badModel.json.detail, /Model and provider/)
+
+    const deleted = await api(harness.base, '/api/cron/jobs/' + id, { cookie, method: 'DELETE' })
+    assert.equal(deleted.status, 200)
+    assert.equal(deleted.json.ok, true)
+    const after = await api(harness.base, jobs, { cookie })
+    assert.deepEqual(after.json, [])
+
+    const missing = await api(harness.base, '/api/cron/jobs/nope/trigger', { cookie, method: 'POST', body: {} })
+    assert.equal(missing.status, 404)
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
 
 
 

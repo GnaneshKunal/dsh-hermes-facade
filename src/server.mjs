@@ -13,6 +13,7 @@ import { createServer } from 'node:http'
 import { networkInterfaces } from 'node:os'
 import { join as join_dir } from 'node:path'
 import { COOKIE_NAME, createAuth, safeEqual } from './auth.mjs'
+import { CronRefusal, deliveryTargetsOf, jobOf, parseTiming, runsOf } from './cron.mjs'
 import { exportFilename, exportFormat, renderExport } from './exporter.mjs'
 import { clip, createRequestLog } from './log.mjs'
 import { detailOf, epochSeconds, normaliseEvent, pageMessages, summaryOf, timelineOf } from './map.mjs'
@@ -975,6 +976,97 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         return
       }
 
+      if (path === '/api/cron/jobs' || path === '/api/cron/delivery-targets' || path.startsWith('/api/cron/jobs/')) {
+        const sendEditResult = result => {
+          if (result?.code === 'schedule_not_found') throw new CronRefusal(404, 'Task not found')
+          if (result?.code === 'schedule_conflict') throw new CronRefusal(409, 'This Task changed since it was read.')
+          sendJson(res, 200, jobOf(result))
+        }
+        const rejectUnsupported = fields => {
+          const deliver = typeof fields.deliver === 'string' ? fields.deliver.trim() : ''
+          if (deliver.length > 0 && deliver !== 'local') {
+            throw new CronRefusal(400, 'Delivery is local only: this host delivers into a DSH session.')
+          }
+          if (Array.isArray(fields.skills) && fields.skills.length > 0) {
+            throw new CronRefusal(400, 'Skills are not configurable on a DSH schedule.')
+          }
+          for (const key of ['model', 'provider']) {
+            if (typeof fields[key] === 'string' && fields[key].trim().length > 0) {
+              throw new CronRefusal(400, 'Model and provider are not configurable on a DSH schedule.')
+            }
+          }
+        }
+        try {
+          if (method === 'GET' && path === '/api/cron/jobs') {
+            sendJson(res, 200, (await host.listSchedules()).map(jobOf))
+            return
+          }
+          if (method === 'GET' && path === '/api/cron/delivery-targets') {
+            sendJson(res, 200, deliveryTargetsOf())
+            return
+          }
+          if (method === 'POST' && path === '/api/cron/jobs') {
+            const body = await readJson(req)
+            const prompt = String(body.prompt ?? '').trim()
+            if (prompt.length === 0) throw new CronRefusal(400, 'prompt is required')
+            const timing = parseTiming(body.schedule)
+            rejectUnsupported(body)
+            const title = String(body.name ?? '').trim() || prompt.slice(0, 60)
+            const entry = await host.createSchedule({ title, prompt, timing, target: { kind: 'new' } })
+            sendJson(res, 200, jobOf(entry))
+            return
+          }
+          const match = /^\/api\/cron\/jobs\/([^/]+)(?:\/(runs|pause|resume|trigger))?$/.exec(path)
+          if (match === null) { sendJson(res, 404, { detail: 'Not Found' }); return }
+          const id = decodeURIComponent(match[1])
+          const action = match[2] ?? ''
+          if (action === 'runs' && method === 'GET') {
+            const parsed = Number.parseInt(url.searchParams.get('limit') ?? '', 10)
+            const limit = Number.isSafeInteger(parsed) && parsed > 0 ? Math.min(parsed, 100) : 100
+            const page = await host.scheduleHistory(id, limit)
+            if (page?.code === 'schedule_not_found') throw new CronRefusal(404, 'Task not found')
+            sendJson(res, 200, runsOf(page))
+            return
+          }
+          if (method === 'DELETE' && action === '') {
+            const result = await host.editSchedule({ id, action: 'delete' })
+            if (result?.code === 'schedule_not_found') throw new CronRefusal(404, 'Task not found')
+            sendJson(res, 200, { ok: result?.deleted === true })
+            return
+          }
+          if (method === 'PUT' && action === '') {
+            const body = await readJson(req)
+            const updates = body.updates !== null && typeof body.updates === 'object' ? body.updates : {}
+            rejectUnsupported(updates)
+            const patch = {}
+            if (typeof updates.prompt === 'string') patch.prompt = updates.prompt
+            if (typeof updates.name === 'string' && updates.name.trim().length > 0) patch.title = updates.name.trim()
+            if (typeof updates.schedule === 'string' && updates.schedule.trim().length > 0) patch.timing = parseTiming(updates.schedule)
+            if (Object.keys(patch).length === 0) throw new CronRefusal(400, 'no supported update fields')
+            sendEditResult(await host.editSchedule({ id, action: 'update', patch }))
+            return
+          }
+          if (method === 'POST' && (action === 'pause' || action === 'resume')) {
+            const result = await host.editSchedule({ id, action: 'update', patch: { active: action === 'resume' } })
+            sendEditResult(result)
+            return
+          }
+          if (method === 'POST' && action === 'trigger') {
+            const result = await host.runSchedule(id)
+            if (result?.code === 'schedule_not_found') throw new CronRefusal(404, 'Task not found')
+            if (result?.code === 'schedule_execution_pending') throw new CronRefusal(409, 'This Task is already running.')
+            sendJson(res, 200, jobOf(result))
+            return
+          }
+          sendJson(res, 405, { detail: 'Method Not Allowed' })
+          return
+        } catch (error) {
+          if (error instanceof CronRefusal) { sendJson(res, error.status, { detail: error.detail }); return }
+          logger.warn?.('hermes-facade: cron request failed: ' + String(error?.message ?? error))
+          sendJson(res, 500, { detail: 'Task operation failed' })
+          return
+        }
+      }
       if (method === 'POST' && path === '/api/session/new') {
         const body = await readJson(req)
         const workspace = typeof body.workspace === 'string' && body.workspace.length > 0 ? body.workspace : defaultWorkspacePath()

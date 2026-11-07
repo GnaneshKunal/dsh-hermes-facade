@@ -69,6 +69,20 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   not in the turn event). The facade's `/api/session` detail and JSON export
   carry the same snapshot, so the Legacy ring survives the app's post-turn
   transcript refresh.
+- **Tasks/cron on the Hermes listener (local delivery only).** The Tasks screen
+  now reads and writes DSH schedules: `GET /api/cron/jobs` maps a schedule entry
+  to a job (name, prompt, schedule text, next/last run, state),
+  `GET /api/cron/jobs/{id}/runs` maps a delivery to a run whose `id` is the
+  session it ran in, and create/edit/pause/resume/trigger/delete translate to
+  `schedule/create|edit|run`. The editor's schedule text is parsed into a DSH
+  timing (cron, `every 5m`, `daily at 09:00`, an ISO time or an RRULE). Delivery
+  is local only: a non-local `deliver`, model, provider or skills are refused
+  with a reason instead of being silently ignored, and a trigger the service
+  reports as already pending answers `409`. Run history is the schedule's
+  delivery records, so a run opens as its session; there are no host output files
+  or per-run cost. `sources=cron` on the agenda stays empty because DSH stores
+  no session provenance. Tests cover the mapping and the full lifecycle through
+  the gateway and the facade.
 - **A shared path fence for file surfaces** (`src/hermes/fence.mjs`). Hermex
   sends absolute host paths and its own check is explicitly not a security
   boundary, so a path is served only when its realpath is inside a chat folder

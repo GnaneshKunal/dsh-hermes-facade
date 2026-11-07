@@ -71,16 +71,23 @@ function build(existingWorkspaces = {}, options = {}) {
   const gateway = {
     async invoke(request) {
       calls.push(request)
-      if (request.method === 'list') return { items: rows }
+      if (request.namespace === 'session' && request.method === 'list') return { items: rows }
       if (request.namespace === 'session' && request.method === 'projections') {
         return options.projections ?? { values: {} }
       }
       if (request.method === 'create' && request.namespace === 'workspace') {
         return { workspace: { workspaceId: 'ws-1', path: '/tmp', title: 'tmp', sessionIds: [] }, created: true }
       }
-      if (request.method === 'create') return { sessionId: 'created-1' }
+      if (request.namespace === 'session' && request.method === 'create') return { sessionId: 'created-1' }
       if (request.method === 'prompt') return { accepted: true }
       if (request.method === 'cancel') return { accepted: true }
+      if (request.namespace === 'schedule') {
+        if (request.method === 'list') return { items: [{ id: 's1' }], shown: 1, total: 1, limit: 100, offset: 0 }
+        if (request.method === 'create') return { id: 's2', ...request.args?.request }
+        if (request.method === 'edit') return { id: request.args?.request?.id }
+        if (request.method === 'run') return { id: request.args?.request?.id, status: 'active' }
+        if (request.method === 'history') return { id: request.args?.request?.id, records: [] }
+      }
       if (request.method === 'modelCatalog') return options.catalog ?? defaultCatalog()
       if (request.namespace === 'session' && request.method === 'selectModel') {
         return { selected: request.args?.request ?? {} }
@@ -724,4 +731,19 @@ test('sessionUsage omits what the projections do not report', async () => {
     projections: { values: { tokenUsage: { uncachedInputTokens: 7, outputTokens: 3 } } },
   })
   assert.deepEqual(await tokensOnly.host.sessionUsage('s1'), { input_tokens: 7, output_tokens: 3 })
+})
+
+test('schedule remotes translate to host calls', async () => {
+  const { host, calls } = build()
+  assert.deepEqual(await host.listSchedules(), [{ id: 's1' }])
+  assert.deepEqual(await host.createSchedule({ title: 'T', prompt: 'P', timing: { kind: 'every', every_seconds: 300 } }), { id: 's2', title: 'T', prompt: 'P', timing: { kind: 'every', every_seconds: 300 } })
+  await host.editSchedule({ id: 's1', action: 'update', patch: { active: false } })
+  await host.runSchedule('s1')
+  await host.scheduleHistory('s1', 100)
+  const scheduleCalls = calls.filter(call => call.namespace === 'schedule')
+  assert.deepEqual(scheduleCalls.map(call => call.method), ['list', 'create', 'edit', 'run', 'history'])
+  assert.deepEqual(scheduleCalls[0].args, { request: { limit: 100 } })
+  assert.deepEqual(scheduleCalls[1].args, { request: { title: 'T', prompt: 'P', timing: { kind: 'every', every_seconds: 300 } } })
+  assert.deepEqual(scheduleCalls[2].args, { request: { id: 's1', action: 'update', patch: { active: false } } })
+  assert.deepEqual(scheduleCalls[4].args, { request: { id: 's1', limit: 100 } })
 })
