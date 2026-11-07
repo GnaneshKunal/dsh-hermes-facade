@@ -220,7 +220,7 @@ capability probes, so an absent backend shows the screen's own error. Kanban is 
 | Files browser | **works** (read-only) | **works** (read-only, fenced to the chat folder) |
 | Session search | works | works (REST; the RPC is unused) |
 | Tasks | stub (`/api/crons`) | works over `/api/cron/*` (local delivery only) |
-| Memory | works read/write | the global AGENTS.md with a 2 MiB atomic save; no USER/soul editing |
+| Memory | stub | works read/write: the global AGENTS.md with a 2 MiB atomic save; no USER/soul editing |
 | Skills | works read-only | list and SKILL.md; toggle refused |
 | Usage | stub (`/api/insights`) | works; cost via `dsh-cost-meter`, messages ≈0 |
 | Git | panel unavailable | status, changes, diffs, branches, stage/unstage/revert, commit, push, branch switch; idle-turn guard; push target from branch config, untracked rows per file |

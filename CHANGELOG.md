@@ -66,7 +66,7 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   or `.ssh`/`.aws`/`.gnupg`/`.dsh` component is hidden and refused. The all-add
   fallback runs only for a genuinely untracked file, so an unchanged tracked file
   is never served whole; a deleted (uncommitted) row still diffs. This change
-  kept the panel read-only; the Git-writes entry above supersedes that sentence.
+  kept the panel read-only; the Git-writes entry below supersedes that sentence.
   `ship-info` still answers no pull request. Tests use a temporary repository and
   cover the ref-injection, symlink-escape and deny-tree attacks plus a deleted file.
 - **Session search on both listeners.** `GET /api/sessions/search` now backs the

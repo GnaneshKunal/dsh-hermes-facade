@@ -334,8 +334,9 @@ The full surface state and the plan for the missing screens are
 2. **No kanban/bots.** Each is a separate backend (and DSH has no kanban store
    at all). Skills is read-only: the catalogue and SKILL.md come from DSH, the
    disable toggle is refused, and the list is the newest session's composition. Memory is read/write and global: it shows and saves `$DSH_HOME/AGENTS.md`
-   as MEMORY.md, has no USER.md or soul, refuses saves, and does not show the
-   per-workspace AGENTS.md chain. Files and Git are read-only; Tasks writes go
+   as MEMORY.md, has no USER.md or soul, and does not show the
+   per-workspace AGENTS.md chain. Files is read-only; Git supports the writes in
+   its row above; Tasks writes go
    to DSH schedules, but delivery is local only, model/provider/skills are
    refused, and a run is a session/delivery record rather than a host output file.
 3. **One Profile.** Everything is filed under `default`; DSH has agent presets,
