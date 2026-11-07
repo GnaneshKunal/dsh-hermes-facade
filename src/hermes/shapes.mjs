@@ -94,7 +94,9 @@ export function latestTranscriptWindow(messages, limit, offset) {
 function hasVisibleText(message) {
   const content = message?.content
   if (typeof content === 'string') return content.trim().length > 0
-  return Array.isArray(content) && content.length > 0
+  if (!Array.isArray(content)) return false
+  return content.some(part => part?.type === 'text'
+    && typeof part.text === 'string' && part.text.trim().length > 0)
 }
 /**
  * The info block session.resume, session.create and session.info carry.

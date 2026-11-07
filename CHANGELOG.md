@@ -129,7 +129,8 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   cached transcript (a 774-message session with 482 tool calls was hitting this).
   The gateway's `GET /api/sessions/{id}/messages` now widens the **newest** page
   backwards to the closest row with text when the requested window is
-  tool/reasoning-only, while keeping at least `limit` rows so older-history
+  tool/reasoning-only; the widened page is at least `limit` rows and may be as
+  wide as the history window when the anchor is farther back, so older-history
   pagination still starts after the returned rows. Older pages are unchanged.
   Tests cover the widened window and the untouched offset page.
 - **Chat attachments (images and documents).** The Hermes listener now stages
