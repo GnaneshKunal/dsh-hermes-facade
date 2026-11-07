@@ -41,6 +41,17 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   not supported…`, and `ship-info` answers no pull request, so the panel stays
   honest about being read-only. Tests use a temporary repository and cover the
   ref-injection, symlink-escape and deny-tree attacks plus a deleted file.
+- **Session search on both listeners.** `GET /api/sessions/search` now backs the
+  session list's search field on `:9120` and `:9121`. One facade reply carries
+  the Hermes host's `results` (session row, `snippet`, `role`, `match_type`,
+  `lineage_root`) and the webui's `sessions` rows (with `match_preview`), so both
+  clients read the same search. Matching runs id first, then DSH's literal
+  message-content search (`session/search` — it never resumes an agent), then a
+  title supplement; an empty query answers an empty result, the limit is capped
+  at 100, and a source filter DSH cannot satisfy (`sources=cron` — DSH stores no
+  session provenance) honestly matches nothing. Tests cover both shapes, all
+  three lanes, the empty query, the limit, the source filters and `/stats`
+  staying 404.
 - **A shared path fence for file surfaces** (`src/hermes/fence.mjs`). Hermex
   sends absolute host paths and its own check is explicitly not a security
   boundary, so a path is served only when its realpath is inside a chat folder

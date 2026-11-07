@@ -67,7 +67,7 @@ Effort: **S** = one route/method over an existing facade primitive; **M** = new 
 
 | # | Surface | Why the phone cares | Calls to add | DSH backing | Effort | Verdict |
 |---|---|---|---|---|---|---|
-| 1 | Session search | the list's search field 404s today | `GET /api/sessions/search` (REST), `session/search` | `session/search` → `{items:[{sessionId,snippet}],hasMore}` | S | **next** |
+| 1 | Session search | the list's search field 404s today | `GET /api/sessions/search` (REST) | `session/search` → `{items:[{sessionId,snippet}],hasMore}` + list rows | S | done |
 | 2 | Live Working / Needs-you | the live dots are absent | `session.active_list`, `sessions.changed` | the gateway's own runner + session rows | S | **next** |
 | 3 | Chat telemetry | context ring and turn metadata | `usage`/`partial`/`persisted_turn` on `message.complete`, `usage` on `session.info` | `contextUsage`/`tokenUsage` projections | S | **next** |
 | 4 | Files | read code and artifacts from the phone | **done in this change** (read-only) | the facade's file routes behind the shared fence | M | done |
@@ -163,23 +163,26 @@ answers no pull request, so the panel is honest about its read-only state. Tests
 status, changes, patches (tracked and untracked), branches, sha, the fence for a non-root, the non-repo shapes and
 the write refusal.
 
-Verify: `npm run check && npm test` (180 tests), then rename a chat from the phone's list, pin it, archive it,
+**Session search (both listeners).** `GET /api/sessions/search` now backs the list's search field on `:9120` and
+`:9121`. One facade reply carries both shapes: `results` (the Hermes host rows: `session_id`, `id`,
+`lineage_root`, title, recency, model, snippet, role, match type) and `sessions` (the webui rows with
+`match_preview`/`match_type`). Matching runs id first, then DSH's message-content search (`session/search`, a
+literal FTS read that never resumes an agent), then a title supplement; each row carries the session summary and a
+snippet, one row per session, capped by `limit` (1–100). An empty query answers an empty result, and a source
+filter DSH cannot satisfy (`sources=cron`) honestly matches nothing because DSH stores no session provenance.
+Tests cover both shapes, id/content/title lanes, the empty query, the limit, the source filters and `/stats`
+staying 404.
+
+Verify: `npm run check && npm test` (181 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---
 
 ## 5. Next picks, with acceptance criteria
 
-Files and Git read are done (see §4). The next three, in order:
+Files, Git read and session search are done (see §4). The next three, in order:
 
-### Pick 1 — Session search
-
-Calls: `GET /api/sessions/search?q=&profile=&limit=[&sources=cron&exclude_sources=…]` (the list's search field), and
-the Bot inbox's search. Backing: `session/search({query})` → `{items:[{sessionId,snippet}],hasMore}`, capped at 20.
-Done when: searching returns rows with titles and snippets, an empty query does not 500, results respect the same
-source filters as the list, and a caching/debounce policy keeps keystrokes cheap.
-
-### Pick 2 — Chat telemetry
+### Pick 1 — Chat telemetry
 
 Calls: `usage` on `message.complete` (`{context_used, context_max, input, output}`), `usage` on `session.info`,
 and `persisted_turn` when the facade can name the saved rows. (The canonical `status:"complete"` is already in.)
@@ -188,7 +191,7 @@ Backing:
 Done when: the context ring fills during and after a turn, the turn outcome row is unchanged, and no event grows
 unbounded.
 
-### Pick 3 — Tasks / cron
+### Pick 2 — Tasks / cron
 
 Calls: `GET /api/cron/jobs`, `/api/cron/runs`, pause/resume/trigger/delete, delivery targets, and
 `sources=cron` on the agenda. Backing: the `schedule/*` projections (near-exact shapes: name, prompt, schedule,
@@ -196,12 +199,19 @@ state, target, last delivery), with a run's history from the schedule's own deli
 screen lists real schedules with next-run times, pause/resume/delete round-trip, an empty list is a real empty state,
 and the list's cron source matches the same rows.
 
+### Pick 3 — Memory
+
+Calls: `GET /api/memory`, `files/read`, `files/upload`, `profiles/{n}/soul`, and `profiles.list[].path`. Backing:
+`$DSH_HOME/AGENTS.md` plus the project's `AGENTS.md` chain — a real memory the agent already reads, behind the
+shared fence. Done when: the Memory screen shows the files that shape an agent, read-only first, a missing file is
+an honest empty state, and every path is the same fenced one Files and Git use.
+
 ---
 
 ## 6. Sequencing and cross-cutting work
 
-Order after this change: **session search → chat telemetry → Tasks → Memory → Skills → Usage →
-attachments → goal/btw/background → Git write → Bots**.
+Order after this change: **chat telemetry → Tasks → Memory → Skills → Usage → attachments →
+goal/btw/background → Git write → Bots**.
 
 Cross-cutting items that should ride the first task that touches them. The capability gate, the honest refusals,
 the rate-limit key and the prompt-concurrency guards landed in the bugfix pass; these remain:

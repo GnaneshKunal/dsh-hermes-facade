@@ -44,6 +44,7 @@ async function boot({ hostCwd } = {}) {
     gateway,
     dir,
     base: 'http://127.0.0.1:' + gatewayAddress.port,
+    facadeBase: 'http://127.0.0.1:' + address.port,
     password: facade.auth.generatedPassword,
   }
 }
@@ -1004,14 +1005,13 @@ test('the REST list honours limit=0 and exact source names', async () => {
   }
 })
 
-test('unimplemented session collections answer a plain 404', async () => {
+test('session search works; stats stays a plain 404', async () => {
   const harness = await boot()
   try {
     const cookie = await signIn(harness.base, harness.password)
     const search = await api(harness.base, '/api/sessions/search?q=x', { cookie })
-    assert.equal(search.status, 404)
-    // Not the row regex's "Session not found" for a session named "search".
-    assert.equal(search.json.detail, 'Not Found')
+    assert.equal(search.status, 200)
+    assert.ok(Array.isArray(search.json.results))
     const stats = await api(harness.base, '/api/sessions/stats', { cookie })
     assert.equal(stats.status, 404)
     assert.equal(stats.json.detail, 'Not Found')
@@ -1629,6 +1629,77 @@ test('the Git surface refuses ref injection, symlink escapes and deny trees', as
     await harness.facade.close()
   }
 })
+
+test('session search returns id, content and title matches on both listeners', async () => {
+  const harness = await boot()
+  try {
+    harness.host.seed('sess-mock', [
+      { type: 'user/message', seq: 1, time: Date.now(), data: { content: [{ type: 'text', text: 'please deploy alpha today' }] } },
+    ])
+    harness.host.seed('sess-second', [
+      { type: 'user/message', seq: 1, time: Date.now(), data: { content: [{ type: 'text', text: 'alpha again' }] } },
+    ])
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+
+      const found = await api(harness.base, '/api/sessions/search?q=alpha', { cookie })
+      assert.equal(found.status, 200)
+      assert.equal(found.json.results.length, 2)
+      const hit = found.json.results.find(result => result.session_id === 'sess-mock')
+      assert.equal(hit.title, 'Mock session')
+      assert.match(hit.snippet, /alpha/)
+      assert.equal(hit.role, null)
+      assert.equal(hit.match_type, 'content')
+      assert.equal(hit.lineage_root, 'sess-mock')
+      assert.ok(hit.last_active > 0)
+
+      // The Legacy listener carries the same matches as the webui session rows.
+      const login = await api(harness.facadeBase, '/api/auth/login', { method: 'POST', body: { password: harness.password } })
+      assert.equal(login.status, 200)
+      const facadeCookie = login.headers.getSetCookie().map(cookie => cookie.split(';')[0]).join('; ')
+      const legacy = await api(harness.facadeBase, '/api/sessions/search?q=alpha', { cookie: facadeCookie })
+      assert.equal(legacy.status, 200)
+      assert.equal(legacy.json.sessions.length, 2)
+      assert.match(legacy.json.sessions[0].match_preview, /alpha/)
+      assert.equal(legacy.json.count, 2)
+      assert.equal(legacy.json.query, 'alpha')
+
+      const empty = await api(harness.base, '/api/sessions/search?q=%20', { cookie })
+      assert.equal(empty.status, 200)
+      assert.deepEqual(empty.json, { results: [] })
+
+      const one = await api(harness.base, '/api/sessions/search?q=alpha&limit=1', { cookie })
+      assert.equal(one.json.results.length, 1)
+
+      const byId = await api(harness.base, '/api/sessions/search?q=sess-sec', { cookie })
+      assert.ok(byId.json.results.some(result => result.session_id === 'sess-second' && result.match_type === 'id'))
+
+      const byTitle = await api(harness.base, '/api/sessions/search?q=session', { cookie })
+      assert.ok(byTitle.json.results.some(result => result.match_type === 'title'))
+
+      const noContent = await api(harness.base, '/api/sessions/search?q=alpha&content=false', { cookie })
+      assert.equal(noContent.json.results.length, 0)
+
+      // DSH has no session provenance: a source we cannot satisfy matches nothing.
+      const cron = await api(harness.base, '/api/sessions/search?q=alpha&sources=cron', { cookie })
+      assert.equal(cron.json.results.length, 0)
+      const exclude = await api(harness.base, '/api/sessions/search?q=alpha&exclude_sources=cron', { cookie })
+      assert.equal(exclude.json.results.length, 2)
+
+      // The unimplemented collection endpoint still answers a plain 404.
+      const stats = await api(harness.base, '/api/sessions/stats', { cookie })
+      assert.equal(stats.status, 404)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
 
 
 

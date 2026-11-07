@@ -58,7 +58,7 @@ partial set half-renders.
 | Add server / sign in | `/health`, `/api/auth/{status,login,logout}` | **WORKS** | normal sign-in, signed cookie | — |
 | Session list, grouping by project | `GET /api/sessions` | **WORKS** | rows grouped into project lanes; DSH subagent sessions are hidden (runner-owned, parent-addressed only) | enabling Hermex's Subagent Sessions toggle needs row tagging + parent-address reads |
 | Pinned / archived state | same | **WORKS** | every row carries the real `pinned`/`archived` flags; archived rows hidden by default and listed via `include_archived=1` (+ `archived_limit`) | — |
-| Session search | `GET /api/sessions/search` | **404** | "endpoint not found"; only the local title filter works | yes: `session/search` |
+| Session search | `GET /api/sessions/search` | **WORKS** | id, message-content and title matches, each with the session row and a snippet; an empty query is an empty result | — |
 | Open chat / history | `GET /api/session` | **WORKS** (bounded) | newest **200** messages, then 50-message scroll-back pages, within the newest **800**; tool results, error verdicts and durations ride along as persisted tool calls | unbounded history still needs a `session/page` walk |
 | Rename | `POST /api/session/rename` | **WORKS** | title updates | — |
 | Branch / fork | `POST /api/session/branch` | **WORKS** | child session; needs a completed turn | — |
@@ -177,7 +177,7 @@ through the durable parent address.
 | Delete | `session.delete`, `DELETE /api/sessions/{id}` | **STUB** | "not supported by DeepSeek Harness" | needs DSH |
 | Duplicate / import | `POST /api/sessions/import` | **STUB** | 400: DSH cannot inject a transcript, so Move to Hermes cannot land here yet | needs DSH |
 | Export | `GET /api/sessions/{id}/export` | **WORKS** | JSON transcript download (the form Move to Hermes imports) | bounded by the host snapshot |
-| Search | `GET /api/sessions/search`, `session/search` | **404 / -32601** | the list search field 404s; `session/search` maps 1:1 to a DSH RPC | yes: S |
+| Search | `GET /api/sessions/search`, `session/search` | **WORKS** (REST) | the list search field returns titles, content matches and snippets; the RPC stays `-32601` (2.0.1 uses the REST route) | — |
 | Live Working / Needs-you | `session.active_list`, `sessions.changed` | **-32601** | the live dots are absent | yes: S over the runner's state |
 | Projects (lanes) | `projects.tree` | **WORKS** | DSH workspaces drawn as folder lanes | project delete/edit missing |
 | Session store health | `GET /api/sessions/stats`, `/prune` | **—** | never called by 2.0.1 | — |
@@ -218,7 +218,7 @@ capability probes, so an absent backend shows the screen's own error. Kanban is 
 | Delete / import | refused | refused |
 | Export | works | works |
 | Files browser | **works** (read-only) | **works** (read-only, fenced to the chat folder) |
-| Session search | 404 | 404 (DSH RPC exists) |
+| Session search | works | works (REST; the RPC is unused) |
 | Tasks / Skills / Memory / Usage | stub screens | error screens (the real backend is missing) |
 | Git | panel unavailable | read-only: status, changes, diffs, branches; writes refused |
 | Kanban | stub | 404, "unavailable" |
@@ -246,8 +246,8 @@ capability probes, so an absent backend shows the screen's own error. Kanban is 
 
 The wire defects found in the 2026-11-07 audit were fixed in the same change (CHANGELOG): the turn now reports the
 canonical `status:"complete"`, `session.title` has its read form, `session.interrupt` answers the contract's
-vocabulary, `session.list` carries the full row, a PATCH applies every field it names, `/search` and `/stats`
-answer a plain 404 instead of "Session not found", `sources` is matched as a CSV, `limit=0` is honoured, reverse
+vocabulary, `session.list` carries the full row, a PATCH applies every field it names, `/stats`
+answers a plain 404 instead of "Session not found" (`/search` now works), `sources` is matched as a CSV, `limit=0` is honoured, reverse
 requests are gated on `client.capabilities` (and a raw JSON-RPC answer withdraws the frame), the login rate limit
 keys on the forwarded client rather than the shared proxy address, an empty prompt no longer promotes a draft, two
 concurrent submits share one session and run in order, `session.info` falls back to the catalog default when the

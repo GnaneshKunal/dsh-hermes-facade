@@ -493,6 +493,24 @@ export function createDshHost({ ctx, logger = console }) {
     },
 
     /**
+     * Search visible session content without resuming an agent.
+     * @param {string} query literal message-content query.
+     * @returns {Promise<{items: Array<{sessionId: string, snippet: string}>, hasMore: boolean}>} hits.
+     */
+    async searchSessions(query) {
+      const value = await invoke('session', 'search', { request: { query: String(query ?? '') } })
+      return {
+        items: (Array.isArray(value?.items) ? value.items : [])
+          .filter(item => typeof item?.sessionId === 'string' && item.sessionId.length > 0)
+          .map(item => ({
+            sessionId: item.sessionId,
+            snippet: typeof item.snippet === 'string' ? item.snippet : '',
+          })),
+        hasMore: value?.hasMore === true,
+      }
+    },
+
+    /**
      * Read one session with its event history.
      * @param {string} sessionId session id.
      * @param {object} [options] options.
