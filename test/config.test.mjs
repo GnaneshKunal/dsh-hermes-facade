@@ -19,3 +19,11 @@ test('an explicit lanHost is kept verbatim', () => {
 test('an empty lanHost is treated as unset', () => {
   assert.equal(resolveConfig({ lanHost: '' }).lanHost, undefined)
 })
+
+test('streamRetainMs is preserved when non-negative and unset otherwise', () => {
+  assert.equal(resolveConfig({ streamRetainMs: 60_000 }).streamRetainMs, 60_000)
+  assert.equal(resolveConfig({ streamRetainMs: 0 }).streamRetainMs, 0)
+  assert.equal(resolveConfig({}).streamRetainMs, undefined)
+  assert.equal(resolveConfig({ streamRetainMs: -1 }).streamRetainMs, undefined)
+  assert.equal(resolveConfig({ streamRetainMs: 'soon' }).streamRetainMs, undefined)
+})

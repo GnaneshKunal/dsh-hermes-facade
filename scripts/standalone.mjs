@@ -57,6 +57,9 @@ export function createMockHost() {
   const queues = new Map()
   const listeners = new Set()
   const pendingApprovals = new Map()
+  // Registry-global visibility sets, mirroring the real workspace baseline.
+  const pinned = new Set()
+  const archived = new Set()
   let seq = 0
   /** How the next mocked turns end: 'completed', 'failed' or 'cancelled'. */
   let turnOutcome = 'completed'
@@ -169,13 +172,19 @@ export function createMockHost() {
             },
           }],
         }],
-        failures: [],
+        // A provider the catalog could not list, so /api/providers can be
+        // exercised with a failing entry (the real catalog isolates these).
+        failures: [{ id: 'unconfigured-provider', name: 'Unconfigured', message: 'no API key configured' }],
       }
     },
     warm() {},
     async commands() { return [] },
     async workspaces() {
-      return { workspaces: [{ id: 'ws-mock', name: 'mock workspace', path: process.cwd(), sessionIds: ['sess-mock'] }] }
+      return {
+        workspaces: [{ id: 'ws-mock', name: 'mock workspace', path: process.cwd(), sessionIds: ['sess-mock'] }],
+        pinnedSessionIds: [...pinned],
+        archivedSessionIds: [...archived],
+      }
     },
     async workspaceIndex() {
       const { workspaces } = await this.workspaces()
@@ -188,8 +197,20 @@ export function createMockHost() {
       if (record) record.projections = { values: { ...record.projections.values, title } }
       return { ok: true }
     },
-    async pinSession() { return { ok: true } },
-    async archiveSession() { return { ok: true } },
+    async pinSession({ sessionId, pinned: want }) {
+      if (want === false) pinned.delete(sessionId)
+      else pinned.add(sessionId)
+      return { ok: true }
+    },
+    async archiveSession({ sessionId, archived: want }) {
+      if (want === false) archived.delete(sessionId)
+      else {
+        archived.add(sessionId)
+        // DSH drops a pin when a session is archived (the two are exclusive).
+        pinned.delete(sessionId)
+      }
+      return { ok: true }
+    },
     async forkSession({ sessionId }) {
       const created = ensure(undefined)
       created.projections = { values: { title: 'Fork of ' + ((sessions.get(sessionId)?.projections.values.title) ?? sessionId) } }

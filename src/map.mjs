@@ -118,9 +118,11 @@ export function modelProviderOf(item) {
 /**
  * Map one DSH session list row to a Hermex SessionSummary.
  * @param {object} item session/list row.
+ * @param {{id: string, name: string}} [workspace] workspace row for project grouping.
+ * @param {{pinned?: boolean, archived?: boolean}} [state] registry-global visibility flags.
  * @returns {object} snake_case summary.
  */
-export function summaryOf(item, workspace) {
+export function summaryOf(item, workspace, state = {}) {
   const updated = epochSeconds(item?.updatedAt)
   return {
     session_id: String(item?.sessionId ?? ''),
@@ -133,8 +135,10 @@ export function summaryOf(item, workspace) {
     created_at: epochSeconds(item?.createdAt) ?? updated,
     updated_at: updated,
     last_message_at: updated,
-    pinned: false,
-    archived: false,
+    // DSH keeps both sets registry-global in the workspace baseline; a row that
+    // is absent from a set is simply not pinned/archived.
+    pinned: state.pinned === true,
+    archived: state.archived === true,
     input_tokens: Number.isSafeInteger(item?.projections?.values?.contextUsage?.inputTokens)
       ? item.projections.values.contextUsage.inputTokens
       : undefined,
@@ -205,10 +209,11 @@ export function pageMessages(messages, { limit = 50, before, initial = 200 } = {
  * @param {object} [workspace] workspace row for project grouping.
  * @param {object} [paging] page cursor: {offset, truncated, total}.
  * @param {Array<object>} [toolCalls] persisted tool calls for the loaded window.
+ * @param {{pinned?: boolean, archived?: boolean}} [state] registry-global visibility flags.
  * @returns {object} snake_case detail.
  */
-export function detailOf(item, messages, workspace, paging = {}, toolCalls = []) {
-  const summary = summaryOf(item, workspace)
+export function detailOf(item, messages, workspace, paging = {}, toolCalls = [], state = {}) {
+  const summary = summaryOf(item, workspace, state)
   return {
     ...summary,
     message_count: Number.isSafeInteger(paging.total) ? paging.total : messages.length,

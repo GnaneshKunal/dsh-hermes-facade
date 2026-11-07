@@ -782,8 +782,13 @@ export function createDshHost({ ctx, logger = console }) {
     },
 
     /**
-     * Workspace list. Falls back to empty when the remote is unavailable.
-     * @returns {Promise<{workspaces: Array<object>}>} workspaces.
+     * Workspace list plus the registry-global pin/archive sets.
+     *
+     * The pin and archive state is not per-workspace and has no Remote of its
+     * own; it rides on the workspace/follow baseline, so it is captured here
+     * (and cached with the workspaces) rather than through a second read.
+     *
+     * @returns {Promise<{workspaces: Array<object>, pinnedSessionIds: Array<string>, archivedSessionIds: Array<string>}>} workspace snapshot.
      */
     async workspaces() {
       // There is no workspace/list Remote: the browser state comes from the
@@ -804,6 +809,10 @@ export function createDshHost({ ctx, logger = console }) {
         await iterator.return?.()
         const baseline = first.done ? undefined : first.value?.value
         const items = Array.isArray(baseline?.items) ? baseline.items : []
+        // The baseline also carries the registry-global pin and archive sets.
+        // They are not workspace fields: an archived session keeps its
+        // `sessionIds` slot, and a pin is independent of grouping. Keep them on
+        // the same value so a list read does not need a second baseline.
         workspaceCache = {
           workspaces: items
             .filter(item => typeof item?.path === 'string' && item.path.length > 0)
@@ -813,12 +822,14 @@ export function createDshHost({ ctx, logger = console }) {
               path: String(item.path),
               sessionIds: (Array.isArray(item.sessionIds) ? item.sessionIds : []).map(String),
             })),
+          pinnedSessionIds: (Array.isArray(baseline?.pinnedSessionIds) ? baseline.pinnedSessionIds : []).map(String),
+          archivedSessionIds: (Array.isArray(baseline?.archivedSessionIds) ? baseline.archivedSessionIds : []).map(String),
         }
         workspaceCacheAt = Date.now()
         return workspaceCache
       } catch (error) {
         logger.warn?.('hermes-facade: workspace/follow failed: ' + String(error?.message ?? error))
-        return { workspaces: [] }
+        return { workspaces: [], pinnedSessionIds: [], archivedSessionIds: [] }
       } finally {
         controller.abort(new Error('baseline received'))
       }
@@ -919,6 +930,10 @@ export function createDshHost({ ctx, logger = console }) {
      */
     async pinSession({ sessionId, pinned }) {
       await invoke('workspace', pinned ? 'pinSession' : 'unpinSession', { request: { sessionId } })
+      // The pin set is part of the cached baseline, so the next list read must
+      // fetch it again or the new pin stays invisible for the cache window.
+      workspaceCache = undefined
+      workspaceCacheAt = 0
       return { ok: true }
     },
 

@@ -13,6 +13,7 @@ import { createServer } from 'node:http'
 import { networkInterfaces } from 'node:os'
 import { join as join_dir } from 'node:path'
 import { COOKIE_NAME, createAuth } from './auth.mjs'
+import { exportFilename, exportFormat, renderExport } from './exporter.mjs'
 import { clip, createRequestLog } from './log.mjs'
 import { detailOf, epochSeconds, normaliseEvent, pageMessages, summaryOf, timelineOf } from './map.mjs'
 import { openSse } from './sse.mjs'
@@ -53,6 +54,15 @@ const DEFAULT_HISTORY_WINDOW = 800
 const DEFAULT_HISTORY_PAGE = 200
 
 /**
+ * Transcript window for a session export.
+ *
+ * An export is meant to be the whole chat, not the page the client happens to
+ * have open, so it asks the host for a much wider window than a normal read.
+ * The host still bounds its own snapshot; whatever it returns is what travels.
+ */
+const EXPORT_MAX_MESSAGES = 5000
+
+/**
  * Reject when a host call outlives the client's patience.
  *
  * The app shows a transport banner when a request never answers, which reads to
@@ -80,6 +90,67 @@ function withDeadline(promise, ms, label) {
 const LOGIN_LIMIT = 5
 /** Login window in milliseconds. */
 const LOGIN_WINDOW_MS = 15 * 60 * 1000
+
+/**
+ * Shape a DSH ModelCatalog as the client's catalog groups.
+ *
+ * Shared by `/api/models`, `/api/models/live` and `/api/providers` so all three
+ * spell a provider's id the same way. The client fills each option's provider
+ * from the group's `provider_id`; without it the picker reports its change with
+ * no provider and the facade has to guess the route.
+ *
+ * @param {object} catalog ModelCatalog value (groups/default/failures).
+ * @returns {Array<{name: string, label: string, provider_id: string, models: Array<{id: string, label: string}>}>} groups.
+ */
+function catalogGroups(catalog) {
+  const groups = []
+  if (!Array.isArray(catalog?.groups)) return groups
+  for (const group of catalog.groups) {
+    const entries = Array.isArray(group?.models)
+      ? group.models.map(model => ({
+          id: String(model?.id ?? ''),
+          label: String(model?.name ?? model?.id ?? ''),
+        })).filter(model => model.id.length > 0)
+      : []
+    if (entries.length === 0) continue
+    groups.push({
+      name: String(group?.name ?? group?.id ?? 'default'),
+      label: String(group?.name ?? group?.id ?? 'default'),
+      provider_id: String(group?.id ?? group?.name ?? 'default'),
+      models: entries,
+    })
+  }
+  return groups
+}
+
+/**
+ * Read a client flag the way hermes-webui does (`1/true/yes`).
+ * @param {string|null} value query value.
+ * @returns {boolean} whether the flag is on.
+ */
+function flagEnabled(value) {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes'
+}
+
+/**
+ * Send a non-JSON payload with an explicit content type.
+ * @param {object} res response.
+ * @param {number} status status code.
+ * @param {string} contentType MIME type.
+ * @param {string} body payload.
+ * @param {Record<string,string>} [headers] extra headers.
+ * @returns {void}
+ */
+function sendBody(res, status, contentType, body, headers = {}) {
+  res.writeHead(status, {
+    'content-type': contentType,
+    'content-length': Buffer.byteLength(body),
+    'cache-control': 'no-store',
+    ...headers,
+  })
+  res.end(body)
+}
 
 /**
  * Send a JSON response.
@@ -162,7 +233,13 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
   if (config.logRequests) logger.info?.('hermes-facade: access log ' + requestLog.accessPath)
   logger.info?.('hermes-facade: unknown endpoints ' + requestLog.unknownPath)
 
-  const registry = createStreamRegistry()
+  // Finished streams stay replayable for the client's reconnect, then prune on
+  // the next finish. Config can shorten the window for tests and small hosts.
+  const registry = createStreamRegistry(
+    Number.isSafeInteger(config.streamRetainMs) && config.streamRetainMs >= 0
+      ? { retainMs: config.streamRetainMs }
+      : {},
+  )
 
   /** Bounded host transcript window and the initial page size (see constants). */
   const historyWindow = Number.isSafeInteger(config.historyWindow) && config.historyWindow >= 50
@@ -202,6 +279,37 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
    */
   function defaultWorkspacePath() {
     return config.defaultWorkspace ?? process.cwd()
+  }
+
+  /**
+   * Project grouping plus the registry's pin/archive sets for one request.
+   *
+   * All three come from the same workspace/follow baseline: the workspaces carry
+   * session membership, and `pinnedSessionIds`/`archivedSessionIds` are
+   * registry-global sets layered over that membership. Reading them together
+   * means a session row always agrees with its workspace lane.
+   *
+   * @returns {Promise<{index: Map<string, {id: string, name: string}>, pinned: Set<string>, archived: Set<string>}>} visibility.
+   */
+  async function sessionVisibility() {
+    let value
+    try {
+      value = await withDeadline(host.workspaces(), READ_TIMEOUT_MS, 'workspace list')
+    } catch (error) {
+      logger.warn?.('hermes-facade: workspace baseline failed: ' + String(error?.message ?? error))
+      value = { workspaces: [], pinnedSessionIds: [], archivedSessionIds: [] }
+    }
+    const index = new Map()
+    for (const workspace of value?.workspaces ?? []) {
+      for (const sessionId of workspace.sessionIds ?? []) {
+        index.set(String(sessionId), { id: workspace.id, name: workspace.name })
+      }
+    }
+    return {
+      index,
+      pinned: new Set((value?.pinnedSessionIds ?? []).map(String)),
+      archived: new Set((value?.archivedSessionIds ?? []).map(String)),
+    }
   }
 
   /**
@@ -525,7 +633,7 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         sendJson(res, 200, {
           status: 'ok',
           active_streams: registry.activeCount(),
-          features: ['history-paging', 'tool-results', 'model-switch'],
+          features: ['history-paging', 'tool-results', 'model-switch', 'session-export', 'pin-archive', 'providers'],
           history: { page: historyPage, window: historyWindow },
         })
         return
@@ -573,11 +681,39 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
 
       if (method === 'GET' && path === '/api/sessions') {
         const items = (await host.listSessions()).filter(item => item?.origin !== 'subagent')
-        const index = typeof host.workspaceIndex === 'function' ? await host.workspaceIndex() : new Map()
+        const visibility = await sessionVisibility()
+        // Archived rows are hidden from the default response, exactly as the
+        // webui does: the app's main list never asks for them, and its Archived
+        // screen opts in with include_archived=1. archived_count is always the
+        // full set, so the list can still offer the Archived entry.
+        const rows = items.map(item => {
+          const sessionId = String(item?.sessionId ?? '')
+          return summaryOf(item, visibility.index.get(sessionId), {
+            pinned: visibility.pinned.has(sessionId),
+            archived: visibility.archived.has(sessionId),
+          })
+        })
+        const archivedRows = rows
+          .filter(row => row.archived)
+          .sort((left, right) => (right.updated_at ?? 0) - (left.updated_at ?? 0))
+        const includeArchived = flagEnabled(url.searchParams.get('include_archived'))
+        const archivedLimitParsed = Number.parseInt(url.searchParams.get('archived_limit') ?? '', 10)
+        const archivedLimit = Number.isSafeInteger(archivedLimitParsed) && archivedLimitParsed > 0
+          ? Math.min(archivedLimitParsed, 2000)
+          : undefined
+        const visible = includeArchived
+          // Archiving is mutually exclusive with pinning in DSH, so appending the
+          // archived rows after the active ones cannot split a pinned group.
+          ? [...rows.filter(row => !row.archived), ...archivedRows.slice(0, archivedLimit ?? archivedRows.length)]
+          : rows.filter(row => !row.archived)
         sendJson(res, 200, {
-          sessions: items.map(item => summaryOf(item, index.get(String(item?.sessionId)))),
+          sessions: visible,
           cli_count: 0,
-          archived_count: 0,
+          archived_count: archivedRows.length,
+          // The webui echoes the flag it acted on; the app ignores the key but a
+          // probe of the wire does not have to guess whether the opt-in landed.
+          include_archived: includeArchived,
+          ...(archivedLimit === undefined ? {} : { archived_limit: archivedLimit }),
           server_time: Math.floor(Date.now() / 1000),
           server_tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
         })
@@ -614,15 +750,63 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         }
         const timeline = timelineOf(snapshot.events)
         const page = pageMessages(timeline.messages, { limit, before, initial: historyPage })
-        const index = typeof host.workspaceIndex === 'function' ? await host.workspaceIndex() : new Map()
+        const visibility = await sessionVisibility()
         sendJson(res, 200, {
           session: detailOf(
             item ?? { sessionId },
             page.messages,
-            index.get(String(sessionId)),
+            visibility.index.get(String(sessionId)),
             page,
             timeline.toolCalls,
+            {
+              pinned: visibility.pinned.has(String(sessionId)),
+              archived: visibility.archived.has(String(sessionId)),
+            },
           ),
+        })
+        return
+      }
+
+      if (method === 'GET' && path === '/api/session/export') {
+        const sessionId = url.searchParams.get('session_id') ?? url.searchParams.get('sessionId') ?? ''
+        if (sessionId.length === 0) { sendJson(res, 400, { error: 'session_id required' }); return }
+        const format = exportFormat(url.searchParams.get('format'))
+        if (format === undefined) {
+          sendJson(res, 400, {
+            error: 'unsupported format',
+            detail: 'format must be json, html or markdown',
+          })
+          return
+        }
+        const snapshot = await host.readSession(sessionId, { maxMessages: EXPORT_MAX_MESSAGES })
+        const list = await host.listSessions()
+        const item = list.find(row => String(row?.sessionId) === sessionId)
+        if (item === undefined && snapshot.events.length === 0) {
+          sendJson(res, 404, { error: 'Session not found', detail: 'Session not found' })
+          return
+        }
+        // Same mapping as GET /api/session, so the file and the open chat agree.
+        const timeline = timelineOf(snapshot.events)
+        const visibility = await sessionVisibility()
+        const detail = detailOf(
+          item ?? { sessionId },
+          timeline.messages,
+          visibility.index.get(String(sessionId)),
+          {},
+          timeline.toolCalls,
+          {
+            pinned: visibility.pinned.has(String(sessionId)),
+            archived: visibility.archived.has(String(sessionId)),
+          },
+        )
+        const document = renderExport({
+          format,
+          session: detail,
+          messages: timeline.messages,
+          toolCalls: timeline.toolCalls,
+        })
+        sendBody(res, 200, document.contentType, document.body, {
+          'content-disposition': 'attachment; filename="' + exportFilename(sessionId, document.extension) + '"',
         })
         return
       }
@@ -641,8 +825,8 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         }
         const rows = await host.listSessions()
         const item = rows.find(entry => String(entry?.sessionId) === created)
-        const index = typeof host.workspaceIndex === 'function' ? await host.workspaceIndex() : new Map()
-        const detail = detailOf(item ?? { sessionId: created }, [], index.get(String(created)))
+        const visibility = await sessionVisibility()
+        const detail = detailOf(item ?? { sessionId: created }, [], visibility.index.get(String(created)))
         if (selected !== undefined) {
           detail.model = selected.model
           if (typeof selected.provider === 'string') detail.model_provider = selected.provider
@@ -745,8 +929,11 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         const rows = await host.listSessions()
         const item = rows.find(row => String(row?.sessionId) === sessionId)
         if (item === undefined) { sendJson(res, 404, { error: 'not found', detail: 'Session not found' }); return }
-        const index = typeof host.workspaceIndex === 'function' ? await host.workspaceIndex() : new Map()
-        const detail = detailOf(item, [], index.get(sessionId))
+        const visibility = await sessionVisibility()
+        const detail = detailOf(item, [], visibility.index.get(sessionId), {}, [], {
+          pinned: visibility.pinned.has(String(sessionId)),
+          archived: visibility.archived.has(String(sessionId)),
+        })
         if (selected !== undefined) {
           detail.model = selected.model
           if (typeof selected.provider === 'string') detail.model_provider = selected.provider
@@ -949,34 +1136,86 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
           notes.error = String(error?.message ?? error)
           return {}
         })
-        const groups = []
-        if (Array.isArray(catalog?.groups)) {
-          for (const group of catalog.groups) {
-            const entries = Array.isArray(group?.models)
-              ? group.models.map(model => ({
-                  id: String(model?.id ?? ''),
-                  label: String(model?.name ?? model?.id ?? ''),
-                })).filter(model => model.id.length > 0)
-              : []
-            if (entries.length > 0) {
-              groups.push({
-                name: String(group?.name ?? group?.id ?? 'default'),
-                label: String(group?.name ?? group?.id ?? 'default'),
-                // The client fills each option's provider from the group's
-                // provider_id; without it the picker reports its change with no
-                // provider and the facade has to guess the route.
-                provider_id: String(group?.id ?? group?.name ?? 'default'),
-                models: entries,
-              })
-            }
-          }
-        }
+        const groups = catalogGroups(catalog)
         const models = groups.flatMap(group => group.models)
         const selection = catalog?.default ?? {}
         sendJson(res, 200, {
           models,
           groups,
           default_model: String(selection.model ?? catalog?.defaultModel ?? models[0]?.id ?? ''),
+          active_provider: String(selection.provider ?? catalog?.provider ?? ''),
+        })
+        return
+      }
+
+      // The picker's live overlay. The app re-reads this when a picker opens and
+      // replaces the matching cached group's models with it, so it must use the
+      // same group spelling /api/models does (provider id included) and echo
+      // back the provider it resolved. There is no separate DSH "live" list:
+      // the catalog cache is the freshest read the host has.
+      if (method === 'GET' && path === '/api/models/live') {
+        const catalog = await withDeadline(host.models(), READ_TIMEOUT_MS, 'live model catalog').catch(error => {
+          notes.error = String(error?.message ?? error)
+          return {}
+        })
+        const groups = catalogGroups(catalog)
+        const selection = catalog?.default ?? {}
+        const requested = (url.searchParams.get('provider') ?? '').trim()
+        const active = String(selection.provider ?? catalog?.provider ?? '').trim()
+        const provider = requested.length > 0 ? requested : (active.length > 0 ? active : String(groups[0]?.provider_id ?? ''))
+        const group = groups.find(entry => entry.provider_id === provider)
+        const models = group === undefined ? [] : group.models
+        sendJson(res, 200, { provider, models, count: models.length })
+        return
+      }
+
+      // Settings > Providers. DSH exposes provider groups (and isolated provider
+      // failures) but no credential inventory here, so the list is derived from
+      // the model catalog: a group means the provider is routable, which is the
+      // question the screen answers ("what can I pick?").
+      if (method === 'GET' && path === '/api/providers') {
+        const catalog = await withDeadline(host.models(), READ_TIMEOUT_MS, 'provider catalog').catch(error => {
+          notes.error = String(error?.message ?? error)
+          return {}
+        })
+        const selection = catalog?.default ?? {}
+        const providers = catalogGroups(catalog).map(group => ({
+          id: group.provider_id,
+          display_name: group.label,
+          has_key: true,
+          configurable: false,
+          is_self_hosted: false,
+          base_url: '',
+          is_plugin_provider: false,
+          is_oauth: false,
+          is_custom: false,
+          key_source: 'config',
+          models: group.models,
+          models_total: group.models.length,
+        }))
+        // A provider the catalog could not list is still configured; report it
+        // with the host's own message instead of hiding it entirely.
+        for (const failure of Array.isArray(catalog?.failures) ? catalog.failures : []) {
+          const id = String(failure?.id ?? '')
+          if (id.length === 0 || providers.some(provider => provider.id === id)) continue
+          providers.push({
+            id,
+            display_name: String(failure?.name ?? id),
+            has_key: false,
+            configurable: false,
+            is_self_hosted: false,
+            base_url: '',
+            is_plugin_provider: false,
+            is_oauth: false,
+            is_custom: false,
+            key_source: 'none',
+            auth_error: String(failure?.message ?? 'the host could not list this provider'),
+            models: [],
+            models_total: 0,
+          })
+        }
+        sendJson(res, 200, {
+          providers,
           active_provider: String(selection.provider ?? catalog?.provider ?? ''),
         })
         return
@@ -1218,7 +1457,6 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         '/api/kanban/config': {},
         '/api/settings': {},
         '/api/personalities': { personalities: [], active: null },
-        '/api/providers': { providers: [] },
       }
       if (method === 'GET' && Object.hasOwn(NEUTRAL, path)) {
         notes.stub = 'neutral'
