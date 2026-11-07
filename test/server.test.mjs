@@ -1384,3 +1384,16 @@ test('a malformed cron body answers 400, not 500', async t => {
   assert.equal(res.status, 400)
   assert.match(JSON.stringify(await res.json()), /invalid json/i)
 })
+
+test('the Legacy skills toggle is refused for POST too', async t => {
+  const { facade, base, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+  const res = await fetch(base + '/api/skills/toggle', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ name: 'x', enabled: false }),
+  })
+  assert.equal(res.status, 400)
+  assert.match(JSON.stringify(await res.json()), /cannot be disabled/)
+})

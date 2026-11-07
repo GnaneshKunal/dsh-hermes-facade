@@ -1778,7 +1778,7 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         sendJson(res, 200, detail)
         return
       }
-      if (method === 'PUT' && path === '/api/skills/toggle') {
+      if ((method === 'PUT' || method === 'POST') && path === '/api/skills/toggle') {
         sendJson(res, 400, { detail: 'Skills cannot be disabled on this host: DSH has no skill toggle.' })
         return
       }

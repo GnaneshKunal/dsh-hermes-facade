@@ -64,7 +64,7 @@ function build(existingWorkspaces = {}, options = {}) {
     lastUsed: { provider: 'deepseek-official', model: 'deepseek-v4-pro', reasoningEffort: 'medium' },
     pending: null,
   }
-  const rows = [{
+  const rows = options.noSessions === true ? [] : [{
     sessionId: 's1',
     updatedAt: 1700000000000,
     running: false,
@@ -764,4 +764,10 @@ test('skills come from the newest session catalog and read only its SKILL.md', a
   assert.equal(await host.readSkill('missing'), null)
   const call = calls.find(entry => entry.namespace === 'skills' && entry.method === 'list')
   assert.deepEqual(call.args, { request: { sessionId: 's1' } })
+})
+
+test('skills are empty when the host has no sessions', async () => {
+  const { host, calls } = build({}, { noSessions: true })
+  assert.deepEqual(await host.listSkills(), [])
+  assert.equal(calls.some(entry => entry.namespace === 'skills'), false)
 })
