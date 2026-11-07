@@ -364,13 +364,15 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
     if (reply.status === 404) return null
     if (reply.status !== 200) throw new Error('session read failed (HTTP ' + reply.status + ')')
     const messages = Array.isArray(reply.json?.session?.messages) ? reply.json.session.messages : []
-    const slice = order === 'latest'
-      ? messages.slice(Math.max(0, messages.length - offset - limit), Math.max(0, messages.length - offset))
-      : messages.slice(offset, offset + limit)
+    // A transcript page is the oldest-first window `limit` rows back from `offset`
+    // rows before the newest, so the row ids stay stable while older pages load.
+    const end = order === 'latest' ? Math.max(0, messages.length - offset) : messages.length
+    const start = order === 'latest' ? Math.max(0, end - limit) : offset
+    const slice = messages.slice(start, Math.min(start + limit, end))
     return {
       session_id: sessionId,
       profile: 'default',
-      messages: slice.map(transcriptRowOf),
+      messages: slice.map((message, index) => transcriptRowOf(message, start + index)),
       pagination: { limit, offset, order, returned: slice.length },
     }
   }

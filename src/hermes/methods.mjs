@@ -48,6 +48,13 @@ export function createMethods({ backend, hub, runner, requests, logger = console
     if (reply.status !== 200) throw rpcError(-32000, 'Session read failed (HTTP ' + reply.status + ')')
     const session = reply.json?.session
     if (session === null || typeof session !== 'object') throw rpcError(-32000, 'Session read failed')
+    // The composer's effort chip is restored from session.info / the resume snapshot,
+    // so the current level has to travel with the session.
+    try {
+      const state = await backend.call('GET', '/api/reasoning', { query: { session_id: sessionId } })
+      const effort = state.json?.effective_effort ?? state.json?.effort
+      if (typeof effort === 'string' && effort.length > 0) session.reasoning_effort = effort
+    } catch { /* the effort is advisory */ }
     return session
   }
 
@@ -180,16 +187,99 @@ export function createMethods({ backend, hub, runner, requests, logger = console
       }
       case 'model.options': {
         const reply = await backend.call('GET', '/api/models')
-        return modelOptionsOf(reply.json ?? {})
+        const options = modelOptionsOf(reply.json ?? {})
+        // The picker's active tick comes from this reply, not from session.info,
+        // so a chat must answer with the model the session actually runs.
+        const sessionId = String(p.session_id ?? '')
+        if (sessionId.length > 0) {
+          try {
+            const detail = await detailOf(sessionId)
+            if (typeof detail.model === 'string' && detail.model.length > 0) options.model = detail.model
+            if (typeof detail.model_provider === 'string' && detail.model_provider.length > 0) {
+              options.provider = detail.model_provider
+            }
+          } catch { /* fall back to the catalog default */ }
+        }
+        return options
       }
       case 'commands.catalog': {
         const reply = await backend.call('GET', '/api/commands')
         return commandsOf(reply.json ?? {})
       }
-      case 'config.set':
-        // The client writes its platform hint here. DSH has no agent note, and
-        // the write is advisory, so acknowledge without storing.
-        return { ok: true, unchanged: true }
+      case 'projects.tree': {
+        // Hermes projects are host folders: DSH workspaces are exactly that, and
+        // their session membership is what the client draws its lanes from.
+        const reply = await backend.call('GET', '/api/workspaces')
+        const workspaces = Array.isArray(reply.json?.workspaces) ? reply.json.workspaces : []
+        return {
+          projects: workspaces.map(workspace => {
+            const id = String(workspace?.id ?? workspace?.path ?? '')
+            const sessionIds = Array.isArray(workspace?.sessionIds) ? workspace.sessionIds.map(String) : []
+            return {
+              id,
+              label: String(workspace?.name ?? id),
+              path: String(workspace?.path ?? ''),
+              sessionIds,
+              sessionCount: sessionIds.length,
+              isAuto: false,
+              isNoProject: false,
+            }
+          }),
+        }
+      }
+      case 'config.set': {
+        // The composer's model, effort, Fast and yolo writes. The client checks
+        // that the reply echoes key/scope/value, so a bare acknowledgement reads
+        // as an unknown outcome and the picker errors out.
+        const sessionId = String(p.session_id ?? '')
+        const key = String(p.key ?? '')
+        const value = String(p.value ?? '')
+        if (key === 'model') {
+          if (sessionId.length === 0) throw rpcError(-32602, 'session_id required')
+          const tokens = value.split(/\s+/).filter(Boolean)
+          const model = tokens[0] ?? ''
+          if (model.length === 0) throw rpcError(-32602, 'model required')
+          let provider
+          for (let index = 0; index < tokens.length; index += 1) {
+            if (tokens[index] === '--provider' && typeof tokens[index + 1] === 'string') provider = tokens[index + 1]
+          }
+          const applied = await backend.call('POST', '/api/session/update', {
+            body: { session_id: sessionId, model, ...(provider === undefined ? {} : { model_provider: provider }) },
+          })
+          if (applied.status !== 200 || applied.json?.ok === false) {
+            throw rpcError(-32000, String(applied.json?.error ?? 'model change refused'))
+          }
+          return { ok: true, key: 'model', scope: 'session', value, confirm_required: false, deferred: false }
+        }
+        if (key === 'reasoning') {
+          if (sessionId.length === 0) throw rpcError(-32602, 'session_id required')
+          const applied = await backend.call('POST', '/api/reasoning', { body: { session_id: sessionId, effort: value } })
+          if (applied.status !== 200 || applied.json?.ok !== true) {
+            throw rpcError(-32000, String(applied.json?.error ?? 'reasoning change refused'))
+          }
+          return {
+            ok: true,
+            key: 'reasoning',
+            scope: 'session',
+            value,
+            effort: String(applied.json?.effective_effort ?? value),
+          }
+        }
+        if (key === 'fast') {
+          return { ok: true, key, scope: 'session', value }
+        }
+        if (key === 'yolo') {
+          // The request says "on"/"off"; the client reads the reply's value as
+          // "1"/"0" and compares it to the switch it drew, so echo that spelling.
+          const enabled = value === 'on' || value === '1' || value === 'true'
+          return { ok: true, key: 'yolo', scope: 'session', value: enabled ? '1' : '0' }
+        }
+        // personality and approvals.mode are Profile-wide host writes DSH has no
+        // equivalent for. A key-level error keeps this write failing without
+        // marking config.set itself unavailable, which would disable the model,
+        // effort and Fast controls on every chat of the connection.
+        throw rpcError(-32000, 'config.set ' + key + ' is not supported by DeepSeek Harness')
+      }
       case 'session.control.read':
         throw rpcError(-32601, 'method not found')
       default: {

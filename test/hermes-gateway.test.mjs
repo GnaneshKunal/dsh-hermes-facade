@@ -234,7 +234,9 @@ test('prompt.submit streams a completed turn', async () => {
       await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
       await socket.call('session.create', { profile: 'default' })
       const submitted = await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'hello there' })
-      assert.equal(submitted.result.status, 'accepted')
+      // The client maps "streaming"/"queued" to a started/queued turn; anything
+      // else rolls the optimistic message back into the composer.
+      assert.equal(submitted.result.status, 'streaming')
 
       await socket.waitFor(frame => frame.params?.type === 'message.start')
       const delta = await socket.waitFor(frame => frame.params?.type === 'message.delta')
@@ -462,5 +464,164 @@ test('a failed bind releases the listeners already bound', async () => {
   })
   await new Promise(resolve => rebind.close(resolve))
   await gateway.close()
+})
+
+
+test('projects.tree lists the DSH workspaces with their sessions', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const tree = await socket.call('projects.tree', { profile: 'default' })
+      assert.equal(tree.result.projects.length, 1)
+      assert.equal(tree.result.projects[0].id, 'ws-mock')
+      assert.equal(tree.result.projects[0].label, 'mock workspace')
+      assert.deepEqual(tree.result.projects[0].sessionIds, ['sess-mock'])
+      assert.equal(tree.result.projects[0].isAuto, false)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('config.set applies a model and an effort and echoes the host fields', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+
+      const model = await socket.call('config.set', {
+        session_id: 'sess-mock',
+        profile: 'default',
+        scope: 'session',
+        key: 'model',
+        value: 'deepseek-v4-pro --provider deepseek-official --session',
+        confirm_expensive_model: false,
+      })
+      assert.equal(model.result.ok, true)
+      assert.equal(model.result.key, 'model')
+      assert.equal(model.result.scope, 'session')
+      assert.equal(model.result.value, 'deepseek-v4-pro --provider deepseek-official --session')
+      assert.equal(model.result.confirm_required, false)
+
+      const effort = await socket.call('config.set', {
+        session_id: 'sess-mock',
+        profile: 'default',
+        scope: 'session',
+        key: 'reasoning',
+        value: 'high',
+      })
+      assert.equal(effort.result.key, 'reasoning')
+      assert.equal(effort.result.value, 'high')
+
+      // The picker's state is restored from the resume snapshot.
+      const resumed = await socket.call('session.resume', { session_id: 'sess-mock', profile: 'default', omit_messages: true })
+      assert.equal(resumed.result.info.reasoning_effort, 'high')
+
+      const yolo = await socket.call('config.set', { session_id: 'sess-mock', key: 'yolo', value: 'on' })
+      assert.equal(yolo.result.key, 'yolo')
+      assert.equal(yolo.result.value, '1')
+
+      // A key DSH cannot write fails alone; -32601 would mark config.set itself
+      // unavailable and take the model/effort/Fast controls with it.
+      const refused = await socket.call('config.set', { session_id: 'sess-mock', key: 'personality', value: 'x' })
+      assert.equal(refused.error.code, -32000)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+
+test('transcript pages carry the host row id and keep it stable across pages', async () => {
+  const harness = await boot()
+  harness.host.setTurnDelay(5)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      for (const text of ['one', 'two', 'three']) {
+        const sent = await socket.call('prompt.submit', { session_id: 'sess-mock', text })
+        assert.equal(sent.result.status, 'streaming')
+        await socket.waitFor(frame =>
+          frame.params?.type === 'message.complete' && String(frame.params.payload.text).includes('Echo: ' + text))
+      }
+    } finally {
+      socket.ws.close()
+    }
+    const newest = await api(harness.base, '/api/sessions/sess-mock/messages?order=latest&limit=2&offset=0', { cookie })
+    const older = await api(harness.base, '/api/sessions/sess-mock/messages?limit=2&offset=2&order=latest', { cookie })
+    assert.ok(newest.json.messages.every(row => Number.isInteger(row.id)), 'every row needs the host id')
+    assert.deepEqual(newest.json.messages.map(row => row.id), [2, 3])
+    assert.deepEqual(older.json.messages.map(row => row.id), [1])
+    assert.equal(newest.json.messages[0].content, 'two')
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+
+test('a submit while a turn runs is queued and starts one turn at a time', async () => {
+  const harness = await boot()
+  harness.host.setTurnDelay(250)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const first = await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'first' })
+      assert.equal(first.result.status, 'streaming')
+      const second = await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'second' })
+      assert.equal(second.result.status, 'queued')
+
+      const firstComplete = await socket.waitFor(frame =>
+        frame.params?.type === 'message.complete' && String(frame.params.payload.text).includes('Echo: first'), 5000)
+      assert.ok(firstComplete)
+
+      const secondComplete = await socket.waitFor(frame =>
+        frame.params?.type === 'message.complete' && String(frame.params.payload.text).includes('Echo: second'), 5000)
+      assert.ok(secondComplete)
+
+      const starts = socket.frames.filter(frame => frame.params?.type === 'message.start')
+      assert.equal(starts.length, 2, 'one start per turn, never a second stream for the same turn')
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('session.steer answers the queued/rejected vocabulary', async () => {
+  const harness = await boot()
+  harness.host.setTurnDelay(400)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'busy' })
+      const steered = await socket.call('session.steer', { session_id: 'sess-mock', text: 'guide it' })
+      assert.equal(steered.result.status, 'queued')
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
 })
 
