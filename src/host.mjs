@@ -14,6 +14,14 @@ import { open, readFile, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, join } from 'node:path'
 
+/**
+ * A host-local day key (`YYYY-MM-DD`), the calendar dsh-cost-meter writes.
+ * @param {Date} date date.
+ * @returns {string} local day key.
+ */
+function localDayKey(date) {
+  return String(date.getFullYear()) + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0')
+}
 /** How long a pending interaction waits before it is released to the GUI. */
 const INTERACTION_TIMEOUT_MS = 10 * 60 * 1000
 
@@ -170,6 +178,7 @@ function selectionOf(row) {
  * @returns {object} host surface consumed by the HTTP layer.
  */
 export function createDshHost({ ctx, logger = console }) {
+  let costWarningLogged = false
   const gateway = ctx.typertGateway
   const connection = ctx.connection
   if (gateway === undefined || connection === undefined) {
@@ -545,12 +554,18 @@ export function createDshHost({ ctx, logger = console }) {
      */
     async costReport(days) {
       const span = Math.min(Math.max(Number.parseInt(String(days ?? 30), 10) || 30, 1), 365)
-      const from = new Date(Date.now() - span * 86400000).toISOString().slice(0, 10)
-      const to = new Date().toISOString().slice(0, 10)
+      // The ledger keys its days by host-local date, so the query must use the
+      // same calendar; UTC would miss the current local day before UTC midnight.
+      const from = localDayKey(new Date(Date.now() - span * 86400000))
+      const to = localDayKey(new Date())
       try {
         const value = await invoke('costMeter', 'getBillingStatistics', { query: { from, to, basis: 'total' } })
         return value !== null && typeof value === 'object' && Array.isArray(value.days) ? value : null
       } catch {
+        if (!costWarningLogged) {
+          costWarningLogged = true
+          logger.warn?.('hermes-facade: dsh-cost-meter statistics unavailable; Usage is token-only')
+        }
         return null
       }
     },
@@ -614,12 +629,15 @@ export function createDshHost({ ctx, logger = console }) {
         for (const row of ledger.models ?? []) {
           const provider = typeof row?.provider === 'string' ? row.provider : ''
           const model = typeof row?.model === 'string' ? row.model : ''
-          if (model.length === 0) continue
-          costModels.set(provider + ':' + model, { provider, model, cost: Number(row.cost) || 0 })
+          const cost = Number(row?.cost) || 0
+          if (model.length === 0 || cost <= 0) continue
+          costModels.set(provider + ':' + model, { provider, model, cost })
         }
         for (const row of dailyRows) row.estimated_cost = costDaily.get(row.day) ?? 0
         for (const [date, amount] of costDaily) {
-          if (daily.has(date)) continue
+          // getBillingStatistics emits a zero entry for every date in range;
+          // only an actual cost warrants a chart row.
+          if (daily.has(date) || amount <= 0) continue
           dailyRows.push({
             day: date, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0,
             sessions: 0, estimated_cost: amount,

@@ -227,13 +227,15 @@ window (1-365 days). DSH has no per-day ledger, so a session's cumulative tokens
 day (falling back to the row's `updatedAt`); its last-used model names its row. Archived and subagent sessions are
 included because their tokens are real usage, and a session with no model still counts in totals/daily but has no
 model row. Cost comes from the **`dsh-cost-meter`** plugin when it is installed on the same host: its ledger stores USD,
-so its total, daily and per-model amounts are used directly (the plugin's display currency does not change them). Without the plugin the
+so its total, daily and per-model amounts are used directly (the plugin's display currency does not change them).
+The query uses the host-local day the ledger writes, and empty-date zero entries are dropped so a cost-free window
+stays an empty state. Without the plugin the
 cost fields stay absent (the screen reads 0). OpenRouter Plus's exact per-request `usage.cost` is not merged yet, so
 the figure is the plugin's estimate. `insights.get` answers `{messages:0}` because DSH exposes no message count; the screen
 already marks its Messages total approximate. No sessions in the window is a real empty state. Tests cover the host
 aggregation, both routes and the RPC.
 
-Verify: `npm run check && npm test` (204 tests), then rename a chat from the phone's list, pin it, archive it,
+Verify: `npm run check && npm test` (205 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---

@@ -769,8 +769,9 @@ test('skills come from the newest session catalog and read only its SKILL.md', a
 
 test('usage merges dsh-cost-meter billing statistics, including cost-only rows', async () => {
   const now = Date.now()
-  const day = new Date(now).toISOString().slice(0, 10)
-  const older = new Date(now - 100 * 86400000).toISOString().slice(0, 10)
+  const localDay = date => String(date.getFullYear()) + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0')
+  const day = localDay(new Date(now))
+  const older = localDay(new Date(now - 100 * 86400000))
   const costStats = {
     totals: { cost: 3.5 },
     days: [{ date: day, cost: 1.5 }, { date: older, cost: 2 }],
@@ -793,7 +794,22 @@ test('usage merges dsh-cost-meter billing statistics, including cost-only rows',
   const call = calls.find(entry => entry.namespace === 'costMeter' && entry.method === 'getBillingStatistics')
   assert.equal(call.args.query.basis, 'total')
   assert.equal(call.args.query.to, day)
-  assert.equal(call.args.query.from, new Date(now - 120 * 86400000).toISOString().slice(0, 10))
+  assert.equal(call.args.query.from, localDay(new Date(now - 120 * 86400000)))
+})
+
+test('zero cost entries from dsh-cost-meter add no daily or model rows', async () => {
+  const now = Date.now()
+  const localDay = date => String(date.getFullYear()) + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0')
+  const costStats = {
+    totals: { cost: 0 },
+    days: [{ date: localDay(new Date(now)), cost: 0 }, { date: localDay(new Date(now - 2 * 86400000)), cost: 0 }],
+    models: [{ provider: 'openrouter', model: 'free-model', cost: 0 }],
+  }
+  const { host } = build({}, { updatedAt: now, costStats })
+  const report = await host.usageReport(30)
+  assert.equal(report.usage.totals.total_estimated_cost, 0)
+  assert.equal(report.usage.daily.length, 1)
+  assert.equal(report.models.models.length, 1)
 })
 
 test('usage stays token-only when dsh-cost-meter is absent', async () => {
