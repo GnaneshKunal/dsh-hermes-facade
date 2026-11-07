@@ -606,9 +606,9 @@ export function createDshHost({ ctx, logger = console }) {
       const costModels = new Map()
       if (costState !== null && Array.isArray(costState.history)) {
         costDays = costState.history
-        const currency = typeof costState.config?.currency === 'string' ? costState.config.currency : 'USD'
-        const rate = Number(costState.config?.fxRates?.[currency] ?? costState.config?.exchangeRate ?? 1)
-        const toUsd = value => (currency === 'USD' ? 1 : (Number.isFinite(rate) && rate > 0 ? 1 / rate : 1)) * (Number(value) || 0)
+        // dsh-cost-meter always stores ledger amounts in USD; its display
+        // currency and FX rate do not change the ledger, so no conversion here.
+        const toUsd = value => Number(value) || 0
         const startDay = new Date(cutoff).toISOString().slice(0, 10)
         for (const day of costDays) {
           if (typeof day?.date !== 'string' || day.date < startDay) continue

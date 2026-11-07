@@ -771,19 +771,20 @@ test('usage merges dsh-cost-meter cost in USD, day and model', async () => {
   const now = Date.now()
   const day = new Date(now).toISOString().slice(0, 10)
   const state = {
+    // The ledger stores USD even when the plugin displays CNY; the cost must not be divided.
     config: { currency: 'CNY', fxRates: { USD: 1, CNY: 7.2, EUR: 0.92 }, exchangeRate: 7.2 },
     history: [{
-      date: day, cost: 7.2, input: 100, output: 50, cacheRead: 10,
+      date: day, cost: 1.5, input: 100, output: 50, cacheRead: 10,
       byProviderModel: {
-        'deepseek-official:deepseek-v4-pro': { cost: 7.2, input: 100, output: 50, cacheRead: 10 },
+        'deepseek-official:deepseek-v4-pro': { cost: 1.5, input: 100, output: 50, cacheRead: 10 },
       },
     }],
   }
   const { host } = build({}, { updatedAt: now, costState: state })
   const report = await host.usageReport(30)
-  assert.equal(report.usage.totals.total_estimated_cost, 1)
-  assert.equal(report.usage.daily[0].estimated_cost, 1)
-  assert.equal(report.models.models[0].estimated_cost, 1)
+  assert.equal(report.usage.totals.total_estimated_cost, 1.5)
+  assert.equal(report.usage.daily[0].estimated_cost, 1.5)
+  assert.equal(report.models.models[0].estimated_cost, 1.5)
 })
 
 test('usage stays token-only when dsh-cost-meter is absent', async () => {

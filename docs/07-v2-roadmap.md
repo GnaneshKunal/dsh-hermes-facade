@@ -226,8 +226,8 @@ projections: sessions, input/output/cache-read tokens, per-model rows and a UTC 
 window (1-365 days). DSH has no per-day ledger, so a session's cumulative tokens are attributed to its last prompt
 day (falling back to the row's `updatedAt`); its last-used model names its row. Archived and subagent sessions are
 included because their tokens are real usage, and a session with no model still counts in totals/daily but has no
-model row. Cost comes from the **`dsh-cost-meter`** plugin when it is installed on the same host: its ledger's
-total, daily and per-model amounts are converted from the plugin's display currency to USD. Without the plugin the
+model row. Cost comes from the **`dsh-cost-meter`** plugin when it is installed on the same host: its ledger stores USD,
+so its total, daily and per-model amounts are used directly (the plugin's display currency does not change them). Without the plugin the
 cost fields stay absent (the screen reads 0). OpenRouter Plus's exact per-request `usage.cost` is not merged yet, so
 the figure is the plugin's estimate. `insights.get` answers `{messages:0}` because DSH exposes no message count; the screen
 already marks its Messages total approximate. No sessions in the window is a real empty state. Tests cover the host
