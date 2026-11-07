@@ -100,6 +100,18 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
   const connections = new Set()
 
   /**
+   * Sockets that advertised `client.capabilities {server_requests:true}`.
+   *
+   * The contract only sends approval/clarify to such a client; a socket that
+   * never advertised must not receive a question it did not offer to answer.
+   * It can still learn about open requests from session.resume /
+   * session.events.since (`open_requests`) and answer them.
+   *
+   * @type {WeakSet<object>}
+   */
+  const serverRequests = new WeakSet()
+
+  /**
    * Reverse requests: one JSON-RPC request to every socket, first answer wins.
    *
    * A request is registered whether or not a socket is connected. A phone that
@@ -181,6 +193,7 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
         pending.set(answerId, entry)
       }
       for (const connection of connections) {
+        if (!serverRequests.has(connection)) continue
         try { connection.sendJson(frame) } catch { connections.delete(connection) }
       }
       return answer
@@ -237,14 +250,82 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
   requests.call.cancelSession = (sessionId, reason) => requests.cancelSession(sessionId, reason)
 
   const sessions = createSessionRegistry({ backend, dir: config.dir, logger })
+
+  /**
+   * Per-session revision counters for the client's write fence.
+   *
+   * Hermex reads GET /api/sessions/{id}/mutation-snapshot before every session
+   * write and sends the revision back as expected_revision. A snapshot that
+   * answers anything but 200 (or the host's "old server" 404 wording) makes the
+   * write fail, which is why every rename/pin/archive from the list was refused
+   * on :9121 before this route existed.
+   *
+   * The revision is seeded from the session's own activity timestamp, so a
+   * restarted process still compares sensibly, and advanced by every write and
+   * turn the gateway performs. A snapshot records the value it handed out, so
+   * the following write compares equal.
+   *
+   * @type {Map<string, number>}
+   */
+  const revisions = new Map()
+
+  /**
+   * The revision to report for a session.
+   * @param {string} sessionId client id.
+   * @param {number} [seed] fallback epoch seconds.
+   * @returns {number} revision.
+   */
+  function revisionOf(sessionId, seed = 0) {
+    const base = Number.isFinite(seed) ? Math.floor(seed) : 0
+    return Math.max(base, revisions.get(sessionId) ?? 0)
+  }
+
+  /**
+   * Record one change to a session: the next write must carry the new revision.
+   * @param {string} sessionId client id.
+   * @returns {void}
+   */
+  function bumpRevision(sessionId) {
+    revisions.set(String(sessionId), revisionOf(sessionId) + 1)
+  }
+
+  /**
+   * Read and record a session's current revision.
+   * @param {string} sessionId client id.
+   * @returns {Promise<number>} revision.
+   */
+  async function sessionRevision(sessionId) {
+    const draft = sessions.draft(sessionId)
+    if (draft !== undefined && sessions.resolve(sessionId) === sessionId) {
+      const revision = revisionOf(sessionId, draft.createdAt)
+      revisions.set(sessionId, revision)
+      return revision
+    }
+    let seed = 0
+    try {
+      const reply = await backend.call('GET', '/api/session', {
+        query: { session_id: sessions.resolve(sessionId), msg_limit: 1 },
+      })
+      const detail = reply.json?.session
+      if (reply.status === 200 && detail !== null && typeof detail === 'object') {
+        const last = Number(detail.last_message_at ?? detail.updated_at)
+        if (Number.isFinite(last)) seed = last
+      }
+    } catch { /* the fence is advisory when the read fails */ }
+    const revision = revisionOf(sessionId, seed)
+    revisions.set(sessionId, revision)
+    return revision
+  }
+
   const runner = createTurnRunner({
     backend,
     hub,
     requestClient: requests.call,
     resolveBackendSession: id => sessions.resolve(id),
+    onSettled: id => bumpRevision(id),
     logger,
   })
-  const methods = createMethods({ backend, hub, runner, requests, sessions, logger })
+  const methods = createMethods({ backend, hub, runner, requests, sessions, bumpRevision, logger })
 
   /** Password attempts per address, for the login rate limit. */
   const attempts = new Map()
@@ -292,13 +373,31 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
   }
 
   /**
+   * The address the login rate limit is keyed on.
+   *
+   * Behind `tailscale serve` every request arrives from loopback, so keying on
+   * the peer alone let one device's failed attempts lock out every client. A
+   * forwarded client is trusted only when the peer is loopback, so a direct
+   * client cannot spoof its way around the limit.
+   * @param {import('node:http').IncomingMessage} req request.
+   * @returns {string} address.
+   */
+  function loginAddress(req) {
+    const peer = req.socket?.remoteAddress ?? 'unknown'
+    const loopback = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1'
+    if (!loopback) return peer
+    const forwarded = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim()
+    return forwarded.length > 0 ? forwarded : peer
+  }
+
+  /**
    * Answer a login.
    * @param {import('node:http').IncomingMessage} req request.
    * @param {import('node:http').ServerResponse} res response.
    * @returns {Promise<void>} resolves when answered.
    */
   async function login(req, res) {
-    const address = req.socket?.remoteAddress ?? 'unknown'
+    const address = loginAddress(req)
     if (!loginAllowed(address)) { sendJson(res, 429, { detail: 'Too many attempts' }); return }
     const body = await readJson(req)
     if (facadeAuth.verifyPassword(body.password) !== true) {
@@ -325,9 +424,15 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
   async function sessionPage(url) {
     const archived = url.searchParams.get('archived') ?? 'exclude'
     const order = url.searchParams.get('order') ?? 'recent'
-    const limit = Math.min(Math.max(Number.parseInt(url.searchParams.get('limit') ?? '20', 10) || 20, 0), 100)
-    const offset = Math.max(Number.parseInt(url.searchParams.get('offset') ?? '0', 10) || 0, 0)
-    if (url.searchParams.get('scheduled') === '1' || (url.searchParams.get('sources') ?? '').includes('cron')) {
+    // `?limit=0` is a legal page size (no rows); the old `|| 20` turned it into
+    // the default. `sources` is CSV of source names, matched exactly, so a value
+    // that merely contains "cron" no longer empties the whole list.
+    const parsedLimit = Number.parseInt(url.searchParams.get('limit') ?? '20', 10)
+    const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(parsedLimit, 0), 100) : 20
+    const parsedOffset = Number.parseInt(url.searchParams.get('offset') ?? '0', 10)
+    const offset = Number.isFinite(parsedOffset) ? Math.max(parsedOffset, 0) : 0
+    const sources = (url.searchParams.get('sources') ?? '').split(',').map(value => value.trim()).filter(Boolean)
+    if (url.searchParams.get('scheduled') === '1' || sources.includes('cron')) {
       return { sessions: [], total: 0, limit, offset, storage: {} }
     }
     const reply = await backend.call('GET', '/api/sessions', { query: { include_archived: 1 } })
@@ -417,39 +522,89 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
   }
 
   /**
+   * The mutation snapshot a client reads before writing a session.
+   * @param {string} sessionId client id.
+   * @returns {Promise<object>} snapshot body.
+   */
+  async function mutationSnapshot(sessionId) {
+    const draft = sessions.draft(sessionId)
+    if (draft !== undefined && sessions.resolve(sessionId) === sessionId) {
+      const revision = revisionOf(sessionId, draft.createdAt)
+      revisions.set(sessionId, revision)
+      return { session_id: sessionId, exists: true, runtime_revision: revision }
+    }
+    const reply = await backend.call('GET', '/api/session', {
+      query: { session_id: sessions.resolve(sessionId), msg_limit: 1 },
+    })
+    const detail = reply.json?.session
+    if (reply.status === 404 || detail === null || typeof detail !== 'object') {
+      // The client reads exists:false as a 404 of its own; answering a made-up
+      // revision would let it write to a session that is not there.
+      return { session_id: sessionId, exists: false, runtime_revision: 0 }
+    }
+    const last = Number(detail.last_message_at ?? detail.updated_at)
+    const revision = revisionOf(sessionId, Number.isFinite(last) ? last : 0)
+    revisions.set(sessionId, revision)
+    return { session_id: sessionId, exists: true, runtime_revision: revision }
+  }
+
+  /**
+   * The write identity a PATCH may carry, and its error when only half is sent.
+   * @param {object} body PATCH body.
+   * @returns {{expectedRevision?: number, error?: string}} identity.
+   */
+  function writeIdentityOf(body) {
+    const hasRequest = typeof body?.request_id === 'string' && body.request_id.length > 0
+    const hasRevision = Number.isFinite(body?.expected_revision)
+    if (hasRequest !== hasRevision) return { error: 'mutation_identity_required' }
+    return hasRevision ? { expectedRevision: Math.floor(body.expected_revision) } : {}
+  }
+
+  /**
    * Apply one PATCH to a session through the facade's webui routes.
    * @param {string} sessionId session id.
    * @param {object} body patch body.
    * @returns {Promise<object>} reply body.
    */
   async function patchSession(sessionId, body) {
+    // DeepSeek Harness has no unread flag. Refuse the whole body instead of
+    // applying the rest and clearing a badge the host never remembered.
+    if (typeof body.unread === 'boolean') throw new Error('unread is not supported by DeepSeek Harness')
     const draft = sessions.draft(sessionId)
     // An unpromoted draft has no DSH row to write; keep what the rename says and
     // apply it when the first prompt creates the session.
     if (draft !== undefined && sessions.resolve(sessionId) === sessionId) {
-      if (typeof body.title === 'string' && body.title.length > 0) {
+      const pending = {}
+      if (typeof body.title === 'string' && body.title.trim().length > 0) {
         sessions.noteTitle(sessionId, body.title)
-        return { title: body.title }
+        pending.title = body.title
       }
-      return { ok: true }
+      if (typeof body.pinned === 'boolean' || typeof body.archived === 'boolean') {
+        // It is not in the store yet, so there is no row to pin or archive.
+        throw new Error('a chat with no messages cannot be pinned or archived')
+      }
+      return Object.keys(pending).length > 0 ? pending : { ok: true }
     }
     const base = { session_id: sessions.resolve(sessionId) }
-    if (typeof body.title === 'string' && body.title.length > 0) {
+    // Every field the body names is applied, not just the first: a PATCH with a
+    // title and a pin used to silently drop the pin.
+    const applied = {}
+    if (typeof body.title === 'string' && body.title.trim().length > 0) {
       const reply = await backend.call('POST', '/api/session/rename', { body: { ...base, title: body.title } })
       if (reply.json?.ok !== true) throw new Error(reply.json?.error ?? 'rename refused')
-      return { title: body.title }
+      applied.title = body.title
     }
     if (typeof body.pinned === 'boolean') {
       const reply = await backend.call('POST', '/api/session/pin', { body: { ...base, pinned: body.pinned } })
       if (reply.json?.ok !== true) throw new Error(reply.json?.error ?? 'pin refused')
-      return { pinned: body.pinned }
+      applied.pinned = body.pinned
     }
     if (typeof body.archived === 'boolean') {
       const reply = await backend.call('POST', '/api/session/archive', { body: { ...base, archived: body.archived } })
       if (reply.json?.ok !== true) throw new Error(reply.json?.error ?? 'archive refused')
-      return { archived: body.archived }
+      applied.archived = body.archived
     }
-    return { ok: true }
+    return Object.keys(applied).length > 0 ? applied : { ok: true }
   }
 
   /**
@@ -556,6 +711,20 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
       res.end(reply.text)
       return
     }
+    if (method === 'GET' && (path === '/api/sessions/search' || path === '/api/sessions/stats')) {
+      // Unimplemented collection endpoints answer a plain 404. The row regex
+      // below would match them and report "Session not found" for a session
+      // literally named "search"/"stats".
+      sendJson(res, 404, { detail: 'Not Found' })
+      return
+    }
+    const snapshotMatch = /^\/api\/sessions\/([^/]+)\/mutation-snapshot$/.exec(path)
+    if (snapshotMatch !== null) {
+      if (method !== 'GET') { sendJson(res, 405, { detail: 'Method Not Allowed' }); return }
+      const sessionId = decodeURIComponent(snapshotMatch[1])
+      sendJson(res, 200, await mutationSnapshot(sessionId))
+      return
+    }
     const rowMatch = /^\/api\/sessions\/([^/]+)$/.exec(path)
     if (rowMatch !== null) {
       const sessionId = decodeURIComponent(rowMatch[1])
@@ -567,8 +736,23 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
       }
       if (method === 'PATCH') {
         const body = await readJson(req)
+        // The client's write fence: a snapshot read before the write, then a
+        // request_id and expected_revision on the PATCH. A write without them is
+        // an older client and is applied bare, as it was before the fence.
+        const identity = writeIdentityOf(body)
+        if (identity.error !== undefined) { sendJson(res, 409, { detail: identity.error }); return }
+        if (identity.expectedRevision !== undefined) {
+          const current = await sessionRevision(sessionId)
+          if (identity.expectedRevision !== current) {
+            // "This session changed on the server. Try again." on the phone.
+            sendJson(res, 409, { detail: 'revision_conflict' })
+            return
+          }
+        }
         try {
-          sendJson(res, 200, await patchSession(sessionId, body))
+          const result = await patchSession(sessionId, body)
+          bumpRevision(sessionId)
+          sendJson(res, 200, result)
         } catch (error) {
           sendJson(res, 400, { detail: String(error?.message ?? error) })
         }
@@ -643,12 +827,17 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
     let frame
     try { frame = JSON.parse(text) } catch { return }
     if (frame === null || typeof frame !== 'object') return
-    // A JSON-RPC response to a server-to-client request.
+    // A JSON-RPC response to a server-to-client request. It settles the request
+    // and withdraws it, exactly as the request.answer/approval.respond path does;
+    // leaving the cancel frame out left the card to a timeout on the other side.
     if (typeof frame.method !== 'string') {
       if (frame.id !== undefined && (frame.result !== undefined || frame.error !== undefined)) {
-        requests.resolve(String(frame.id), frame.result ?? null)
+        requests.resolve(String(frame.id), frame.result ?? null, 'resolved')
       }
       return
+    }
+    if (frame.method === 'client.capabilities' && frame.params?.server_requests === true) {
+      serverRequests.add(connection)
     }
     if (frame.id === undefined) return
     try {
