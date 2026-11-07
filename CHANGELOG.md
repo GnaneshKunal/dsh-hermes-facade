@@ -3,6 +3,80 @@
 Notable changes to dsh-hermes-facade. Version headings correspond to releases; unreleased
 changes accumulate at the top. Format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.3.0] - 2026-11-07
+
+### Added
+
+- **Hermes-protocol listener (port 9121).** Hermex 2.0 talks to a Hermes host
+  (REST + JSON-RPC over a WebSocket) by default and files webui servers as
+  Legacy. The plugin can now serve both contracts side by side, so the same app
+  can be pointed at either kind: :9120 keeps the webui surface unchanged, and
+  :9121 answers the Hermes host contract. The new listener is a translation
+  layer, not a second integration: it calls the webui facade over loopback with
+  an internal token, so sessions, transcripts, streaming, approvals,
+  clarifications and export keep exactly one implementation. Config:
+  `gatewayEnabled` (default true), `gatewayPort` (9121), `gatewayBindHost`.
+  Full contract, method table, event vocabulary and gaps:
+  [docs/06-hermes-gateway.md](docs/06-hermes-gateway.md).
+- **A dependency-free RFC 6455 server** (`src/hermes/ws.mjs`). The Hermex client
+  presents its ticket in `Sec-WebSocket-Protocol`
+  (`hermes-gateway-v1, hermes-gateway-ticket.<ticket>`) and expects the protocol
+  name echoed, so a generic WebSocket library is not enough. The module handles
+  the opening handshake, masked client frames, fragmentation, ping/pong and the
+  close handshake, and is tested against Node's own `WebSocket`.
+- **Hermes boot and auth**: `GET /api/status` (version 0.22.5, stable
+  `install_id`, `auth_required:true`, `auth_providers:["basic"]`),
+  `POST /auth/password-login` against the same scrypt record as the webui
+  listener, `hermes_session_at`/`_rt`/`_provider` cookies,
+  `GET /api/auth/me`, `POST /api/auth/ws-ticket` (30 s, single use), and the
+  `gateway.ready` frame with `replay_epoch` and `session_authority:false`.
+- **The chat path on the socket**: `prompt.submit`, `session.create`,
+  `session.resume`, `session.list`, `session.title`, `session.branch`,
+  `session.interrupt`, `session.steer`, `session.events.since`,
+  `model.options`, `commands.catalog`, `config.set` and `client.capabilities`.
+  Unimplemented methods answer `-32601`, which the client records and uses to
+  hide the control, exactly as it does on an older host.
+- **Hermes events with per-session sequence numbers**: message.start / delta /
+  interim / complete, reasoning.delta, tool.start / complete, session.title,
+  session.info, request.cancel; a per-session ring answers
+  `session.events.since` with contiguous `seq`, so a reconnect does not force a
+  transcript rebuild.
+- **Approvals and clarifications as server-to-client JSON-RPC requests**, the
+  2.0 contract's own human-in-the-loop shape (no polling, no side streams). The
+  answer is accepted either as `approval.respond` / `request.answer` /
+  `clarify.lock` or as a result frame; a turn that ends withdraws whatever is
+  still open.
+- **The REST session surface** the Hermes chat screen reads:
+  `GET /api/sessions` (order/archived/limit/offset), `GET /api/sessions/{id}`,
+  `GET /api/sessions/{id}/messages` (500-row pages, latest-first),
+  `PATCH /api/sessions/{id}` (title/pinned/archived),
+  `GET /api/sessions/{id}/export`, plus `/api/profiles/active`, `/api/config`,
+  `/api/models` and `/api/commands`.
+- **An internal loopback credential.** The gateway cannot hold the user's
+  plaintext password (only its scrypt hash is stored), so the two listeners share
+  a 0600 token at `~/.dsh/hermes-facade/internal.token` that the facade accepts
+  only from loopback. The auth boundary is unchanged for the phone.
+- **Tests and a probe build.** `test/hermes-ws.test.mjs` covers the socket codec;
+  `test/hermes-gateway.test.mjs` drives boot, login, ticket, `gateway.ready`,
+  capabilities, session list, REST paging, a streamed turn and an approval
+  answered as a reverse request. `scripts/standalone.mjs --gateway-port N` boots
+  both listeners against the mock agent for hand probes.
+
+### Changed
+
+- The webui listener now also accepts the loopback internal token, in addition to
+  its cookie. Nothing else about :9120 changed.
+- `/api/profile/switch` and `/api/profile/create` still refuse (Profiles are not
+  a DSH concept), which also blocks Move to Hermes from reading this server as a
+  source; tracked in docs/06 §9 as the next gap.
+
+### Known gaps
+
+- No session import, files, git, tasks, skills, memory, kanban, usage, bots or
+  bot screen on the Hermes listener; those are separate backends (and DSH has no
+  memory or kanban store). Move to Hermes cannot use this host as a destination
+  until DSH can accept a transcript.
+
 ## [0.2.0] - 2026-11-07
 
 ### Added

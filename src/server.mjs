@@ -12,7 +12,7 @@ import { appendFileSync, mkdirSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { networkInterfaces } from 'node:os'
 import { join as join_dir } from 'node:path'
-import { COOKIE_NAME, createAuth } from './auth.mjs'
+import { COOKIE_NAME, createAuth, safeEqual } from './auth.mjs'
 import { exportFilename, exportFormat, renderExport } from './exporter.mjs'
 import { clip, createRequestLog } from './log.mjs'
 import { detailOf, epochSeconds, normaliseEvent, pageMessages, summaryOf, timelineOf } from './map.mjs'
@@ -295,11 +295,25 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
   })
 
   /**
-   * Whether a request carries a valid session cookie.
+   * Whether a request carries a valid session cookie, or the loopback-only
+   * internal token the Hermes-protocol listener presents.
+   *
+   * The gateway on the second port talks to this listener over 127.0.0.1 and
+   * must not hold the user's plaintext password (only its scrypt hash is kept).
+   * The token is a 0600 file in the state directory and is refused from
+   * anything but loopback, so this cannot widen the auth boundary.
+   *
    * @param {import('node:http').IncomingMessage} req request.
    * @returns {boolean} authenticated.
    */
   function isAuthed(req) {
+    const presented = req.headers['x-facade-internal']
+    if (typeof presented === 'string' && presented.length > 0 &&
+        typeof config.internalToken === 'string' && config.internalToken.length > 0 &&
+        safeEqual(presented, config.internalToken)) {
+      const address = req.socket?.remoteAddress ?? ''
+      if (address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1') return true
+    }
     return authService.verifyCookie(authService.cookieFrom(req))
   }
 

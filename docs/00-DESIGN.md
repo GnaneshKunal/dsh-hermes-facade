@@ -6,6 +6,12 @@ drives a local DeepSeek Harness agent.*
 Status: design frozen 2026-11-06 · target DSH `0.2.2-rc.1` · Hermex `2.0.0` (App Store, MIT) ·
 hermes-webui protocol (classic stack)
 
+> **Update 2026-11-07 (v0.3.0).** A second listener now serves the **Hermes host**
+> contract (REST + JSON-RPC over WebSocket) on port 9121, translated onto this
+> facade; see [06-hermes-gateway.md](06-hermes-gateway.md). The webui facade
+> below is unchanged and remains the primary path. The "we do not target it"
+> decision in §1 applies to this 9120 listener only.
+
 ---
 
 ## 1. What we are building and why

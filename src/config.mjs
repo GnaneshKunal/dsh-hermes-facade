@@ -15,6 +15,9 @@ export const DEFAULT_PORT = 9120
 /** Default bind address; loopback only. */
 export const DEFAULT_BIND = '127.0.0.1'
 
+/** Default loopback port for the Hermes-protocol (gateway) listener. */
+export const DEFAULT_GATEWAY_PORT = 9121
+
 /**
  * Resolve the facade state directory.
  * @param {string} [override] explicit directory.
@@ -34,11 +37,26 @@ export function stateDir(override) {
 export function resolveConfig(raw = {}) {
   const port = Number.isSafeInteger(raw.port) && raw.port > 0 && raw.port < 65536 ? raw.port : DEFAULT_PORT
   const bindHost = typeof raw.bindHost === 'string' && raw.bindHost.length > 0 ? raw.bindHost : DEFAULT_BIND
+  const dir = stateDir(raw.dir)
+  const gatewayBindHost = typeof raw.gatewayBindHost === 'string' && raw.gatewayBindHost.length > 0
+    ? raw.gatewayBindHost
+    : bindHost
   return {
     enabled: raw.enabled !== false,
     port,
     bindHost,
-    dir: stateDir(raw.dir),
+    dir,
+    // Hermes-protocol listener: a second, independent port for Hermex 2.x hosts.
+    // Disabled with gatewayEnabled:false; the webui listener is unaffected either way.
+    gatewayEnabled: raw.gatewayEnabled !== false,
+    gatewayPort: Number.isSafeInteger(raw.gatewayPort) && raw.gatewayPort > 0 && raw.gatewayPort < 65536
+      ? raw.gatewayPort
+      : DEFAULT_GATEWAY_PORT,
+    gatewayBindHost,
+    // Shared secret the two listeners use to talk to each other over loopback.
+    // Never leaves the machine: the gateway forwards to the facade with it
+    // instead of replaying the phone's cookie.
+    internalToken: ensureSecret(join(dir, 'internal.token')),
     tokenTtlSeconds: Number.isSafeInteger(raw.tokenTtlSeconds) && raw.tokenTtlSeconds > 0
       ? raw.tokenTtlSeconds
       : 30 * 24 * 60 * 60,
