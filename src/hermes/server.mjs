@@ -13,12 +13,14 @@
 
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
+import { realpath } from 'node:fs/promises'
 import { homedir, networkInterfaces } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 
 import { createBackend } from './backend.mjs'
 import { createFileRoutes } from './files.mjs'
 import { createPathFence } from './fence.mjs'
+import { branches, fileDiff, findGitRoot, GitRefusal, repoStatus, revParse, reviewDiff, reviewList } from './git.mjs'
 import { createEventHub } from './events.mjs'
 import { createMethods } from './methods.mjs'
 import {
@@ -397,6 +399,45 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
 
   const files = createFileRoutes({ backend, fence, rootsOf: fileRoots, cwdOf: sessionCwd })
 
+  /**
+   * Resolve the repository a Git route may read, from the client's absolute path.
+   *
+   * The Git menu resolves the root from a chat folder, then names that root on
+   * every read — and the root is normally *above* the chat folder. So a path is
+   * accepted when it is inside a chat folder, or when it is the repository root
+   * of one (an ancestor of an allowed folder that really is a git top-level).
+   * A credential file is never served, and the state/secret directories stay
+   * denied.
+   * @param {string} requested client path.
+   * @returns {Promise<{cwd?: string, root?: string, status?: number, detail?: string}>} scope.
+   */
+  async function gitScope(requested) {
+    const target = String(requested ?? '').trim()
+    if (target.length === 0) return { status: 400, detail: 'path required' }
+    if (!target.startsWith('/')) return { status: 400, detail: 'path must be absolute' }
+    const roots = await fileRoots()
+    const verdict = await fence.check(target, roots)
+    if (verdict.ok === true) return { cwd: verdict.path, root: await findGitRoot(verdict.path) }
+    if (verdict.missing === true) return { status: 404, detail: 'Path not found' }
+    if (verdict.sensitive === true) return { status: 403, detail: 'Access to sensitive files is not allowed' }
+    // The repository root above a chat folder is the Git surface's boundary.
+    let real
+    try { real = await realpath(target) } catch { return { status: 404, detail: 'Path not found' } }
+    if (await fence.isDenied(real)) return { status: 403, detail: 'Path is outside the session workspace' }
+    // Compare realpaths: a chat folder under /tmp is reached through /private on
+    // macOS, and the root git reports is the real path.
+    const resolvedRoots = await Promise.all(roots
+      .filter(root => typeof root === 'string' && root.length > 0)
+      .map(root => realpath(root).catch(() => resolve(root))))
+    const ancestor = resolvedRoots.some(root => root !== real && root.startsWith(real + sep))
+    if (!ancestor) return { status: 403, detail: 'Path is outside the session workspace' }
+    const root = await findGitRoot(real)
+    if (root === undefined || resolve(root) !== real) {
+      return { status: 403, detail: 'Path is outside the session workspace' }
+    }
+    return { cwd: real, root }
+  }
+
   /** Password attempts per address, for the login rate limit. */
   const attempts = new Map()
 
@@ -762,6 +803,93 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
       if (reply.bytes === undefined) { sendJson(res, reply.status, reply.body); return }
       res.writeHead(reply.status, reply.headers)
       res.end(reply.bytes)
+      return
+    }
+
+    // The in-chat Git menu, read-only. The client resolves the repository root
+    // from the chat folder, then names that root on every read.
+    if (method === 'GET' && path === '/api/fs/git-root') {
+      const target = String(url.searchParams.get('path') ?? '').trim()
+      if (target.length === 0) { sendJson(res, 400, { detail: 'path required' }); return }
+      if (!target.startsWith('/')) { sendJson(res, 400, { detail: 'path must be absolute' }); return }
+      const verdict = await fence.check(target, await fileRoots())
+      if (verdict.ok !== true) {
+        if (verdict.missing === true) { sendJson(res, 200, { root: null }); return }
+        sendJson(res, 403, {
+          detail: verdict.sensitive === true
+            ? 'Access to sensitive files is not allowed'
+            : 'Path is outside the session workspace',
+        })
+        return
+      }
+      sendJson(res, 200, { root: (await findGitRoot(verdict.path)) ?? null })
+      return
+    }
+
+    const gitRead = method === 'GET' && (
+      path === '/api/git/status' ||
+      path === '/api/git/branches' ||
+      path === '/api/git/review/list' ||
+      path === '/api/git/review/diff' ||
+      path === '/api/git/file-diff' ||
+      path === '/api/git/review/rev-parse'
+    )
+    if (gitRead) {
+      const scope = await gitScope(url.searchParams.get('path'))
+      if (scope.status !== undefined) { sendJson(res, scope.status, { detail: scope.detail }); return }
+      const root = scope.root
+      try {
+        if (path === '/api/git/status') {
+          sendJson(res, 200, root === undefined ? null : await repoStatus(root))
+          return
+        }
+        if (path === '/api/git/branches') {
+          sendJson(res, 200, { branches: root === undefined ? [] : await branches(root) })
+          return
+        }
+        if (path === '/api/git/review/rev-parse') {
+          sendJson(res, 200, { sha: root === undefined ? null : await revParse(root, url.searchParams.get('ref') ?? undefined) })
+          return
+        }
+        const file = url.searchParams.get('file') ?? ''
+        const scopeName = url.searchParams.get('scope') ?? 'uncommitted'
+        if (!['uncommitted', 'branch', 'lastTurn'].includes(scopeName)) {
+          sendJson(res, 400, { detail: 'unknown scope' })
+          return
+        }
+        if (path === '/api/git/review/list') {
+          sendJson(res, 200, root === undefined
+            ? { files: [], base: null }
+            : await reviewList(root, scopeName, url.searchParams.get('base') ?? undefined))
+          return
+        }
+        if (path === '/api/git/review/diff') {
+          const staged = url.searchParams.get('staged') === 'true'
+          sendJson(res, 200, {
+            diff: root === undefined ? '' : await reviewDiff(root, {
+              file, scope: scopeName, base: url.searchParams.get('base') ?? undefined, staged,
+            }),
+          })
+          return
+        }
+        // /api/git/file-diff
+        sendJson(res, 200, { diff: root === undefined ? '' : await fileDiff(root, file) })
+        return
+      } catch (error) {
+        if (error instanceof GitRefusal) { sendJson(res, error.status, { detail: error.detail }); return }
+        logger.warn?.('hermes-gateway: git read failed: ' + String(error?.message ?? error))
+        sendJson(res, 400, { detail: 'git read failed' })
+        return
+      }
+    }
+
+    // Writes and the gh-backed routes are refused with a reason; the Git menu
+    // stays read-only until the write guard is reviewed.
+    if (path.startsWith('/api/git/')) {
+      if (path === '/api/git/review/ship-info') { sendJson(res, 200, { pr: null }); return }
+      if (path === '/api/git/gh-auth') { sendJson(res, 200, { available: false, authenticated: false }); return }
+      if (path === '/api/git/worktrees') { sendJson(res, 200, { worktrees: [] }); return }
+      sendJson(res, 400, { detail: 'Git writes are not supported by this DeepSeek Harness host yet' })
       return
     }
 

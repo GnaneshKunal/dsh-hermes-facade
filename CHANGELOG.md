@@ -21,6 +21,20 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   preview reads only the first 512 KiB through the facade's new `max_bytes`, and
   a source over 64 MiB answers `413 File too large` before it is buffered; a
   directory answers `400 Path points to a directory` on both routes.
+- **The in-chat Git menu on the Hermes listener (read-only).**
+  `GET /api/fs/git-root` resolves the repository holding a chat's folder, and
+  the listener serves the panel's reads: `/api/git/status` (branch,
+  ahead/behind, staged/unstaged/untracked/conflicted counts and rows),
+  `/api/git/review/list` (uncommitted/branch/lastTurn), `/api/git/review/diff`,
+  `/api/git/file-diff`, `/api/git/review/rev-parse` and `/api/git/branches`.
+  `git` runs through `execFile` (no shell) with a timeout, a bounded buffer and
+  optional locks off, and with `GIT_DIR`-style variables removed; the read-only
+  Git scope admits the repository root above a chat folder (the client names
+  that root on every read) and nothing else. A credential file is filtered from
+  the rows and its diff answers 403. Writes (stage/unstage/revert/commit/push,
+  branch switch) answer `400 Git writes are not supported…`, and `ship-info`
+  answers no pull request, so the panel stays honest about being read-only.
+  Tests use a temporary repository.
 - **A shared path fence for file surfaces** (`src/hermes/fence.mjs`). Hermex
   sends absolute host paths and its own check is explicitly not a security
   boundary, so a path is served only when its realpath is inside a chat folder
@@ -35,8 +49,9 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   path answers `403 {"detail":"Path is outside the session workspace"}`; a
   credential answers `403 {"detail":"Access to sensitive files is not allowed"}`.
   The host's secret-cache basenames (`bws_cache.json`, `bws_cache.enc.json`,
-  `op_cache.json`, `photon-sidecar.json`) are included in that guard. Git and
-  Memory will reuse this fence. The Legacy `:9120` file routes are unchanged.
+  `op_cache.json`, `photon-sidecar.json`) are included in that guard. Git
+  reuses this fence; Memory will too. The Legacy `:9120` file routes are
+  unchanged.
 
 ### Fixed
 

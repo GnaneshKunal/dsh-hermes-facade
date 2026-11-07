@@ -8,7 +8,8 @@ The goal has two parts, in this order:
 
 1. **Parity.** Anything the **Legacy** server (`:9120`, hermes-webui) already does for the phone must also work on
    the **Hermes host** (`:9121`). That is the "similar to how V1 was" bar.
-2. **Full V2.** Then add the surfaces only a Hermes host unlocks (Tasks, Skills, Memory, Usage, Git, Bots, Files),
+2. **Full V2.** Then add the surfaces only a Hermes host unlocks (Tasks, Skills, Memory, Usage, Git writes, Bots,
+session search, attachments),
    but only where DSH has a real primitive to back them. A screen that half-renders is worse than one that is
    cleanly hidden.
 
@@ -35,7 +36,7 @@ The gaps split cleanly:
 |---|---|---|
 | Chat telemetry | `usage` on turn events, `terminal_backend`, canonical turn status | a frozen context ring; Files/Git tabs never appear |
 | Disabled feature that exists on the other transport | YOLO honesty | V2 is worse than V1 for that one feature |
-| Screens with no backend yet | Tasks, Skills, Memory, Usage, Git, Bots, search, attachments | the screen errors (the sidebar toggles are local, not probes) |
+| Screens with no backend yet | Tasks, Skills, Memory, Usage, Git writes, Bots, search, attachments | the screen errors (the sidebar toggles are local, not probes) |
 | Silent misbehaviour | edit/regenerate appends, fast/yolo echo | the phone believes something happened that did not |
 
 ---
@@ -72,7 +73,7 @@ Effort: **S** = one route/method over an existing facade primitive; **M** = new 
 | 4 | Files | read code and artifacts from the phone | **done in this change** (read-only) | the facade's file routes behind the shared fence | M | done |
 | 5 | Tasks / cron | scheduled jobs and history | `/api/cron/jobs`, `/runs`, pause/resume/trigger/delete, delivery-targets, `sources=cron` agenda | `schedule/*` (near-exact) | M | next |
 | 6 | Memory | edit what the agent remembers | `/api/memory`, `files/read`, `files/upload`, `profiles/{n}/soul`, `profiles.list[].path` | `$DSH_HOME/AGENTS.md` + the project AGENTS.md chain (a real memory) | M | next |
-| 7 | Git read | see what changed, diffs | `/api/fs/git-root`, `/api/git/status`, `review/list`, `review/diff`, `file-diff`, `rev-parse`, `commit-context`, `branches` | exec `git` in the session folder | M | next |
+| 7 | Git read | see what changed, diffs | `/api/fs/git-root`, `/api/git/status`, `review/list`, `review/diff`, `file-diff`, `rev-parse`, `branches` | exec `git` in the session folder | M | done |
 | 8 | Git write | stage / commit / push | `review/{stage,unstage,revert,commit,push}`, `branch/switch` | exec `git`, with the idle guard the client already expects | M | later |
 | 9 | Skills | browse skills and their files | `/api/skills`, `/api/skills/content` | `skills/list` (read-only) + `workspaceFiles/read` | S/M | next |
 | 10 | Usage / Insights | token and session usage | `/api/analytics/{usage,models}`, `insights.get` | a facade ledger over `assistant/message.usage`; **no cost data** | M/L | later |
@@ -143,19 +144,31 @@ host's own Files guard: credential basenames (`.env`, `.env.*`, `.envrc`, `.git-
 build/VCS caches are hidden from listings. Sizes match the host: a preview reads only the first 512 KiB through the
 facade's new `max_bytes`, and a source over 64 MiB answers `413 File too large` before anything is buffered; a
 relative MEDIA path resolves against `session_id`'s folder and is then fenced (`attachment:` refs answer 400).
-A denied path answers `403` with a detail; a directory answers `400 Path points to a directory`. Git keeps its menu
-hidden until `fs/git-root` exists. Tests cover listing (draft and session roots), text/binary previews, the
-truncation, downloads, traversal, a symlink escape, credential files/directories, the 64 MiB cap on both routes,
-relative MEDIA resolution and the attachment refusal.
+A denied path answers `403` with a detail; a directory answers `400 Path points to a directory`. Tests cover
+listing (draft and session roots), text/binary previews, the truncation, downloads, traversal, a symlink escape,
+credential files/directories, the 64 MiB cap on both routes, relative MEDIA resolution and the attachment refusal.
 
-Verify: `npm run check && npm test` (178 tests), then rename a chat from the phone's list, pin it, archive it,
+**The Git menu, read-only.** `src/hermes/git.mjs` runs `git` with `execFile` (no shell), a timeout, a bounded
+output, and `$DSH_HOME`/SSH-style secret directories excluded; the shared fence admits the chat folder, and the
+session's folder resolves a relative MEDIA path for Files. The listener now serves `/api/fs/git-root` and the read
+routes the panel calls: `/api/git/status` (branch, ahead/behind, staged/unstaged/untracked/conflicted counts, rows),
+`/api/git/review/list` (uncommitted/branch/lastTurn), `/api/git/review/diff`, `/api/git/file-diff`,
+`/api/git/review/rev-parse` and `/api/git/branches`. The client names the repository root, which is normally
+*above* the chat folder, so the Git scope admits the top-level of a repository that holds an allowed folder and
+nothing else; a credential file is filtered from the rows and its patch answers `403`. Writes (stage, unstage,
+revert, commit, push, branch switch) answer `400 Git writes are not supported…` with the reason, and `ship-info`
+answers no pull request, so the panel is honest about its read-only state. Tests cover a real temporary repository:
+status, changes, patches (tracked and untracked), branches, sha, the fence for a non-root, the non-repo shapes and
+the write refusal.
+
+Verify: `npm run check && npm test` (179 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---
 
 ## 5. Next picks, with acceptance criteria
 
-Files is done (see §4). The next three, in order:
+Files and Git read are done (see §4). The next three, in order:
 
 ### Pick 1 — Session search
 
@@ -173,25 +186,25 @@ Backing:
 Done when: the context ring fills during and after a turn, the turn outcome row is unchanged, and no event grows
 unbounded.
 
-### Pick 3 — Git read
+### Pick 3 — Tasks / cron
 
-Calls: `GET /api/fs/git-root`, `/api/git/status`, `/api/git/review/{list,diff}` (scope uncommitted/branch/lastTurn),
-`/api/git/file-diff`, `/api/git/review/{rev-parse,commit-context}`, `/api/git/branches`. Backing: exec `git` in the
-chat folder, reusing the Files fence; **read-only first** (stage/commit/push stay hidden until the write guard is
-reviewed). Done when: a chat in a repository shows the Git menu with status, change list and diffs; a non-repo folder
-hides it; every path is fenced and a diff over 512 KiB is flagged.
+Calls: `GET /api/cron/jobs`, `/api/cron/runs`, pause/resume/trigger/delete, delivery targets, and
+`sources=cron` on the agenda. Backing: the `schedule/*` projections (near-exact shapes: name, prompt, schedule,
+state, target, last delivery), with a run's history from the schedule's own delivery records. Done when: the Tasks
+screen lists real schedules with next-run times, pause/resume/delete round-trip, an empty list is a real empty state,
+and the list's cron source matches the same rows.
 
 ---
 
 ## 6. Sequencing and cross-cutting work
 
-Order after this change: **session search → chat telemetry → Git read → Tasks → Memory → Skills → Usage →
-attachments → goal/btw/background → Bots**.
+Order after this change: **session search → chat telemetry → Tasks → Memory → Skills → Usage →
+attachments → goal/btw/background → Git write → Bots**.
 
 Cross-cutting items that should ride the first task that touches them. The capability gate, the honest refusals,
 the rate-limit key and the prompt-concurrency guards landed in the bugfix pass; these remain:
 
-1. **One path fence** shared by Files, Git and Memory — **done for Files** (`src/hermes/fence.mjs`); Git and
+1. **One path fence** shared by Files, Git and Memory — **done for Files and Git** (`src/hermes/fence.mjs`);
    Memory must call the same fence. The Legacy `:9120` routes remain unfenced, as before.
 2. **Cache headers** on file reads (ETag from mtime+size) so transcript images and previews do not re-download.
 3. **Event-ring bounds** (per-session bytes + a session cap) and a `forget` on delete/archive.

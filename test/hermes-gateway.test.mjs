@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { closeSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { closeSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -1445,6 +1446,108 @@ test('session.info names the local terminal backend the Files entry needs', asyn
     await harness.facade.close()
   }
 })
+
+test('the in-chat Git menu reads status, changes, diffs and branches (read-only)', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'hermes-git-'))
+  const chatFolder = join(repo, 'project')
+  mkdirSync(chatFolder)
+  const identity = ['-c', 'user.email=test@example.invalid', '-c', 'user.name=Test', '-c', 'commit.gpgsign=false']
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo })
+  writeFileSync(join(chatFolder, 'app.txt'), 'one\n')
+  execFileSync('git', ['add', '.'], { cwd: repo })
+  execFileSync('git', [...identity, 'commit', '-qm', 'initial'], { cwd: repo })
+  writeFileSync(join(chatFolder, 'app.txt'), 'one\ntwo\n')
+  writeFileSync(join(chatFolder, 'new.txt'), 'fresh\n')
+  writeFileSync(join(chatFolder, '.env'), 'SECRET=1\n')
+  const notARepo = mkdtempSync(join(tmpdir(), 'hermes-norepo-'))
+  const harness = await boot({ hostCwd: chatFolder })
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const enc = value => encodeURIComponent(value)
+      // A chat folder inside a repository resolves the root above it.
+      const created = await socket.call('session.create', { profile: 'default', cwd: chatFolder })
+      assert.equal(created.result.info.terminal_backend, 'local')
+      const rootReply = await api(harness.base, '/api/fs/git-root?path=' + enc(chatFolder), { cookie })
+      assert.equal(rootReply.status, 200)
+      const repoRoot = rootReply.json.root
+      assert.equal(repoRoot, realpathSync(repo))
+
+      const status = await api(harness.base, '/api/git/status?path=' + enc(repoRoot), { cookie })
+      assert.equal(status.status, 200)
+      assert.equal(status.json.branch, 'main')
+      assert.equal(status.json.detached, false)
+      assert.equal(status.json.untracked, 1)
+      assert.deepEqual(status.json.files.map(file => file.path).sort(), ['project/app.txt', 'project/new.txt'])
+      assert.equal(status.json.files.some(file => file.path.includes('.env')), false)
+      assert.equal(status.json.files.find(file => file.path === 'project/new.txt').untracked, true)
+      assert.equal(status.json.files.find(file => file.path === 'project/app.txt').staged, false)
+
+      const changes = await api(harness.base, '/api/git/review/list?path=' + enc(repoRoot) + '&scope=uncommitted', { cookie })
+      assert.equal(changes.status, 200)
+      assert.equal(changes.json.base, null)
+      assert.deepEqual(changes.json.files.map(row => row.path), ['project/app.txt', 'project/new.txt'])
+      assert.equal(changes.json.files.find(row => row.path === 'project/new.txt').status, '?')
+      assert.equal(changes.json.files.some(row => row.path.includes('.env')), false)
+
+      const diff = await api(harness.base, '/api/git/review/diff?path=' + enc(repoRoot) + '&file=' + enc('project/app.txt') + '&scope=uncommitted&staged=false', { cookie })
+      assert.equal(diff.status, 200)
+      assert.match(diff.json.diff, /\+two/)
+      const newFile = await api(harness.base, '/api/git/file-diff?path=' + enc(repoRoot) + '&file=' + enc('project/new.txt'), { cookie })
+      assert.equal(newFile.status, 200)
+      assert.match(newFile.json.diff, /\+fresh/)
+
+      const branches = await api(harness.base, '/api/git/branches?path=' + enc(repoRoot), { cookie })
+      assert.equal(branches.status, 200)
+      const main = branches.json.branches.find(row => row.name === 'main')
+      assert.equal(main.checkedOut, true)
+      assert.equal(main.isDefault, true)
+      assert.equal(main.isRemote, false)
+
+      const head = await api(harness.base, '/api/git/review/rev-parse?path=' + enc(repoRoot), { cookie })
+      assert.equal(head.status, 200)
+      assert.match(head.json.sha, /^[0-9a-f]{40}$/)
+
+      // A credential file is refused by the diff routes, as the Files guard does.
+      const secret = await api(harness.base, '/api/git/review/diff?path=' + enc(repoRoot) + '&file=' + enc('project/.env') + '&scope=uncommitted', { cookie })
+      assert.equal(secret.status, 403)
+      assert.equal(secret.json.detail, 'Access to sensitive files is not allowed')
+
+      // A path that is neither a chat folder nor the root of one is fenced.
+      const outside = await api(harness.base, '/api/git/status?path=' + enc(notARepo), { cookie })
+      assert.equal(outside.status, 403)
+      assert.match(outside.json.detail, /outside the session workspace/)
+
+      // A chat folder outside a repository answers the host's empty shapes.
+      await socket.call('session.create', { profile: 'default', cwd: notARepo })
+      const noRoot = await api(harness.base, '/api/fs/git-root?path=' + enc(notARepo), { cookie })
+      assert.equal(noRoot.status, 200)
+      assert.equal(noRoot.json.root, null)
+      const noStatus = await api(harness.base, '/api/git/status?path=' + enc(notARepo), { cookie })
+      assert.equal(noStatus.status, 200)
+      assert.equal(noStatus.json, null)
+      const noChanges = await api(harness.base, '/api/git/review/list?path=' + enc(notARepo) + '&scope=uncommitted', { cookie })
+      assert.deepEqual(noChanges.json, { files: [], base: null })
+
+      // Writes are refused with a reason; the menu is read-only for now.
+      const stage = await api(harness.base, '/api/git/review/stage', {
+        cookie, method: 'POST', body: { path: repoRoot, file: 'project/app.txt' },
+      })
+      assert.equal(stage.status, 400)
+      assert.match(stage.json.detail, /not supported/i)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+    rmSync(notARepo, { recursive: true, force: true })
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
 
 
 

@@ -109,5 +109,20 @@ export function createPathFence({ deny = [] } = {}) {
     return { ok: false, forbidden: true }
   }
 
-  return { check }
+  /**
+   * Whether a real path is inside a directory that is never served.
+   * Used by surfaces whose boundary is broader than a chat folder (a Git
+   * repository root above the folder) before they admit it.
+   * @param {string} target absolute path.
+   * @returns {Promise<boolean>} denied.
+   */
+  async function isDenied(target) {
+    const resolved = await realOrResolved(target)
+    for (const root of denied) {
+      if (inside(resolved, await realOrResolved(root))) return true
+    }
+    return false
+  }
+
+  return { check, isDenied }
 }
