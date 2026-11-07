@@ -13,7 +13,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
-import { realpath } from 'node:fs/promises'
+import { readFile, realpath } from 'node:fs/promises'
 import { homedir, networkInterfaces } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 
@@ -43,6 +43,36 @@ import { acceptUpgrade } from './ws.mjs'
 
 /** Largest accepted JSON body. */
 const MAX_BODY_BYTES = 4 * 1024 * 1024
+
+/**
+ * The memory section a managed file path addresses, if any. Only the two
+ * paths the Memory screen asks for are served; everything else is a 404.
+ * @param {string} requested client path.
+ * @returns {'memory'|'user'|null} section.
+ */
+function memoryKindOf(requested) {
+  const parts = String(requested ?? '').split('/')
+  if (parts.length < 2 || parts[parts.length - 2] !== 'memories') return null
+  const file = parts[parts.length - 1]
+  if (file === 'MEMORY.md') return 'memory'
+  if (file === 'USER.md') return 'user'
+  return null
+}
+
+/**
+ * The global AGENTS.md, or null when it does not exist.
+ * @param {string} home DSH home.
+ * @returns {Promise<string|null>} text.
+ */
+async function readMemoryText(home) {
+  try {
+    return await readFile(join(home, 'AGENTS.md'), 'utf8')
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw error
+  }
+}
+
 
 /**
  * Send a JSON answer.
@@ -96,7 +126,7 @@ async function readJson(req) {
  * @param {object} [options.logger] logger.
  * @returns {object} gateway.
  */
-export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = console }) {
+export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome: memoryHomeOverride, logger = console }) {
   const installId = ensureInstallId(config.dir)
   const replayEpoch = randomUUID()
   const tickets = createTicketStore({ ttlSeconds: TICKET_TTL_SECONDS })
@@ -366,6 +396,10 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
   // Never serve the facade's own state (internal token, password, drafts) or a
   // known secret directory, even if a workspace were created inside one.
   const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
+  // The global AGENTS.md is the agent's memory. It lives in $DSH_HOME, which the
+  // file fence denies to the in-chat Files browser, so Memory reads it here
+  // through a path allowlist rather than through /api/fs/*.
+  const memoryHome = memoryHomeOverride ?? dshHome
   const fence = createPathFence({
     deny: [
       config.dir,
@@ -782,7 +816,47 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
       return
     }
     if (method === 'GET' && path === '/api/config') {
-      sendJson(res, 200, { platform_hints: {}, profile: 'default' })
+      // Only the memory flags are read by the Memory screen; this host has no
+      // user-profile store and no per-profile memory directory.
+      sendJson(res, 200, {
+        platform_hints: {},
+        profile: profilesActiveBody().active,
+        memory: {
+          memory_enabled: true,
+          user_profile_enabled: false,
+          memory_char_limit: 200000,
+          user_char_limit: 0,
+        },
+      })
+      return
+    }
+    // The Memory screen's managed file routes. Only the two paths its Profile
+    // row turns into are served: MEMORY.md is the global AGENTS.md, USER.md is
+    // absent. Nothing here opens the requested path, so no other file is reachable.
+    if (method === 'GET' && path === '/api/files/read') {
+      const kind = memoryKindOf(url.searchParams.get('path'))
+      if (kind === null || kind === 'user') { sendJson(res, 404, { detail: 'Not Found' }); return }
+      const content = await readMemoryText(memoryHome)
+      if (content === null) { sendJson(res, 404, { detail: 'Not Found' }); return }
+      sendJson(res, 200, { data_url: 'data:text/plain;base64,' + Buffer.from(content, 'utf8').toString('base64') })
+      return
+    }
+    if (method === 'POST' && path === '/api/files/upload') {
+      const body = await readJson(req)
+      if (memoryKindOf(body.path) === null) { sendJson(res, 404, { detail: 'Not Found' }); return }
+      sendJson(res, 400, { detail: 'Memory is read-only on this host; edit AGENTS.md in the DSH home or the workspace.' })
+      return
+    }
+    const soulMatch = /^\/api\/profiles\/([^/]+)\/soul$/.exec(path)
+    if (soulMatch !== null) {
+      const name = decodeURIComponent(soulMatch[1])
+      if (name !== profilesActiveBody().active) { sendJson(res, 404, { detail: 'Not Found' }); return }
+      if (method === 'GET') { sendJson(res, 200, { content: '', exists: false }); return }
+      if (method === 'PUT') {
+        sendJson(res, 400, { detail: 'This host has no SOUL.md; memory lives in AGENTS.md.' })
+        return
+      }
+      sendJson(res, 405, { detail: 'Method Not Allowed' })
       return
     }
     if (method === 'GET' && path === '/api/models') {

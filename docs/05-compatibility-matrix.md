@@ -161,7 +161,7 @@ through the durable parent address.
 | Personality | `config.set` `personality` | **-32000** | the picker errors; DSH has agent presets, not personalities | maybe: map to presets |
 | Commands | `commands.catalog` | **WORKS** | slash commands as pairs + canon | no categories/skills half |
 | Slash execution / completion | `complete.slash`, `command.dispatch`, `slash.exec`, `complete.path` | **-32601** | autocomplete and `@path` completion are missing; typed commands still send as text | partly: `commands/list`, directory listing |
-| Profiles | `profiles.list`, `profiles.describe` | **PARTIAL** | one Profile, `default`; rows lack `path`, which Memory's folder lookup needs | yes: add `path` |
+| Profiles | `profiles.list`, `profiles.describe` | **PARTIAL** | one Profile, `default`; its row now carries a virtual `path` (`dsh://memory`) so Memory's folder lookup resolves, but Bots still has no backend | yes: `path` for Memory |
 
 ### 2.4 Sessions — REST and actions
 
@@ -184,17 +184,17 @@ through the durable parent address.
 
 ### 2.5 The other screens a Hermes host unlocks
 
-The sidebar toggles for Skills, Memory, Usage and Kanban are local preferences (on by default), not
+The sidebar toggles for Skills, Usage and Kanban are local preferences (on by default), not
 capability probes, so an absent backend shows the screen's own error. Kanban is the exception: its
 `/api/plugins/kanban/config` 404 gives the clean "unavailable" state.
 
 | Surface | Endpoint(s) / method(s) | State | What the phone shows | Bridgeable? |
 |---|---|---|---|---|
-| Files (in-chat workspace) | `GET /api/fs/list`, `/api/fs/read-text`, `/api/fs/download` + `session.info.terminal_backend:"local"` | **WORKS** (read-only) | the Files link opens a browser for the chat's folder: listing (host caches and credential stores hidden), text previews (first 512 KiB), binary/image downloads. A path outside the chat's folders answers `403`; credential material answers `403` wherever it sits; sources over 64 MiB answer `413`; the facade state and secret directories are never served. Git still has no `fs/git-root`, so its menu stays hidden | — (the shared fence is in place; Git and Memory will reuse it) |
+| Files (in-chat workspace) | `GET /api/fs/list`, `/api/fs/read-text`, `/api/fs/download` + `session.info.terminal_backend:"local"` | **WORKS** (read-only) | the Files link opens a browser for the chat's folder: listing (host caches and credential stores hidden), text previews (first 512 KiB), binary/image downloads. A path outside the chat's folders answers `403`; credential material answers `403` wherever it sits; sources over 64 MiB answer `413`; the facade state and secret directories are never served. Git still has no `fs/git-root`, so its menu stays hidden | — (the shared fence is in place; Git reuses it, while Memory deliberately reads only its AGENTS.md allowlist because the fence denies `$DSH_HOME`) |
 | Git (in-chat, read-only) | `GET /api/fs/git-root`, `/api/git/status`, `/api/git/review/{list,diff}`, `/api/git/file-diff`, `/api/git/review/rev-parse`, `/api/git/branches` | **WORKS** (read) | the Git menu opens in a repository: branch/ahead/behind, changed files and counts, staged/unstaged/untracked flags, per-file patches, branch list. Writes and branch switch answer `400` with a reason, and no pull request is reported. A credential file is filtered from the rows and its diff answers `403`; reads are limited to the repository holding the chat's folder | writes next: stage/commit/push behind the idle guard |
 | Tasks / cron | `GET /api/cron/jobs`, `/runs`, `POST /api/cron/jobs`, `PUT /api/cron/jobs/{id}`, `POST …/{pause,resume,trigger}`, `DELETE`, `/api/cron/delivery-targets` | **WORKS** (local delivery) | the Tasks list shows schedules with next/last run and state; create/edit/pause/resume/trigger/delete round-trip; a run's output opens as its session. Delivery is local only, model/provider/skills are refused, run history is the schedule's delivery records (no cost), and `sources=cron` on the agenda is still empty because DSH has no session provenance | — |
 | Skills | `GET /api/skills`, `/api/skills/content`, `PUT /api/skills/toggle` + `/api/fs/*` for linked files | **404** | the Skills screen errors | list/content: S/M (`skills/list`); toggle: L (no write RPC) |
-| Memory | `GET /api/config` `.memory`, `/api/profiles/{name}/soul`, `GET /api/files/read`, `POST /api/files/upload`, `profiles.list[].path` | **404 / PARTIAL** | the Memory screen errors (no profile `path`, no memory block) | possible: M — map to `$DSH_HOME/AGENTS.md` (a real memory the agent reads), with an atomic save; no soul |
+| Memory | `GET /api/config` `.memory`, `/api/profiles/{name}/soul`, `GET /api/files/read`, `POST /api/files/upload`, `profiles.list[].path` | **WORKS** (read-only) | the Memory screen shows the global `$DSH_HOME/AGENTS.md` as MEMORY.md (a missing file is an honest empty state), no USER.md (the config turns that section off), and an empty soul. `profiles.list` carries a virtual `dsh://memory` path; `/api/files/read` serves only a `.../memories/MEMORY.md` suffix and 404s every other path, so it is not a second file browser. Saves answer 400 (read-only). Project AGENTS.md files are not shown: the screen is global, not per-workspace | — |
 | Usage / Insights | `GET /api/analytics/{usage,models}`, `insights.get` | **-32601 / 404** | the Usage screen errors (503/5017 states are different copy); no cost data exists | possible: M/L — a facade ledger over DSH token usage; cost stays 0 |
 | Kanban | `/api/plugins/kanban/*` | **404** | the tab shows "unavailable" cleanly | no: a whole board + workers DSH does not model |
 | Bots / Bot screen | `profiles.*`, `/api/dashboard/plugins/*`, `display.*`, `/api/display/ws`, `hermex-screen` routes | **PARTIAL / 404** | one Profile; creating/configuring a bot is refused; the live bot screen is unavailable | Bots: L (a facade store + preset); screen: no |
@@ -220,7 +220,8 @@ capability probes, so an absent backend shows the screen's own error. Kanban is 
 | Files browser | **works** (read-only) | **works** (read-only, fenced to the chat folder) |
 | Session search | works | works (REST; the RPC is unused) |
 | Tasks | stub (`/api/crons`) | works over `/api/cron/*` (local delivery only) |
-| Skills / Memory / Usage | stub screens | error screens (the real backend is missing) |
+| Memory | works read-only | the global AGENTS.md, no USER/soul editing |
+| Skills / Usage | stub screens | error screens (the real backend is missing) |
 | Git | panel unavailable | read-only: status, changes, diffs, branches; writes refused |
 | Kanban | stub | 404, "unavailable" |
 | Attachments | refused | RPC missing; a send with an attachment fails |
