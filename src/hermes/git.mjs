@@ -736,9 +736,20 @@ export async function switchBranch(root, branch, guard) {
  * @param {string} root repository root.
  * @returns {Promise<{diff: string, recent: string, branch: string|null, truncated: boolean}>} context.
  */
-export async function commitContext(root) {
+export async function commitContext(root, deny) {
   const status = await repoStatus(root)
-  const full = (await runGit(root, ['diff', '--cached', '--no-color', '--no-ext-diff', '--no-textconv'])).stdout
+  const names = (await gitOut(root, ['diff', '--cached', '--name-only', '-z'], 'diff')).split('\0').filter(Boolean)
+  let full = ''
+  for (const file of names) {
+    try {
+      const safe = await safeFilePath(root, file, deny)
+      full += await gitOut(root, ['diff', '--cached', '--no-color', '--no-ext-diff', '--no-textconv', '--', safe.literal], 'diff')
+    } catch (error) {
+      // A staged credential is never sent to the message helper.
+      if (!(error instanceof GitRefusal)) throw error
+    }
+    if (full.length >= 64 * 1024) break
+  }
   const limit = 64 * 1024
   const recent = (await runGit(root, ['log', '-5', '--format=%s'])).stdout.trim()
   return {

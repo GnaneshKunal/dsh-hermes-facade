@@ -1008,7 +1008,7 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
         if (path === '/api/git/review/commit-context') {
           sendJson(res, 200, root === undefined
             ? { diff: '', recent: '', branch: null, truncated: false }
-            : await commitContext(root))
+            : await commitContext(root, gitGuard))
           return
         }
         const file = url.searchParams.get('file') ?? ''

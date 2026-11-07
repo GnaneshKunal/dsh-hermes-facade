@@ -136,6 +136,12 @@ test('switchBranch moves the working tree and commitContext reports the staged d
     const context = await commitContext(root)
     assert.match(context.diff, /staged/)
     assert.equal(context.branch, 'feature')
+
+    // A staged credential is never sent to the message helper.
+    writeFileSync(join(root, '.env'), 'SECRET=1\n')
+    git(root, ['add', '-f', '.env'])
+    const fenced = await commitContext(root)
+    assert.equal(fenced.diff.includes('SECRET=1'), false)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
