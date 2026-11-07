@@ -54,7 +54,7 @@ function createQueue() {
  * Build an in-memory host that behaves like the DSH adapter.
  * @returns {object} mock host.
  */
-export function createMockHost() {
+export function createMockHost({ cwd = process.cwd() } = {}) {
   const sessions = new Map()
   const queues = new Map()
   const listeners = new Set()
@@ -126,7 +126,7 @@ export function createMockHost() {
         sessionId,
         updatedAt: Date.now(),
         running: false,
-        cwd: process.cwd(),
+        cwd,
         projections: { values: { title: 'Mock session' } },
         events: [],
       })
@@ -222,7 +222,7 @@ export function createMockHost() {
     async commands() { return [] },
     async workspaces() {
       return {
-        workspaces: [{ id: 'ws-mock', name: 'mock workspace', path: process.cwd(), sessionIds: ['sess-mock'] }],
+        workspaces: [{ id: 'ws-mock', name: 'mock workspace', path: cwd, sessionIds: ['sess-mock'] }],
         pinnedSessionIds: [...pinned],
         archivedSessionIds: [...archived],
       }
@@ -351,14 +351,18 @@ export function createMockHost() {
         count: entries.length,
       }
     },
-    async readText(sessionId, reference) {
+    async readText(sessionId, reference, options = {}) {
       const { readFile } = await import('node:fs/promises')
       const { basename, extname } = await import('node:path')
       const target = await this.resolvePath(sessionId, reference)
       if (target === undefined) return undefined
       const body = await readFile(target).catch(() => undefined)
       if (body === undefined || body.includes(0)) return undefined
-      const content = body.toString('utf8')
+      const maxBytes = Number.isSafeInteger(options?.maxBytes) && options.maxBytes > 0
+        ? options.maxBytes
+        : undefined
+      const slice = maxBytes === undefined ? body : body.subarray(0, maxBytes)
+      const content = slice.toString('utf8')
       return {
         content,
         path: target,
@@ -366,14 +370,15 @@ export function createMockHost() {
         language: extname(target).replace(/^\./, '').toLowerCase(),
         size: body.length,
         lines: content.length === 0 ? 0 : content.split('\n').length,
+        truncated: slice.length < body.length,
       }
     },
     async resolvePath(sessionId, reference) {
       const { join } = await import('node:path')
       const raw = String(reference ?? '').trim()
       if (raw.startsWith('/')) return raw
-      const cwd = sessions.get(sessionId)?.cwd ?? process.cwd()
-      return raw.length === 0 ? cwd : join(cwd, raw)
+      const base = sessions.get(sessionId)?.cwd ?? cwd
+      return raw.length === 0 ? base : join(base, raw)
     },
     async readMedia(sessionId, reference) {
       const { readFile } = await import('node:fs/promises')

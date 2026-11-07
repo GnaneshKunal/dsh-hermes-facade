@@ -185,17 +185,23 @@ with reason `resolved`, like the `approval.respond`/`request.answer` path.
 | `GET /api/profiles/active`, `GET /api/profiles` | the single Profile |
 | `GET /api/config` | `{platform_hints:{}}`; the app's note is advisory |
 | `GET /api/models`, `GET /api/commands` | the catalogs |
-| `GET /api/fs/list?path=` | one chat folder: `{entries:[{name, path, isDirectory}]}`. An unreadable folder is a well-formed 200 `{entries:[],error:...}` |
-| `GET /api/fs/read-text?path=` | `{binary, byteSize, language, path, text, truncated}`; text is capped at 512 KiB, a binary file answers `binary:true` |
-| `GET /api/fs/download?path=[&session_id=]` | the file's bytes and content type; `session_id` lets the host resolve a MEDIA path against the session |
+| `GET /api/fs/list?path=` | one chat folder: `{entries:[{name, path, isDirectory}]}`. An unreadable folder is a well-formed 200 `{entries:[],error:...}`. The host's hidden caches (`.git`, `node_modules`, `dist`, …) and credential stores (`.env`, `.git-credentials`, `mcp-tokens/`, …) are not listed |
+| `GET /api/fs/read-text?path=` | `{binary, byteSize, language, path, text, truncated}`; only the first 512 KiB is read (the facade's `max_bytes`), a source over 64 MiB answers `413 File too large`, and a binary file answers `binary:true` |
+| `GET /api/fs/download?path=[&session_id=]` | the file's bytes and content type. A relative `path` resolves against `session_id`'s folder and is then fenced; `attachment:` refs answer 400; a directory answers 400 `Path points to a directory`; a source over 64 MiB answers 413 |
 | `GET /api/files/*`, `/api/fs/git-root` | **not implemented** (404); the Git menu stays hidden |
 
-The three `/api/fs/*` routes share one fence: the client's absolute path must
-realpath inside a chat folder (DSH workspaces, known session folders, and a
-draft's chosen folder). The facade state directory, `$DSH_HOME`, `~/.ssh`,
-`~/.aws` and `~/.gnupg` are never served, even if a chat folder were opened
-inside one; a symlink resolves first, so it cannot point out. A denied path
-answers `403 {"detail":"Path is outside the session workspace"}`.
+The three `/api/fs/*` routes share one fence: the client's path (absolute, or
+relative to `session_id`'s folder) must realpath inside a chat folder (DSH
+workspaces, known session folders, and a draft's chosen folder). The facade
+state directory, `$DSH_HOME`, `~/.ssh`, `~/.aws` and `~/.gnupg` are never
+served, even if a chat folder were opened inside one; a symlink resolves first,
+so it cannot point out. Credential material the host's own Files guard refuses
+(`.env`, `.env.*`, `.envrc`, `.git-credentials`, `auth.json`, `credentials`,
+`config.yaml`, and any `mcp-tokens`/`pairing` component) is refused wherever it
+sits, and the same names plus the host's build/VCS caches are hidden from a
+listing. A denied path answers `403 {"detail":"Path is outside the session
+workspace"}`; credential material answers `403 {"detail":"Access to sensitive
+files is not allowed"}`.
 
 ---
 

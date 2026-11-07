@@ -8,13 +8,22 @@
  * shapes (camelCase `isDirectory`, `byteSize`, `binary`, `truncated`) after
  * the shared path fence has admitted the target.
  *
+ * Size limits mirror the host: a text source over 64 MiB is 413, a preview
+ * reads only the first 512 KiB (the facade's `max_bytes`), and a download over
+ * the same 64 MiB cap is refused instead of buffered whole.
+ *
  * @module dsh-hermes-facade/src/hermes/files
  */
 
 import { stat } from 'node:fs/promises'
+import { join } from 'node:path'
+
+import { HIDDEN_LISTING_NAMES, isSensitivePath } from './fence.mjs'
 
 /** Most text a preview returns, matching the host's 512 KiB cap. */
 const PREVIEW_BYTES = 512 * 1024
+/** Largest source read-text/download accept, matching the host's 64 MiB cap. */
+const SOURCE_MAX_BYTES = 64 * 1024 * 1024
 
 /**
  * Build the Files routes.
@@ -22,24 +31,49 @@ const PREVIEW_BYTES = 512 * 1024
  * @param {object} options.backend facade client.
  * @param {object} options.fence shared path fence.
  * @param {() => Promise<string[]>} options.rootsOf directories a client may read.
+ * @param {(sessionId: string) => Promise<string|undefined>} options.cwdOf a session's folder.
  * @returns {object} routes.
  */
-export function createFileRoutes({ backend, fence, rootsOf }) {
+export function createFileRoutes({ backend, fence, rootsOf, cwdOf }) {
   /**
    * Fence one path, mapping a verdict to the status the client understands.
    * @param {string} raw client path.
-   * @returns {Promise<{path?: string, status?: number, detail?: string, missing?: boolean}>} target.
+   * @param {string} [sessionId] session whose folder resolves a relative path.
+   * @returns {Promise<{path?: string, status?: number, detail?: string}>} target.
    */
-  async function targetOf(raw) {
+  async function targetOf(raw, sessionId) {
     const target = String(raw ?? '').trim()
     if (target.length === 0) return { status: 400, detail: 'path required' }
-    // The app builds absolute host paths; a relative one has no session to
-    // resolve against on this route, so refuse it instead of guessing.
-    if (!target.startsWith('/')) return { status: 400, detail: 'path must be absolute' }
-    const verdict = await fence.check(target, await rootsOf())
+    if (target.startsWith('attachment:')) {
+      // The host resolves attachment references; DSH has no attachment store.
+      return { status: 400, detail: 'attachment references are not supported' }
+    }
+    let candidate = target
+    if (!target.startsWith('/')) {
+      // A MEDIA path can be relative to the session; resolve it there, then
+      // fence the absolute result so it cannot reach outside the chat folder.
+      const cwd = sessionId === undefined || sessionId.length === 0 ? undefined : await cwdOf(sessionId)
+      if (typeof cwd !== 'string' || cwd.length === 0) return { status: 400, detail: 'path must be absolute' }
+      candidate = join(cwd, target)
+    }
+    const verdict = await fence.check(candidate, await rootsOf())
     if (verdict.ok === true) return { path: verdict.path }
-    if (verdict.missing === true) return { status: 404, detail: 'Path not found' }
+    if (verdict.missing === true) return { status: 404, detail: 'File not found' }
+    if (verdict.sensitive === true) return { status: 403, detail: 'Access to sensitive files is not allowed' }
     return { status: 403, detail: 'Path is outside the session workspace' }
+  }
+
+  /**
+   * Stat a fenced path, mapping the host's regular-file refusals.
+   * @param {string} path absolute path.
+   * @returns {Promise<{info?: object, status?: number, detail?: string}>} inspection.
+   */
+  async function inspect(path) {
+    let info
+    try { info = await stat(path) } catch { return { status: 404, detail: 'File not found' } }
+    if (info.isDirectory()) return { status: 400, detail: 'Path points to a directory' }
+    if (!info.isFile()) return { status: 400, detail: 'Only regular files can be read' }
+    return { info }
   }
 
   /**
@@ -66,6 +100,10 @@ export function createFileRoutes({ backend, fence, rootsOf }) {
         isDirectory: entry?.is_dir === true,
       }))
       .filter(entry => entry.name.length > 0)
+      // The host hides build/VCS caches and credential stores from the browser;
+      // an entry is still refused by the fence if its path is asked for.
+      .filter(entry => !HIDDEN_LISTING_NAMES.has(entry.name))
+      .filter(entry => !isSensitivePath(entry.path.length > 0 ? entry.path : join(target.path, entry.name)))
     return { status: 200, body: { entries } }
   }
 
@@ -75,33 +113,36 @@ export function createFileRoutes({ backend, fence, rootsOf }) {
    * @returns {Promise<object>} reply.
    */
   async function readText(url) {
-    const target = await targetOf(url.searchParams.get('path'))
+    const target = await targetOf(url.searchParams.get('path'), url.searchParams.get('session_id') ?? '')
     if (target.path === undefined) return { status: target.status, body: { detail: target.detail } }
-    const reply = await backend.call('GET', '/api/file', { query: { path: target.path } })
+    const inspected = await inspect(target.path)
+    if (inspected.info === undefined) return { status: inspected.status, body: { detail: inspected.detail } }
+    if (inspected.info.size > SOURCE_MAX_BYTES) return { status: 413, body: { detail: 'File too large' } }
+    // Ask for the preview window only, so a large log never lands in memory whole.
+    const reply = await backend.call('GET', '/api/file', {
+      query: { path: target.path, max_bytes: PREVIEW_BYTES },
+    })
     if (reply.status === 200) {
       const file = reply.json ?? {}
       const content = typeof file.content === 'string' ? file.content : ''
-      const bytes = Buffer.from(content)
-      const truncated = bytes.length > PREVIEW_BYTES
-      const text = truncated ? bytes.subarray(0, PREVIEW_BYTES).toString('utf8') : content
       return {
         status: 200,
         body: {
           binary: false,
-          byteSize: Number.isSafeInteger(file.size) ? file.size : bytes.length,
+          byteSize: Number.isSafeInteger(file.size) ? file.size : inspected.info.size,
           language: typeof file.language === 'string' ? file.language : '',
           path: target.path,
-          text,
-          truncated,
+          text: content,
+          truncated: file.truncated === true,
         },
       }
     }
-    // The facade answers 404 for a binary file and for a missing one. The fence
-    // admitted the path, so `stat` tells them apart without reading bytes here.
-    let info
-    try { info = await stat(target.path) } catch { return { status: 404, body: { detail: 'File not found' } } }
-    if (info.isFile() !== true) return { status: 400, body: { detail: 'Path points to a directory' } }
-    return { status: 200, body: { binary: true, byteSize: info.size, language: '', path: target.path, truncated: false } }
+    // The facade answers 404 when the prefix is not text. The fence admitted the
+    // path and `stat` says it is a regular file, so this is the binary case.
+    return {
+      status: 200,
+      body: { binary: true, byteSize: inspected.info.size, language: '', path: target.path, truncated: false },
+    }
   }
 
   /**
@@ -110,9 +151,12 @@ export function createFileRoutes({ backend, fence, rootsOf }) {
    * @returns {Promise<object>} reply with `bytes` when successful.
    */
   async function download(url) {
-    const target = await targetOf(url.searchParams.get('path'))
-    if (target.path === undefined) return { status: target.status, body: { detail: target.detail } }
     const sessionId = url.searchParams.get('session_id') ?? ''
+    const target = await targetOf(url.searchParams.get('path'), sessionId)
+    if (target.path === undefined) return { status: target.status, body: { detail: target.detail } }
+    const inspected = await inspect(target.path)
+    if (inspected.info === undefined) return { status: inspected.status, body: { detail: inspected.detail } }
+    if (inspected.info.size > SOURCE_MAX_BYTES) return { status: 413, body: { detail: 'File too large' } }
     const reply = await backend.download('/api/file/raw', {
       query: { path: target.path, ...(sessionId.length > 0 ? { session_id: sessionId } : {}) },
     })

@@ -135,14 +135,20 @@ change, each with a test:
 
 **The in-chat Files browser (parity).** `session.info` now reports `terminal_backend:"local"` (drafts, resume
 snapshots and live events), and the listener serves the three read routes the phone's workspace browser calls:
-`/api/fs/list`, `/api/fs/read-text` (512 KiB preview, binary tell) and `/api/fs/download` (bytes + content type,
-`session_id` for MEDIA paths). A new shared realpath fence (`src/hermes/fence.mjs`) admits a path only inside a
-chat folder (DSH workspaces, known session folders, a draft's chosen folder) and denies the facade state,
-`$DSH_HOME`, `~/.ssh`, `~/.aws` and `~/.gnupg`; symlinks resolve first. A denied path answers `403` with a detail.
-Git keeps its menu hidden until `fs/git-root` exists. Tests cover listing, text/binary previews, truncation,
-downloads, traversal, the deny list, relative paths and the two roots (draft folder, session folder).
+`/api/fs/list`, `/api/fs/read-text` and `/api/fs/download`. A new shared realpath fence (`src/hermes/fence.mjs`)
+admits a path only inside a chat folder (DSH workspaces, known session folders, a draft's chosen folder) and denies
+the facade state, `$DSH_HOME`, `~/.ssh`, `~/.aws` and `~/.gnupg`; symlinks resolve first. It also mirrors the
+host's own Files guard: credential basenames (`.env`, `.env.*`, `.envrc`, `.git-credentials`, `auth.json`,
+`credentials`, `config.yaml`, …) and any `mcp-tokens`/`pairing` component are refused and hidden, and the host's
+build/VCS caches are hidden from listings. Sizes match the host: a preview reads only the first 512 KiB through the
+facade's new `max_bytes`, and a source over 64 MiB answers `413 File too large` before anything is buffered; a
+relative MEDIA path resolves against `session_id`'s folder and is then fenced (`attachment:` refs answer 400).
+A denied path answers `403` with a detail; a directory answers `400 Path points to a directory`. Git keeps its menu
+hidden until `fs/git-root` exists. Tests cover listing (draft and session roots), text/binary previews, the
+truncation, downloads, traversal, a symlink escape, credential files/directories, the 64 MiB cap on both routes,
+relative MEDIA resolution and the attachment refusal.
 
-Verify: `npm run check && npm test` (177 tests), then rename a chat from the phone's list, pin it, archive it,
+Verify: `npm run check && npm test` (178 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---

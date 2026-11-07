@@ -373,7 +373,29 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
       join(homedir(), '.gnupg'),
     ],
   })
-  const files = createFileRoutes({ backend, fence, rootsOf: fileRoots })
+
+  /**
+   * A session's working folder, for resolving a relative MEDIA path before the
+   * fence sees it.
+   * @param {string} sessionId client id.
+   * @returns {Promise<string|undefined>} folder.
+   */
+  async function sessionCwd(sessionId) {
+    const id = String(sessionId ?? '')
+    if (id.length === 0) return undefined
+    const draft = sessions.draft(id)
+    if (draft !== undefined && typeof draft.cwd === 'string' && draft.cwd.length > 0) return draft.cwd
+    try {
+      const reply = await backend.call('GET', '/api/session', {
+        query: { session_id: sessions.resolve(id), msg_limit: 1 },
+      })
+      const workspace = reply.json?.session?.workspace
+      if (typeof workspace === 'string' && workspace.length > 0) return workspace
+    } catch { /* the folder is advisory */ }
+    return undefined
+  }
+
+  const files = createFileRoutes({ backend, fence, rootsOf: fileRoots, cwdOf: sessionCwd })
 
   /** Password attempts per address, for the login rate limit. */
   const attempts = new Map()
