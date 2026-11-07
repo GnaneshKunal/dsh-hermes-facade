@@ -143,7 +143,7 @@ and add it in Hermex as its own server.
 |---|---|
 | health, auth (password + signed cookie) | full |
 | session list, session detail, history | full: newest 200 + 50-message scroll-back pages within the newest 800 |
-| session search | full: id, message-content and title matches with snippets; empty queries are empty results |
+| session search | full: id, message-content and title matches, content matches with an excerpt; empty queries are empty results |
 | chat start / SSE stream / cancel / stream status | full; a failed or cancelled turn ends the stream with `error`/`cancel` instead of `done`; `profile`/`attachments` in the start body are ignored |
 | token deltas, thinking, tool cards | full: live and reloaded transcripts carry tool results, error verdicts and durations |
 | approvals (once / session / always / deny) | full: a reconnect keeps command/description, expired prompts answer `409 {"stale":true}` and are retracted. `session`/`always` are standing grants keyed by tool name (no command-pattern allowlist) |

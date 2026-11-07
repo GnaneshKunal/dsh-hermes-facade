@@ -58,7 +58,7 @@ partial set half-renders.
 | Add server / sign in | `/health`, `/api/auth/{status,login,logout}` | **WORKS** | normal sign-in, signed cookie | — |
 | Session list, grouping by project | `GET /api/sessions` | **WORKS** | rows grouped into project lanes; DSH subagent sessions are hidden (runner-owned, parent-addressed only) | enabling Hermex's Subagent Sessions toggle needs row tagging + parent-address reads |
 | Pinned / archived state | same | **WORKS** | every row carries the real `pinned`/`archived` flags; archived rows hidden by default and listed via `include_archived=1` (+ `archived_limit`) | — |
-| Session search | `GET /api/sessions/search` | **WORKS** | id, message-content and title matches, each with the session row and a snippet; an empty query is an empty result | — |
+| Session search | `GET /api/sessions/search` | **WORKS** | id, message-content and title matches, each with the session row; content matches carry a `match_preview` excerpt; an empty query is an empty result | — |
 | Open chat / history | `GET /api/session` | **WORKS** (bounded) | newest **200** messages, then 50-message scroll-back pages, within the newest **800**; tool results, error verdicts and durations ride along as persisted tool calls | unbounded history still needs a `session/page` walk |
 | Rename | `POST /api/session/rename` | **WORKS** | title updates | — |
 | Branch / fork | `POST /api/session/branch` | **WORKS** | child session; needs a completed turn | — |
