@@ -21,13 +21,15 @@
  */
 
 import { execFile } from 'node:child_process'
-import { lstat, readFile, realpath, stat } from 'node:fs/promises'
+import { lstat, readFile, realpath, stat, unlink } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 
 import { isSensitivePath } from './fence.mjs'
 
 /** Deadline for one git read. */
 const GIT_TIMEOUT_MS = 10_000
+/** Deadline for one git write (commit hooks, push, branch switch). */
+const GIT_WRITE_TIMEOUT_MS = 60_000
 /** Largest git stdout a read may produce (a binary/heavy diff fails as too large). */
 const GIT_MAX_BUFFER = 16 * 1024 * 1024
 /** Cap on untracked files whose line count is added to the totals. */
@@ -80,7 +82,7 @@ export class GitRefusal extends Error {
  * @param {string[]} args arguments.
  * @returns {Promise<{code: number, stdout: string, stderr: string, tooLarge: boolean}>} result.
  */
-function runGit(cwd, args) {
+function runGit(cwd, args, options = {}) {
   return new Promise(done => {
     execFile('git', [
       '--no-pager',
@@ -90,7 +92,7 @@ function runGit(cwd, args) {
       ...args,
     ], {
       cwd,
-      timeout: GIT_TIMEOUT_MS,
+      timeout: options.timeout ?? GIT_TIMEOUT_MS,
       maxBuffer: GIT_MAX_BUFFER,
       env: gitEnv(),
     }, (error, stdout, stderr) => {
@@ -119,6 +121,19 @@ async function gitOut(cwd, args, what) {
   return result.stdout
 }
 
+/**
+ * Run one git write and answer its stdout, mapping a failure to a refusal.
+ * @param {string} cwd repository root.
+ * @param {string[]} args arguments.
+ * @param {string} what operation name for the detail.
+ * @returns {Promise<string>} stdout.
+ */
+async function gitWriteOut(cwd, args, what) {
+  const result = await runGit(cwd, args, { timeout: GIT_WRITE_TIMEOUT_MS })
+  if (result.tooLarge) throw new GitRefusal(413, 'Output too large')
+  if (result.code !== 0) throw new GitRefusal(400, 'git ' + what + ' failed')
+  return result.stdout
+}
 /**
  * Validate a revision operand so it cannot be read by git as an option.
  * A range like `HEAD~3..HEAD` is fine; a leading '-' (or a glob) is not.
@@ -384,17 +399,22 @@ export async function repoStatus(root, guard) {
   }
   const count = flag => files.filter(file => file[flag] === true).length
   const facts = await branchFacts(root)
+  const totals = {
+    changed: files.length,
+    staged: count('staged'),
+    unstaged: count('unstaged'),
+    untracked: count('untracked'),
+    conflicts: count('conflicted'),
+  }
   return {
+    isGit: true,
     branch: facts.branch,
     defaultBranch: facts.defaultBranch,
     detached: facts.detached,
     ahead: parsed.ahead,
     behind: parsed.behind,
-    staged: count('staged'),
-    unstaged: count('unstaged'),
-    untracked: count('untracked'),
-    conflicted: count('conflicted'),
-    changed: files.length,
+    ...totals,
+    totals,
     added: files.reduce((total, file) => total + file.added, 0),
     removed: files.reduce((total, file) => total + file.removed, 0),
     files,
@@ -461,11 +481,13 @@ export async function reviewList(root, scope, base, guard) {
  * @returns {string} pathspec.
  */
 export async function safeFilePath(root, file, deny) {
+  // A caller may hand a symlinked repository path (macOS /var vs /private/var).
+  const base = await realpath(root).catch(() => root)
   const value = String(file ?? '')
   if (value.length === 0) throw new GitRefusal(400, 'file required')
   if (value.startsWith('/') || value.includes('\0')) throw new GitRefusal(400, 'file must be relative')
-  const target = resolve(join(root, value))
-  if (target !== root && !target.startsWith(root + sep)) throw new GitRefusal(400, 'file must be inside the repository')
+  const target = resolve(join(base, value))
+  if (target !== base && !target.startsWith(base + sep)) throw new GitRefusal(400, 'file must be inside the repository')
   if (isSensitivePath(target)) throw new GitRefusal(403, 'Access to sensitive files is not allowed')
   let info
   try { info = await lstat(target) } catch { info = undefined }
@@ -474,7 +496,7 @@ export async function safeFilePath(root, file, deny) {
   let real = target
   if (info !== undefined) {
     real = await realpath(target)
-    if (real !== root && !real.startsWith(root + sep)) {
+    if (real !== base && !real.startsWith(base + sep)) {
       throw new GitRefusal(403, 'file must be inside the repository')
     }
     if (isSensitivePath(real)) throw new GitRefusal(403, 'Access to sensitive files is not allowed')
@@ -582,6 +604,150 @@ export async function revParse(root, ref) {
   return sha.length > 0 ? sha : null
 }
 
+/**
+ * The app prefixes a write's file with `:(literal)`; the path itself is what
+ * safeFilePath validates. A raw path is accepted for other callers.
+ * @param {string} file client file.
+ * @returns {string} path.
+ */
+function clientFilePath(file) {
+  const value = String(file ?? '')
+  return value.startsWith(':(literal)') ? value.slice(':(literal)'.length) : value
+}
+/**
+ * Stage one file (the app sends one request per file).
+ * @param {string} root repository root.
+ * @param {string} file repository-relative path.
+ * @param {Function} [guard] deny predicate.
+ * @returns {Promise<{file: string}>} staged file.
+ */
+export async function stageFile(root, file, guard) {
+  const { literal, relative } = await safeFilePath(root, clientFilePath(file), guard)
+  const conflicts = (await runGit(root, ['diff', '--name-only', '--diff-filter=U', '--', literal])).stdout.trim()
+  if (conflicts.length > 0) throw new GitRefusal(409, 'Resolve the conflict before staging this file')
+  await gitWriteOut(root, ['add', '--', literal], 'add')
+  return { file: relative }
+}
+
+/**
+ * Unstage one file, or the whole index when no file is named.
+ * @param {string} root repository root.
+ * @param {string|undefined} file repository-relative path.
+ * @param {Function} [guard] deny predicate.
+ * @returns {Promise<{file: string|null}>} unstaged file/all.
+ */
+export async function unstageFile(root, file, guard) {
+  const named = typeof file === 'string' && file.length > 0
+  const literal = named ? (await safeFilePath(root, clientFilePath(file), guard)).literal : null
+  const pathspec = literal ?? '.'
+  const result = await runGit(root, ['restore', '--staged', '--', pathspec])
+  if (result.code !== 0) {
+    // Unborn HEAD: restore cannot name a tree, but the index can still be reset.
+    await gitWriteOut(root, ['rm', '-r', '--cached', '--ignore-unmatch', '--', pathspec], 'unstage')
+  }
+  return { file: named ? literal.slice(':(literal)'.length) : null }
+}
+
+/**
+ * Return one file to HEAD. A tracked file is restored; a staged-new or
+ * untracked file is removed. The app unstages a staged file before calling this.
+ * @param {string} root repository root.
+ * @param {string} file repository-relative path.
+ * @param {Function} [guard] deny predicate.
+ * @returns {Promise<{file: string}>} reverted file.
+ */
+export async function revertFile(root, file, guard) {
+  const safe = await safeFilePath(root, clientFilePath(file), guard)
+  const conflicts = (await runGit(root, ['diff', '--name-only', '--diff-filter=U', '--', safe.literal])).stdout.trim()
+  if (conflicts.length > 0) throw new GitRefusal(409, 'Resolve the conflict before reverting this file')
+  const atHead = (await runGit(root, ['ls-tree', '--name-only', 'HEAD', '--', safe.literal])).stdout.trim().length > 0
+  if (atHead) {
+    await gitWriteOut(root, ['restore', '--source=HEAD', '--staged', '--worktree', '--', safe.literal], 'revert')
+    return { file: safe.relative }
+  }
+  // Not in HEAD: drop any index entry, then delete the working file (a new file).
+  await runGit(root, ['rm', '-r', '--cached', '--ignore-unmatch', '--', safe.literal])
+  const info = await lstat(safe.target).catch(() => undefined)
+  if (info === undefined) return { file: safe.relative }
+  if (info.isFile() !== true) throw new GitRefusal(400, 'Only a file can be reverted')
+  await unlink(safe.target)
+  return { file: safe.relative }
+}
+
+/**
+ * Commit the staged index.
+ * @param {string} root repository root.
+ * @param {object} options options.
+ * @param {string} options.message commit message.
+ * @param {boolean} [options.push] push after committing.
+ * @param {Function} [guard] deny predicate.
+ * @returns {Promise<{ok: boolean, commit: string|null, status: object|null}>} commit result.
+ */
+export async function commitRepo(root, { message, push = false }, guard) {
+  const text = String(message ?? '').trim()
+  if (text.length === 0) throw new GitRefusal(400, 'commit message required')
+  if (text.length > 5000) throw new GitRefusal(400, 'commit message is too long')
+  const before = await repoStatus(root, guard)
+  if (before === null) throw new GitRefusal(400, 'not a git repository')
+  if ((before.conflicted ?? 0) > 0) throw new GitRefusal(409, 'Resolve the conflicts before committing')
+  if ((before.staged ?? 0) === 0) throw new GitRefusal(409, 'Nothing is staged to commit')
+  await gitWriteOut(root, ['commit', '-m', text], 'commit')
+  const sha = await revParse(root, 'HEAD')
+  if (push === true) await pushRepo(root, guard)
+  return { ok: true, commit: sha === null ? null : sha.slice(0, 7), status: await repoStatus(root, guard) }
+}
+
+/**
+ * Push the current branch to its upstream, or set origin as the upstream.
+ * @param {string} root repository root.
+ * @param {Function} [guard] deny predicate.
+ * @returns {Promise<{ok: boolean, message: null, status: object|null}>} push result.
+ */
+export async function pushRepo(root, guard) {
+  const before = await repoStatus(root, guard)
+  if (before === null) throw new GitRefusal(400, 'not a git repository')
+  if (before.detached === true) throw new GitRefusal(409, 'Cannot push a detached HEAD')
+  const branch = before.branch
+  if (typeof branch !== 'string' || branch.length === 0) throw new GitRefusal(409, 'No branch to push')
+  const upstream = await runGit(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
+  const args = upstream.code === 0 && upstream.stdout.trim().length > 0
+    ? ['push']
+    : ['push', '-u', 'origin', branch]
+  await gitWriteOut(root, args, 'push')
+  return { ok: true, message: null, status: await repoStatus(root, guard) }
+}
+
+/**
+ * Switch the working tree to an existing branch.
+ * @param {string} root repository root.
+ * @param {string} branch branch name.
+ * @param {Function} [guard] deny predicate.
+ * @returns {Promise<{ok: boolean, status: object|null, branches: object[]}>} switch result.
+ */
+export async function switchBranch(root, branch, guard) {
+  const name = safeRef(branch)
+  const result = await runGit(root, ['switch', name], { timeout: GIT_WRITE_TIMEOUT_MS })
+  if (result.code !== 0) throw new GitRefusal(400, 'git switch failed')
+  return { ok: true, status: await repoStatus(root, guard), branches: await branches(root) }
+}
+
+/**
+ * The diff and recent subjects the app uses to suggest a commit message.
+ * @param {string} root repository root.
+ * @returns {Promise<{diff: string, recent: string, branch: string|null, truncated: boolean}>} context.
+ */
+export async function commitContext(root) {
+  const status = await repoStatus(root)
+  const full = (await runGit(root, ['diff', '--cached', '--no-color', '--no-ext-diff', '--no-textconv'])).stdout
+  const limit = 64 * 1024
+  const recent = (await runGit(root, ['log', '-5', '--format=%s'])).stdout.trim()
+  return {
+    diff: full.slice(0, limit),
+    recent,
+    branch: status?.branch ?? null,
+    truncated: full.length > limit,
+  }
+}
 /**
  * Local heads first, then remote-tracking refs with no local head.
  * @param {string} root repository root.

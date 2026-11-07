@@ -20,7 +20,10 @@ import { basename, extname, join, resolve, sep } from 'node:path'
 import { createBackend } from './backend.mjs'
 import { createFileRoutes } from './files.mjs'
 import { createPathFence } from './fence.mjs'
-import { branches, fileDiff, findGitRoot, GitRefusal, repoStatus, revParse, reviewDiff, reviewList } from './git.mjs'
+import {
+  branches, commitContext, commitRepo, fileDiff, findGitRoot, GitRefusal, pushRepo,
+  repoStatus, revertFile, revParse, reviewDiff, reviewList, stageFile, switchBranch, unstageFile,
+} from './git.mjs'
 import { createEventHub } from './events.mjs'
 import { createMethods } from './methods.mjs'
 import { decodeUpload, sanitizeUploadName } from './uploads.mjs'
@@ -982,7 +985,8 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
       path === '/api/git/review/list' ||
       path === '/api/git/review/diff' ||
       path === '/api/git/file-diff' ||
-      path === '/api/git/review/rev-parse'
+      path === '/api/git/review/rev-parse' ||
+      path === '/api/git/review/commit-context'
     )
     if (gitRead) {
       const scope = await gitScope(url.searchParams.get('path'))
@@ -999,6 +1003,12 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
         }
         if (path === '/api/git/review/rev-parse') {
           sendJson(res, 200, { sha: root === undefined ? null : await revParse(root, url.searchParams.get('ref') ?? undefined) })
+          return
+        }
+        if (path === '/api/git/review/commit-context') {
+          sendJson(res, 200, root === undefined
+            ? { diff: '', recent: '', branch: null, truncated: false }
+            : await commitContext(root))
           return
         }
         const file = url.searchParams.get('file') ?? ''
@@ -1033,6 +1043,60 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
       }
     }
 
+    // Git writes. Every one is refused while any turn is running: staging or
+    // committing under a live agent can race its own edits, and the client's
+    // idle check is only a hint.
+    const gitWrite = method === 'POST' && (
+      path === '/api/git/review/stage' ||
+      path === '/api/git/review/unstage' ||
+      path === '/api/git/review/revert' ||
+      path === '/api/git/review/commit' ||
+      path === '/api/git/review/push' ||
+      path === '/api/git/branch/switch'
+    )
+    if (gitWrite) {
+      if (runner.active.size > 0) {
+        sendJson(res, 409, { detail: 'A turn is running; wait for it to finish before changing git' })
+        return
+      }
+      const body = await readJson(req)
+      const scope = await gitScope(body.path)
+      if (scope.status !== undefined) { sendJson(res, scope.status, { detail: scope.detail }); return }
+      if (scope.root === undefined) { sendJson(res, 400, { detail: 'not a git repository' }); return }
+      const root = scope.root
+      try {
+        if (path === '/api/git/review/stage') {
+          await stageFile(root, body.file, gitGuard)
+          sendJson(res, 200, { ok: true, git: await repoStatus(root, gitGuard) })
+          return
+        }
+        if (path === '/api/git/review/unstage') {
+          await unstageFile(root, body.file, gitGuard)
+          sendJson(res, 200, { ok: true, git: await repoStatus(root, gitGuard) })
+          return
+        }
+        if (path === '/api/git/review/revert') {
+          await revertFile(root, body.file, gitGuard)
+          sendJson(res, 200, { ok: true, git: await repoStatus(root, gitGuard) })
+          return
+        }
+        if (path === '/api/git/review/commit') {
+          sendJson(res, 200, await commitRepo(root, { message: body.message, push: body.push === true }, gitGuard))
+          return
+        }
+        if (path === '/api/git/review/push') {
+          sendJson(res, 200, await pushRepo(root, gitGuard))
+          return
+        }
+        sendJson(res, 200, await switchBranch(root, body.branch, gitGuard))
+        return
+      } catch (error) {
+        if (error instanceof GitRefusal) { sendJson(res, error.status, { detail: error.detail }); return }
+        logger.warn?.('hermes-gateway: git write failed: ' + String(error?.message ?? error))
+        sendJson(res, 400, { detail: 'git write failed' })
+        return
+      }
+    }
     // Writes and the gh-backed routes are refused with a reason; the Git menu
     // stays read-only until the write guard is reviewed.
     if (path.startsWith('/api/git/')) {

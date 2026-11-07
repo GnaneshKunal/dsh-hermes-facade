@@ -8,8 +8,8 @@ The goal has two parts, in this order:
 
 1. **Parity.** Anything the **Legacy** server (`:9120`, hermes-webui) already does for the phone must also work on
    the **Hermes host** (`:9121`). That is the "similar to how V1 was" bar.
-2. **Full V2.** Then add the surfaces only a Hermes host unlocks (Git writes, Bots,
-session search, attachments — attachments now shipped),
+2. **Full V2.** Then add the surfaces only a Hermes host unlocks (Bots, session search,
+attachments — attachments and Git writes now shipped),
    but only where DSH has a real primitive to back them. A screen that half-renders is worse than one that is
    cleanly hidden.
 
@@ -36,7 +36,7 @@ The gaps split cleanly:
 |---|---|---|
 | Chat telemetry | `usage` on turn events, `terminal_backend`, canonical turn status | the context ring and token counts work (no cost); Files/Git now appear |
 | Disabled feature that exists on the other transport | YOLO honesty | V2 is worse than V1 for that one feature |
-| Screens with no backend yet | Git writes, Bots | the screen errors (the sidebar toggles are local, not probes); attachments are done |
+| Screens with no backend yet | Bots | the screen errors (the sidebar toggles are local, not probes); attachments and Git writes are done |
 | Silent misbehaviour | edit/regenerate appends, fast/yolo echo | the phone believes something happened that did not |
 
 ---
@@ -75,7 +75,7 @@ Effort: **S** = one route/method over an existing facade primitive; **M** = new 
 | 5 | Tasks / cron | scheduled jobs and history | `/api/cron/jobs`, `/runs`, pause/resume/trigger/delete, delivery-targets, `sources=cron` agenda | `schedule/*` (near-exact) | M | done |
 | 6 | Memory | edit what the agent remembers | `/api/memory`, `files/read`, `files/upload`, `profiles/{n}/soul`, `profiles.list[].path` | `$DSH_HOME/AGENTS.md` + the project AGENTS.md chain (a real memory) | M | done (read-only, global) |
 | 7 | Git read | see what changed, diffs | `/api/fs/git-root`, `/api/git/status`, `review/list`, `review/diff`, `file-diff`, `rev-parse`, `branches` | exec `git` in the session folder | M | done |
-| 8 | Git write | stage / commit / push | `review/{stage,unstage,revert,commit,push}`, `branch/switch` | exec `git`, with the idle guard the client already expects | M | later |
+| 8 | Git write | stage / commit / push | `review/{stage,unstage,revert,commit,push}`, `branch/switch` | exec `git` behind the idle guard; commit context feeds the app's message helper | M | done (v1.13) |
 | 9 | Skills | browse skills and their files | `/api/skills`, `/api/skills/content` | `skills/list` (read-only) + the catalog SKILL.md path | S/M | done (read-only) |
 | 10 | Usage / Insights | token and session usage | `/api/analytics/{usage,models}`, `insights.get` | a facade ledger over the session projections, plus `dsh-cost-meter` cost when installed | M/L | done (tokens + cost) |
 | 11 | Attachments | send a photo or a file | `POST /api/chat/image-upload`, `file.attach` | native `session/prompt` image parts + a facade uploads staging root; the app's vision reference stays in the transcript text; documents stay path-based | M | done (v1.12) |
@@ -160,10 +160,14 @@ routes the panel calls: `/api/git/status` (branch, ahead/behind, staged/unstaged
 nothing else. A `file` is realpath-checked inside the root, a symlink is refused, `base`/`ref` are validated so a
 query cannot inject a git option, a credential or `.ssh`/`.aws`/`.gnupg`/`.dsh` path is hidden and refused, and
 the all-add fallback runs only for an untracked file. Writes (stage, unstage,
-revert, commit, push, branch switch) answer `400 Git writes are not supported…` with the reason, and `ship-info`
-answers no pull request, so the panel is honest about its read-only state. Tests cover a real temporary repository:
-status, changes, patches (tracked and untracked), branches, sha, the fence for a non-root, the non-repo shapes and
-the write refusal.
+revert, commit, push, branch switch) are live: stage/unstage/revert take one literal file (unstage also all),
+commit uses the staged index and returns a short sha, push uses the upstream or sets `origin`, and branch switch
+moves the tree. Every write is refused with `409` while any turn is running; a conflict is `409`, a bad path/ref or
+a `git` failure is `400`, and a credential/symlink path is refused by the same fence. `commit-context` returns the
+staged diff and recent subjects for the app's message helper. `ship-info` answers no pull request. Tests cover a real
+temporary repository: status, changes, patches (tracked and untracked), branches, sha, the fence for a non-root, the
+non-repo shapes, stage/unstage/revert/commit/push/switch, the client's `:(literal)` prefix, the idle guard and the
+commit context.
 
 **Session search (both listeners).** `GET /api/sessions/search` now backs the list's search field on `:9120` and
 `:9121`. One facade reply carries both shapes: `results` (the Hermes host rows: `session_id`, `id`,
@@ -237,39 +241,33 @@ the figure is the plugin's estimate. `insights.get` answers `{messages:0}` becau
 already marks its Messages total approximate. No sessions in the window is a real empty state. Tests cover the host
 aggregation, both routes and the RPC.
 
-Verify: `npm run check && npm test` (216 tests), then rename a chat from the phone's list, pin it, archive it,
+Verify: `npm run check && npm test` (222 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---
 
 ## 5. Next picks, with acceptance criteria
 
-Files, Git read, session search, chat telemetry, Tasks, Memory, Skills, Usage and Attachments are done (see §4).
-The next three, in order:
+Files, Git read, session search, chat telemetry, Tasks, Memory, Skills, Usage, Attachments and Git writes are done
+(see §4). The next two, in order:
 
-### Pick 1 — Side tasks (`/btw`, `/background`)
-
-Calls: `prompt.btw`/`prompt.background` and the side-chain frames. Backing: DSH's btw sidechains/background jobs
-where they are exposed; otherwise the socket keeps answering `-32601` honestly. Done when: a side prompt runs
-without disturbing the main turn and its result has its own panel.
-
-### Pick 2 — Git writes
-
-Calls: `/api/git/review/{stage,commit,push}` and branch switch. Backing: the read-only Git routes plus an idle-turn
-guard; every write is staged inside the chat's repo and refused while a turn runs. Done when: stage/commit/push
-round-trip from the phone, a running turn refuses the write with a reason, and the diff refreshes after.
-
-### Pick 3 — Bots
+### Pick 1 — Bots
 
 Calls: `profiles.create`/`configure`/`set_asset` and the bot chat's hidden session list. Backing: DSH's
 `agentPresets/*` is read-only, so creating a bot needs a facade store and a soul injection; the socket should keep
 answering `-32601` until that exists. Done when a bot can be created and chatted with from the phone.
 
+### Pick 2 — Side tasks (`/btw`, `/background`)
+
+Calls: `prompt.btw`/`prompt.background` and the side-chain frames. Backing: DSH's btw sidechains/background jobs
+where they are exposed; otherwise the socket keeps answering `-32601` honestly. Done when: a side prompt runs
+without disturbing the main turn and its result has its own panel.
+
 ---
 
 ## 6. Sequencing and cross-cutting work
 
-Order after this change: **goal/btw/background → Git write → Bots**.
+Order after this change: **Bots → side tasks when DSH exposes them**.
 
 Cross-cutting items that should ride the first task that touches them. The capability gate, the honest refusals,
 the rate-limit key and the prompt-concurrency guards landed in the bugfix pass; these remain:

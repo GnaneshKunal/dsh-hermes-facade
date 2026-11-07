@@ -1739,12 +1739,11 @@ test('the in-chat Git menu reads status, changes, diffs and branches (read-only)
       const noChanges = await api(harness.base, '/api/git/review/list?path=' + enc(notARepo) + '&scope=uncommitted', { cookie })
       assert.deepEqual(noChanges.json, { files: [], base: null })
 
-      // Writes are refused with a reason; the menu is read-only for now.
+      // A write now goes through; the dedicated Git-write test covers commit
+      // and the idle guard.
       const stage = await api(harness.base, '/api/git/review/stage', {
-        cookie, method: 'POST', body: { path: repoRoot, file: 'project/app.txt' },
+        cookie, method: 'POST', body: { path: repoRoot, file: ':(literal)project/app.txt' },
       })
-      assert.equal(stage.status, 400)
-      assert.match(stage.json.detail, /not supported/i)
     } finally {
       socket.ws.close()
     }
@@ -1849,6 +1848,62 @@ test('the Git surface refuses ref injection, symlink escapes and deny trees', as
     rmSync(outside, { recursive: true, force: true })
     await harness.gateway.close()
     await harness.facade.close()
+  }
+})
+
+test('Git writes stage and commit through the listener, and refuse while a turn runs', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'hermes-git-write-route-'))
+  const chatFolder = join(repo, 'project')
+  mkdirSync(chatFolder)
+  const identity = ['-c', 'user.email=test@example.invalid', '-c', 'user.name=Test', '-c', 'commit.gpgsign=false']
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo })
+  writeFileSync(join(repo, 'README.md'), 'one\n')
+  execFileSync('git', ['add', '.'], { cwd: repo })
+  execFileSync('git', [...identity, 'commit', '-qm', 'initial'], { cwd: repo })
+  const harness = await boot({ hostCwd: chatFolder })
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      await socket.call('session.create', { profile: 'default', cwd: chatFolder })
+      const rootReply = await api(harness.base, '/api/fs/git-root?path=' + encodeURIComponent(chatFolder), { cookie })
+      const repoRoot = rootReply.json.root
+      writeFileSync(join(repo, 'README.md'), 'two\n')
+
+      // A running turn refuses the write before it can race the agent.
+      harness.host.setTurnDelay(400)
+      await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'hold' })
+      await socket.waitFor(frame => frame.params?.type === 'message.start')
+      const busy = await api(harness.base, '/api/git/review/stage', {
+        method: 'POST', cookie,
+        body: { path: repoRoot, file: ':(literal)README.md' },
+      })
+      assert.equal(busy.status, 409)
+      await socket.waitFor(frame => frame.params?.type === 'message.complete')
+
+      const staged = await api(harness.base, '/api/git/review/stage', {
+        method: 'POST', cookie,
+        body: { path: repoRoot, file: ':(literal)README.md' },
+      })
+      assert.equal(staged.status, 200)
+      assert.equal(staged.json.ok, true)
+      assert.equal(staged.json.git.staged, 1)
+
+      const committed = await api(harness.base, '/api/git/review/commit', {
+        method: 'POST', cookie,
+        body: { path: repoRoot, message: 'change readme', push: false },
+      })
+      assert.equal(committed.status, 200)
+      assert.match(committed.json.commit, /^[0-9a-f]{7}$/)
+      assert.equal(committed.json.status.staged, 0)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+    rmSync(repo, { recursive: true, force: true })
   }
 })
 
