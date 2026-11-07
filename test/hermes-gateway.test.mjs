@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { closeSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -1346,6 +1346,8 @@ test('the Files guard refuses credentials, caps large sources and resolves relat
     writeFileSync(join(folder, 'node_modules', 'index.js'), 'module.exports = 1\n')
     mkdirSync(join(folder, 'mcp-tokens'))
     writeFileSync(join(folder, 'mcp-tokens', 'server.json'), '{}\n')
+    mkdirSync(join(folder, '.ssh'))
+    writeFileSync(join(folder, '.ssh', 'config'), 'Host *\n')
     mkdirSync(join(folder, 'media'))
     writeFileSync(join(folder, 'media', 'clip.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]))
     // A sparse file over the 64 MiB source cap, without writing 64 MiB.
@@ -1367,13 +1369,13 @@ test('the Files guard refuses credentials, caps large sources and resolves relat
       const list = await api(harness.base, '/api/fs/list?path=' + enc(folder), { cookie })
       assert.equal(list.status, 200)
       const names = list.json.entries.map(entry => entry.name)
-      for (const hidden of ['.env', '.git-credentials', 'credentials', 'photon-sidecar.json', '.git', 'node_modules', 'mcp-tokens']) {
+      for (const hidden of ['.env', '.git-credentials', 'credentials', 'photon-sidecar.json', '.git', 'node_modules', 'mcp-tokens', '.ssh']) {
         assert.equal(names.includes(hidden), false, hidden + ' must not be listed')
       }
       assert.ok(names.includes('media'))
 
       // Credential material is refused wherever it sits, with the host's wording.
-      for (const relative of ['.env', '.git-credentials', 'credentials', 'photon-sidecar.json', 'mcp-tokens/server.json']) {
+      for (const relative of ['.env', '.git-credentials', 'credentials', 'photon-sidecar.json', 'mcp-tokens/server.json', '.ssh/config']) {
         const denied = await api(harness.base, '/api/fs/read-text?path=' + enc(join(folder, relative)), { cookie })
         assert.equal(denied.status, 403, relative)
         assert.equal(denied.json.detail, 'Access to sensitive files is not allowed')
@@ -1547,6 +1549,87 @@ test('the in-chat Git menu reads status, changes, diffs and branches (read-only)
     await harness.facade.close()
   }
 })
+
+test('the Git surface refuses ref injection, symlink escapes and deny trees', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'hermes-git-guard-'))
+  const chatFolder = join(repo, 'project')
+  mkdirSync(chatFolder)
+  const identity = ['-c', 'user.email=test@example.invalid', '-c', 'user.name=Test', '-c', 'commit.gpgsign=false']
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo })
+  writeFileSync(join(repo, 'README.md'), 'unchanged\n')
+  writeFileSync(join(repo, 'gone.txt'), 'deleted soon\n')
+  execFileSync('git', ['add', '.'], { cwd: repo })
+  execFileSync('git', [...identity, 'commit', '-qm', 'initial'], { cwd: repo })
+  rmSync(join(repo, 'gone.txt'))
+  // Credential trees inside a repository (the home-dotfiles case) and a link out.
+  mkdirSync(join(repo, '.ssh'))
+  writeFileSync(join(repo, '.ssh', 'id_ed25519'), 'PRIVATE KEY\n')
+  mkdirSync(join(repo, '.dsh', 'hermes-facade'), { recursive: true })
+  writeFileSync(join(repo, '.dsh', 'hermes-facade', 'internal.token'), 'TOKEN\n')
+  const outside = mkdtempSync(join(tmpdir(), 'hermes-git-outside-'))
+  writeFileSync(join(outside, 'id_rsa'), 'OUTSIDE KEY\n')
+  symlinkSync(outside, join(repo, 'harvest'))
+  const harness = await boot({ hostCwd: chatFolder })
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const enc = value => encodeURIComponent(value)
+      await socket.call('session.create', { profile: 'default', cwd: chatFolder })
+      const rootReply = await api(harness.base, '/api/fs/git-root?path=' + enc(chatFolder), { cookie })
+      const repoRoot = rootReply.json.root
+      assert.equal(rootReply.status, 200)
+
+      const status = await api(harness.base, '/api/git/status?path=' + enc(repoRoot), { cookie })
+      assert.equal(status.status, 200)
+      const statusPaths = status.json.files.map(file => file.path)
+      assert.equal(statusPaths.some(file => file.startsWith('.ssh/')), false)
+      assert.equal(statusPaths.some(file => file.startsWith('.dsh/')), false)
+      assert.ok(statusPaths.includes('gone.txt'))
+
+      const changes = await api(harness.base, '/api/git/review/list?path=' + enc(repoRoot) + '&scope=uncommitted', { cookie })
+      assert.equal(changes.status, 200)
+      const changePaths = changes.json.files.map(row => row.path)
+      assert.equal(changePaths.some(file => file.startsWith('.ssh/')), false)
+      assert.equal(changePaths.some(file => file.startsWith('.dsh/')), false)
+
+      // Credential trees and a symlinked directory are refused for a diff.
+      for (const file of ['.ssh/id_ed25519', '.dsh/hermes-facade/internal.token', 'harvest/id_rsa']) {
+        const denied = await api(harness.base, '/api/git/review/diff?path=' + enc(repoRoot) + '&file=' + enc(file) + '&scope=uncommitted', { cookie })
+        assert.equal(denied.status, 403, file)
+        assert.equal(JSON.stringify(denied.json).includes('KEY'), false)
+      }
+
+      // An unchanged tracked file is not served as a whole-file diff.
+      const unchanged = await api(harness.base, '/api/git/review/diff?path=' + enc(repoRoot) + '&file=' + enc('README.md') + '&scope=uncommitted', { cookie })
+      assert.equal(unchanged.status, 200)
+      assert.equal(unchanged.json.diff, '')
+
+      // A deleted (uncommitted) row is a normal diff, not a 400.
+      const deleted = await api(harness.base, '/api/git/file-diff?path=' + enc(repoRoot) + '&file=' + enc('gone.txt'), { cookie })
+      assert.equal(deleted.status, 200)
+      assert.match(deleted.json.diff, /gone\.txt/)
+
+      // `base` cannot smuggle a git option (--output would write a file).
+      const pwned = join(outside, 'pwned')
+      const hostile = await api(harness.base, '/api/git/review/list?path=' + enc(repoRoot) + '&scope=lastTurn&base=' + enc('--output=' + pwned), { cookie })
+      assert.equal(hostile.status, 400)
+      assert.equal(existsSync(pwned), false)
+      const hostileRef = await api(harness.base, '/api/git/review/rev-parse?path=' + enc(repoRoot) + '&ref=' + enc('--output=' + pwned), { cookie })
+      assert.equal(hostileRef.status, 400)
+      assert.equal(existsSync(pwned), false)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+    rmSync(outside, { recursive: true, force: true })
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
 
 
 

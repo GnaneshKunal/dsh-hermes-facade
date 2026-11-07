@@ -201,16 +201,18 @@ served, even if a chat folder were opened inside one; a symlink resolves first,
 so it cannot point out. Credential material the host's own Files guard refuses
 (`.env`, `.env.*`, `.envrc`, `.git-credentials`, `auth.json`, `credentials`,
 `config.yaml`, the four secret-cache stores, and any `mcp-tokens`/`pairing`
-component) is refused wherever it sits, and the same names plus the host's
-build/VCS caches are hidden from a listing. A denied path answers
+component, or `.ssh`/`.aws`/`.gnupg`/`.dsh`) is refused wherever it sits, and the
+same names plus the host's build/VCS caches are hidden from a listing. A denied path answers
 `403 {"detail":"Path is outside the session workspace"}`; credential material
 answers `403 {"detail":"Access to sensitive files is not allowed"}`.
 
 The read-only Git routes share the same instinct at a different boundary: the
 client names the repository root, which normally sits *above* the chat folder, so
 the Git scope admits that top-level only when it really is the git root of an
-allowed folder; a credential file is filtered from the rows and its patch answers
-`403`.
+allowed folder. A `file` is realpath-checked inside that root, a symlink is
+refused, `base`/`ref` must be revisions (a query cannot inject a git option), a
+deny-root or `.ssh`/`.aws`/`.gnupg`/`.dsh` component is hidden and its patch
+answers `403`, and the all-add fallback runs only for an untracked file.
 
 ---
 

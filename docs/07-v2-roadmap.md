@@ -155,13 +155,15 @@ routes the panel calls: `/api/git/status` (branch, ahead/behind, staged/unstaged
 `/api/git/review/list` (uncommitted/branch/lastTurn), `/api/git/review/diff`, `/api/git/file-diff`,
 `/api/git/review/rev-parse` and `/api/git/branches`. The client names the repository root, which is normally
 *above* the chat folder, so the Git scope admits the top-level of a repository that holds an allowed folder and
-nothing else; a credential file is filtered from the rows and its patch answers `403`. Writes (stage, unstage,
+nothing else. A `file` is realpath-checked inside the root, a symlink is refused, `base`/`ref` are validated so a
+query cannot inject a git option, a credential or `.ssh`/`.aws`/`.gnupg`/`.dsh` path is hidden and refused, and
+the all-add fallback runs only for an untracked file. Writes (stage, unstage,
 revert, commit, push, branch switch) answer `400 Git writes are not supported…` with the reason, and `ship-info`
 answers no pull request, so the panel is honest about its read-only state. Tests cover a real temporary repository:
 status, changes, patches (tracked and untracked), branches, sha, the fence for a non-root, the non-repo shapes and
 the write refusal.
 
-Verify: `npm run check && npm test` (179 tests), then rename a chat from the phone's list, pin it, archive it,
+Verify: `npm run check && npm test` (180 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---

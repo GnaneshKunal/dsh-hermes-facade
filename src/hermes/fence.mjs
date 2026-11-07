@@ -38,7 +38,7 @@ const SENSITIVE_FILE_NAMES = new Set([
 ])
 
 /** Directory names whose whole subtree is credential material. */
-const SENSITIVE_DIR_NAMES = new Set(['mcp-tokens', 'pairing'])
+const SENSITIVE_DIR_NAMES = new Set(['mcp-tokens', 'pairing', '.ssh', '.aws', '.gnupg', '.dsh'])
 
 /**
  * Whether a path is a credential file or lives under a credential directory.

@@ -31,10 +31,16 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   optional locks off, and with `GIT_DIR`-style variables removed; the read-only
   Git scope admits the repository root above a chat folder (the client names
   that root on every read) and nothing else. A credential file is filtered from
-  the rows and its diff answers 403. Writes (stage/unstage/revert/commit/push,
-  branch switch) answer `400 Git writes are not supported…`, and `ship-info`
-  answers no pull request, so the panel stays honest about being read-only.
-  Tests use a temporary repository.
+  the rows and its diff answers 403. `base`/`ref` are validated as revisions so a
+  query cannot inject a git option, a `file` is realpath-checked inside the root,
+  a symlink is refused, and a deny-root (the state dir, `$DSH_HOME`, `~/.ssh`, …)
+  or `.ssh`/`.aws`/`.gnupg`/`.dsh` component is hidden and refused. The all-add
+  fallback runs only for a genuinely untracked file, so an unchanged tracked file
+  is never served whole; a deleted (uncommitted) row still diffs. Writes
+  (stage/unstage/revert/commit/push, branch switch) answer `400 Git writes are
+  not supported…`, and `ship-info` answers no pull request, so the panel stays
+  honest about being read-only. Tests use a temporary repository and cover the
+  ref-injection, symlink-escape and deny-tree attacks plus a deleted file.
 - **A shared path fence for file surfaces** (`src/hermes/fence.mjs`). Hermex
   sends absolute host paths and its own check is explicitly not a security
   boundary, so a path is served only when its realpath is inside a chat folder
@@ -44,8 +50,9 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   resolved first, so it cannot point out. It also mirrors the host's own Files
   guard: `.env`/`.env.*`/`.envrc`, `.git-credentials`, `auth.json`,
   `credentials`, `config.yaml` and the other credential basenames are refused
-  wherever they sit, any `mcp-tokens`/`pairing` component is refused, and the
-  same names plus the host's build/VCS caches are hidden from listings. A denied
+  wherever they sit, any `mcp-tokens`/`pairing`/`.ssh`/`.aws`/`.gnupg`/`.dsh`
+  component is refused, and the same names plus the host's build/VCS caches are
+  hidden from listings. A denied
   path answers `403 {"detail":"Path is outside the session workspace"}`; a
   credential answers `403 {"detail":"Access to sensitive files is not allowed"}`.
   The host's secret-cache basenames (`bws_cache.json`, `bws_cache.enc.json`,

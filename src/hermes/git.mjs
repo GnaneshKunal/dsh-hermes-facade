@@ -21,7 +21,7 @@
  */
 
 import { execFile } from 'node:child_process'
-import { readFile, realpath, stat } from 'node:fs/promises'
+import { lstat, readFile, realpath, stat } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 
 import { isSensitivePath } from './fence.mjs'
@@ -120,6 +120,20 @@ async function gitOut(cwd, args, what) {
 }
 
 /**
+ * Validate a revision operand so it cannot be read by git as an option.
+ * A range like `HEAD~3..HEAD` is fine; a leading '-' (or a glob) is not.
+ * @param {string|undefined} value revision.
+ * @returns {string} the revision.
+ */
+export function safeRef(value) {
+  const ref = String(value ?? '')
+  if (ref.length === 0 || ref.length > 200 || !REF_PATTERN.test(ref) || ref.startsWith('-')) {
+    throw new GitRefusal(400, 'invalid ref')
+  }
+  return ref
+}
+
+/**
  * The new path of a numstat rename record (`a => b`, `dir/{a => b}/f`).
  * @param {string} raw raw path.
  * @returns {string} the new path.
@@ -161,12 +175,15 @@ function parseNumstat(stdout) {
  * @param {string} relative path relative to root.
  * @returns {Promise<number>} insertions.
  */
-async function untrackedLines(root, relative) {
+async function untrackedLines(root, relative, guard) {
   try {
     const target = join(root, relative)
-    const info = await stat(target)
-    if (info.isFile() !== true || info.size > UNTRACKED_MAX_BYTES) return 0
-    const body = await readFile(target)
+    const info = await lstat(target)
+    if (info.isFile() !== true || info.isSymbolicLink() || info.size > UNTRACKED_MAX_BYTES) return 0
+    const real = await realpath(target)
+    if (real !== root && !real.startsWith(root + sep)) return 0
+    if (guard !== undefined && await guard(real)) return 0
+    const body = await readFile(real)
     if (body.includes(0)) return 0
     let lines = 0
     for (const byte of body) if (byte === 0x0a) lines += 1
@@ -174,6 +191,21 @@ async function untrackedLines(root, relative) {
   } catch {
     return 0
   }
+}
+
+/**
+ * Whether a repository-relative path must stay out of the Git surface: a
+ * credential file/directory, or a path under a directory the facade never
+ * serves (the state dir, `$DSH_HOME`, `~/.ssh`, …).
+ * @param {string} root repository root.
+ * @param {string} relative path relative to the root.
+ * @param {(path: string) => Promise<boolean>} [deny] deny-root check.
+ * @returns {Promise<boolean>} hidden.
+ */
+async function isHiddenPath(root, relative, deny) {
+  const target = join(root, relative)
+  if (isSensitivePath(target)) return true
+  return deny === undefined ? false : deny(target)
 }
 
 /**
@@ -312,10 +344,10 @@ function mayScanUntracked(budget) {
  * @param {boolean} scan whether an untracked file's lines may be read.
  * @returns {Promise<object>} row.
  */
-async function statusRow(root, entry, counts, scan) {
+async function statusRow(root, entry, counts, scan, guard) {
   const countsForFile = counts.get(entry.path) ?? [0, 0]
   const added = entry.untracked === true
-    ? (scan ? await untrackedLines(root, entry.path) : 0)
+    ? (scan ? await untrackedLines(root, entry.path, guard) : 0)
     : countsForFile[0]
   return {
     path: entry.path,
@@ -334,16 +366,21 @@ async function statusRow(root, entry, counts, scan) {
  * @param {string} root repository root.
  * @returns {Promise<object|null>} status, null outside a repository.
  */
-export async function repoStatus(root) {
+export async function repoStatus(root, guard) {
   const result = await runGit(root, ['status', '--porcelain=v2', '--branch', '-z'])
   if (result.code !== 0) return null
   const parsed = parseStatus(result.stdout)
   const counts = parseNumstat((await runGit(root, ['diff', '--numstat', 'HEAD'])).stdout)
-  const visible = parsed.entries.filter(entry => !isSensitivePath(join(root, entry.path))).slice(0, ROW_CAP)
+  const visible = []
+  for (const entry of parsed.entries) {
+    if (visible.length >= ROW_CAP) break
+    if (await isHiddenPath(root, entry.path, guard)) continue
+    visible.push(entry)
+  }
   const budget = { count: 0 }
   const files = []
   for (const entry of visible) {
-    files.push(await statusRow(root, entry, counts, entry.untracked === true && mayScanUntracked(budget)))
+    files.push(await statusRow(root, entry, counts, entry.untracked === true && mayScanUntracked(budget), guard))
   }
   const count = flag => files.filter(file => file[flag] === true).length
   const facts = await branchFacts(root)
@@ -371,16 +408,16 @@ export async function repoStatus(root) {
  * @param {string|undefined} base range base for `lastTurn`/`branch`.
  * @returns {Promise<{files: object[], base: string|null}>} list.
  */
-export async function reviewList(root, scope, base) {
+export async function reviewList(root, scope, base, guard) {
   if (scope === 'branch' || scope === 'lastTurn') {
     const facts = await branchFacts(root)
-    const from = scope === 'branch' ? facts.base : (base ?? null)
+    const from = scope === 'branch' ? facts.base : (base === undefined ? null : safeRef(base))
     if (from === null || from.length === 0) return { files: [], base: null }
     const range = scope === 'branch' ? from + '...HEAD' : from
     const counts = parseNumstat((await runGit(root, ['diff', '--numstat', range])).stdout)
     const rows = []
     for (const [path, [added, removed]] of counts) {
-      if (isSensitivePath(join(root, path))) continue
+      if (await isHiddenPath(root, path, guard)) continue
       rows.push({ path, added, removed, status: 'M', staged: false })
     }
     if (scope === 'lastTurn') {
@@ -389,8 +426,8 @@ export async function reviewList(root, scope, base) {
       const budget = { count: 0 }
       for (const entry of status.entries) {
         if (entry.untracked !== true || seen.has(entry.path)) continue
-        if (isSensitivePath(join(root, entry.path))) continue
-        const added = mayScanUntracked(budget) ? await untrackedLines(root, entry.path) : 0
+        if (await isHiddenPath(root, entry.path, guard)) continue
+        const added = mayScanUntracked(budget) ? await untrackedLines(root, entry.path, guard) : 0
         rows.push({ path: entry.path, added, removed: 0, status: '?', staged: false })
       }
     }
@@ -404,11 +441,11 @@ export async function reviewList(root, scope, base) {
   const rows = []
   const budget = { count: 0 }
   for (const entry of parsed.entries) {
-    if (isSensitivePath(join(root, entry.path))) continue
+    if (await isHiddenPath(root, entry.path, guard)) continue
     const [stagedAdded, stagedRemoved] = staged.get(entry.path) ?? [0, 0]
     const [workAdded, workRemoved] = worktree.get(entry.path) ?? [0, 0]
     const added = entry.untracked === true
-      ? (mayScanUntracked(budget) ? await untrackedLines(root, entry.path) : 0)
+      ? (mayScanUntracked(budget) ? await untrackedLines(root, entry.path, guard) : 0)
       : stagedAdded + workAdded
     const removed = entry.untracked === true ? 0 : stagedRemoved + workRemoved
     rows.push({ path: entry.path, added, removed, status: statusLetter(entry), staged: entry.staged })
@@ -423,14 +460,32 @@ export async function reviewList(root, scope, base) {
  * @param {string} file client path.
  * @returns {string} pathspec.
  */
-export function safeFilePath(root, file) {
+export async function safeFilePath(root, file, deny) {
   const value = String(file ?? '')
   if (value.length === 0) throw new GitRefusal(400, 'file required')
   if (value.startsWith('/') || value.includes('\0')) throw new GitRefusal(400, 'file must be relative')
   const target = resolve(join(root, value))
   if (target !== root && !target.startsWith(root + sep)) throw new GitRefusal(400, 'file must be inside the repository')
   if (isSensitivePath(target)) throw new GitRefusal(403, 'Access to sensitive files is not allowed')
-  return ':(literal)' + value
+  let info
+  try { info = await lstat(target) } catch { info = undefined }
+  // A symlink is the classic way out of a lexical fence; refuse it outright.
+  if (info !== undefined && info.isSymbolicLink()) throw new GitRefusal(400, 'symlink paths are not served')
+  let real = target
+  if (info !== undefined) {
+    real = await realpath(target)
+    if (real !== root && !real.startsWith(root + sep)) {
+      throw new GitRefusal(403, 'file must be inside the repository')
+    }
+    if (isSensitivePath(real)) throw new GitRefusal(403, 'Access to sensitive files is not allowed')
+    if (deny !== undefined && await deny(real)) {
+      throw new GitRefusal(403, 'Access to sensitive files is not allowed')
+    }
+  } else if (deny !== undefined && await deny(target)) {
+    // A deleted file is a normal row; its path must still not name a secret tree.
+    throw new GitRefusal(403, 'Access to sensitive files is not allowed')
+  }
+  return { literal: ':(literal)' + value, relative: value, target: real }
 }
 
 /**
@@ -445,12 +500,10 @@ async function singleFileDiff(root, range, file, literal) {
   const names = await gitOut(root, ['diff', ...range, '--no-renames', '--name-only', '-z', '--', literal], 'diff')
   const named = names.split('\0').filter(name => name.length > 0)
   if (named.length === 0) return ''
-  let target
-  try { target = await realpath(join(root, file)) } catch { target = undefined }
+  // A literal pathspec still expands a directory; require exactly the one row.
+  // Comparing the names also keeps a deleted file (no realpath) working.
   for (const name of named) {
-    let resolvedName
-    try { resolvedName = await realpath(join(root, name)) } catch { resolvedName = undefined }
-    if (target === undefined || resolvedName !== target) throw new GitRefusal(400, 'Expected a single file, not a directory')
+    if (name !== file) throw new GitRefusal(400, 'Expected a single file, not a directory')
   }
   return gitOut(root, ['diff', '--no-ext-diff', '--no-textconv', ...range, '--no-renames', '--', literal], 'diff')
 }
@@ -462,7 +515,11 @@ async function singleFileDiff(root, range, file, literal) {
  * @returns {Promise<string>} patch.
  */
 async function allAddDiff(root, file) {
-  const result = await runGit(root, ['diff', '--no-color', '--no-ext-diff', '--no-index', '--', '/dev/null', file])
+  // Only a real, regular file: --no-index follows a symlink, so never hand it one.
+  let info
+  try { info = await lstat(join(root, file)) } catch { return '' }
+  if (info.isFile() !== true || info.isSymbolicLink()) return ''
+  const result = await runGit(root, ['diff', '--no-color', '--no-ext-diff', '--no-textconv', '--no-index', '--', '/dev/null', file])
   if (result.tooLarge) throw new GitRefusal(413, 'Output too large')
   // --no-index exits 1 when the files differ, which is the normal case.
   return result.stdout
@@ -478,19 +535,23 @@ async function allAddDiff(root, file) {
  * @param {boolean} options.staged staged-only worktree read.
  * @returns {Promise<string>} patch.
  */
-export async function reviewDiff(root, { file, scope, base, staged }) {
-  const literal = safeFilePath(root, file)
+export async function reviewDiff(root, { file, scope, base, staged }, deny) {
+  const { literal, relative } = await safeFilePath(root, file, deny)
   if (scope === 'branch') {
     const facts = await branchFacts(root)
-    return facts.base === null ? '' : singleFileDiff(root, [facts.base + '...HEAD'], file, literal)
+    return facts.base === null ? '' : singleFileDiff(root, [facts.base + '...HEAD'], relative, literal)
   }
   if (scope === 'lastTurn') {
-    return base === undefined || base.length === 0 ? '' : singleFileDiff(root, [base], file, literal)
+    if (base === undefined || base.length === 0) return ''
+    return singleFileDiff(root, [safeRef(base)], relative, literal)
   }
-  if (staged === true) return singleFileDiff(root, ['--cached'], file, literal)
-  const worktree = await singleFileDiff(root, [], file, literal)
+  if (staged === true) return singleFileDiff(root, ['--cached'], relative, literal)
+  const worktree = await singleFileDiff(root, [], relative, literal)
   if (worktree.trim().length > 0) return worktree
-  return allAddDiff(root, file)
+  // Only an untracked file gets the all-add fallback. An unchanged tracked file,
+  // an ignored file, or .git/config must not become a whole-file read.
+  const status = (await runGit(root, ['status', '--porcelain', '--', literal])).stdout.trimStart()
+  return status.startsWith('??') ? allAddDiff(root, relative) : ''
 }
 
 /**
@@ -499,12 +560,12 @@ export async function reviewDiff(root, { file, scope, base, staged }) {
  * @param {string} file relative path.
  * @returns {Promise<string>} patch.
  */
-export async function fileDiff(root, file) {
-  const literal = safeFilePath(root, file)
-  const head = await singleFileDiff(root, ['HEAD'], file, literal)
+export async function fileDiff(root, file, deny) {
+  const { literal, relative } = await safeFilePath(root, file, deny)
+  const head = await singleFileDiff(root, ['HEAD'], relative, literal)
   if (head.trim().length > 0) return head
   const status = (await runGit(root, ['status', '--porcelain', '--', literal])).stdout
-  return status.trimStart().startsWith('??') ? allAddDiff(root, file) : ''
+  return status.trimStart().startsWith('??') ? allAddDiff(root, relative) : ''
 }
 
 /**
@@ -515,8 +576,7 @@ export async function fileDiff(root, file) {
  */
 export async function revParse(root, ref) {
   const value = typeof ref === 'string' && ref.length > 0 ? ref : 'HEAD'
-  if (!REF_PATTERN.test(value) || value.startsWith('-')) throw new GitRefusal(400, 'invalid ref')
-  const result = await runGit(root, ['rev-parse', '--verify', '--quiet', value])
+  const result = await runGit(root, ['rev-parse', '--verify', '--quiet', safeRef(value)])
   if (result.code !== 0) return null
   const sha = result.stdout.trim()
   return sha.length > 0 ? sha : null

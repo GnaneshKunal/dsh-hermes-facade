@@ -400,6 +400,15 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
   const files = createFileRoutes({ backend, fence, rootsOf: fileRoots, cwdOf: sessionCwd })
 
   /**
+   * The deny-root check for Git rows and files: the state dir, `$DSH_HOME` and
+   * the usual secret directories stay unreadable even when a repository root
+   * contains them (a home-level dotfiles repo, for example).
+   * @param {string} target absolute path.
+   * @returns {Promise<boolean>} denied.
+   */
+  const gitGuard = target => fence.isDenied(target)
+
+  /**
    * Resolve the repository a Git route may read, from the client's absolute path.
    *
    * The Git menu resolves the root from a chat folder, then names that root on
@@ -840,7 +849,7 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
       const root = scope.root
       try {
         if (path === '/api/git/status') {
-          sendJson(res, 200, root === undefined ? null : await repoStatus(root))
+          sendJson(res, 200, root === undefined ? null : await repoStatus(root, gitGuard))
           return
         }
         if (path === '/api/git/branches') {
@@ -860,7 +869,7 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
         if (path === '/api/git/review/list') {
           sendJson(res, 200, root === undefined
             ? { files: [], base: null }
-            : await reviewList(root, scopeName, url.searchParams.get('base') ?? undefined))
+            : await reviewList(root, scopeName, url.searchParams.get('base') ?? undefined, gitGuard))
           return
         }
         if (path === '/api/git/review/diff') {
@@ -868,12 +877,12 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
           sendJson(res, 200, {
             diff: root === undefined ? '' : await reviewDiff(root, {
               file, scope: scopeName, base: url.searchParams.get('base') ?? undefined, staged,
-            }),
+            }, gitGuard),
           })
           return
         }
         // /api/git/file-diff
-        sendJson(res, 200, { diff: root === undefined ? '' : await fileDiff(root, file) })
+        sendJson(res, 200, { diff: root === undefined ? '' : await fileDiff(root, file, gitGuard) })
         return
       } catch (error) {
         if (error instanceof GitRefusal) { sendJson(res, error.status, { detail: error.detail }); return }
