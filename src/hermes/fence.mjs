@@ -33,6 +33,8 @@ const SENSITIVE_FILE_NAMES = new Set([
   'auth.json', 'auth.lock', 'credentials', 'config.yaml',
   '.anthropic_oauth.json', 'google_token.json', 'google_oauth_pending.json',
   'google_oauth.json', 'webhook_subscriptions.json', '.git-credentials',
+  // The host's secret-cache stores (Bitwarden/1Password caches, Photon sidecar token).
+  'bws_cache.json', 'bws_cache.enc.json', 'op_cache.json', 'photon-sidecar.json',
 ])
 
 /** Directory names whose whole subtree is credential material. */

@@ -1338,6 +1338,7 @@ test('the Files guard refuses credentials, caps large sources and resolves relat
     writeFileSync(join(folder, '.env'), 'SECRET=1\n')
     writeFileSync(join(folder, '.git-credentials'), 'https://user:pass@example.invalid\n')
     writeFileSync(join(folder, 'credentials'), '{}\n')
+    writeFileSync(join(folder, 'photon-sidecar.json'), '{"token":"x"}\n')
     mkdirSync(join(folder, '.git'))
     writeFileSync(join(folder, '.git', 'config'), '[core]\n')
     mkdirSync(join(folder, 'node_modules'))
@@ -1365,13 +1366,13 @@ test('the Files guard refuses credentials, caps large sources and resolves relat
       const list = await api(harness.base, '/api/fs/list?path=' + enc(folder), { cookie })
       assert.equal(list.status, 200)
       const names = list.json.entries.map(entry => entry.name)
-      for (const hidden of ['.env', '.git-credentials', 'credentials', '.git', 'node_modules', 'mcp-tokens']) {
+      for (const hidden of ['.env', '.git-credentials', 'credentials', 'photon-sidecar.json', '.git', 'node_modules', 'mcp-tokens']) {
         assert.equal(names.includes(hidden), false, hidden + ' must not be listed')
       }
       assert.ok(names.includes('media'))
 
       // Credential material is refused wherever it sits, with the host's wording.
-      for (const relative of ['.env', '.git-credentials', 'credentials', 'mcp-tokens/server.json']) {
+      for (const relative of ['.env', '.git-credentials', 'credentials', 'photon-sidecar.json', 'mcp-tokens/server.json']) {
         const denied = await api(harness.base, '/api/fs/read-text?path=' + enc(join(folder, relative)), { cookie })
         assert.equal(denied.status, 403, relative)
         assert.equal(denied.json.detail, 'Access to sensitive files is not allowed')
