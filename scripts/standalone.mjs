@@ -16,6 +16,7 @@
 
 import { createFacadeServer } from '../src/server.mjs'
 import { resolveConfig } from '../src/config.mjs'
+import { approvalDecision } from '../src/host.mjs'
 
 /**
  * Minimal async queue used by the mock follow stream.
@@ -56,13 +57,50 @@ export function createMockHost() {
   const sessions = new Map()
   const queues = new Map()
   const listeners = new Set()
+  /** Pending approvals keyed by the id the phone answers with, with display fields. */
   const pendingApprovals = new Map()
   // Registry-global visibility sets, mirroring the real workspace baseline.
   const pinned = new Set()
   const archived = new Set()
+  /** Pending clarifications, same shape. */
+  const pendingClarifications = new Map()
+  /** Standing grants for the mock, mirroring src/host.mjs ("session"/"always"). */
+  const sessionGrants = new Map()
+  const alwaysGrants = new Set()
   let seq = 0
   /** How the next mocked turns end: 'completed', 'failed' or 'cancelled'. */
   let turnOutcome = 'completed'
+
+  /**
+   * Whether a standing grant answers this ask without a new card.
+   * @param {string} sessionId session id.
+   * @param {string} toolName tool name.
+   * @returns {boolean} granted.
+   */
+  function granted(sessionId, toolName) {
+    if (toolName.length === 0) return false
+    if (alwaysGrants.has(toolName)) return true
+    return sessionGrants.get(sessionId)?.has(toolName) === true
+  }
+
+  /**
+   * Remember an "Allow session" / "Always allow" choice.
+   * @param {string} sessionId session id.
+   * @param {string} toolName tool name.
+   * @param {string} scope session|always.
+   * @returns {void}
+   */
+  function rememberGrant(sessionId, toolName, scope) {
+    if (toolName.length === 0) return
+    if (scope === 'always') {
+      alwaysGrants.add(toolName)
+      return
+    }
+    if (scope !== 'session') return
+    const tools = sessionGrants.get(sessionId) ?? new Set()
+    tools.add(toolName)
+    sessionGrants.set(sessionId, tools)
+  }
 
   /**
    * Notify interaction listeners.
@@ -343,28 +381,93 @@ export function createMockHost() {
         return { body, contentType: types[extname(String(reference)).toLowerCase()] ?? 'application/octet-stream' }
       } catch { return undefined }
     },
-    pendingApproval(sessionId) { return pendingApprovals.get(sessionId) },
-    pendingClarification() { return undefined },
+    pendingApproval(sessionId) {
+      for (const entry of pendingApprovals.values()) {
+        if (entry.sessionId === sessionId) return { ...entry.pending }
+      }
+      return undefined
+    },
+    pendingClarification(sessionId) {
+      for (const entry of pendingClarifications.values()) {
+        if (entry.sessionId === sessionId) return { ...entry.pending }
+      }
+      return undefined
+    },
     respondApproval({ approvalId, choice }) {
-      const entry = [...pendingApprovals.entries()].find(([, value]) => value.approval_id === approvalId)
-      if (!entry) return { ok: false }
-      pendingApprovals.delete(entry[0])
-      notify({ kind: 'approval-resolved', sessionId: entry[0] })
-      console.log('mock: approval ' + approvalId + ' -> ' + choice)
+      const entry = pendingApprovals.get(approvalId)
+      if (entry === undefined) return { ok: false, stale: true }
+      const decision = approvalDecision(choice)
+      if (decision === undefined) return { ok: false, error: 'unknown approval choice: ' + String(choice) }
+      pendingApprovals.delete(approvalId)
+      rememberGrant(entry.sessionId, entry.pending.command ?? '', decision.scope)
+      this.lastApprovalOutcome = decision.outcome
+      notify({ kind: 'approval-resolved', sessionId: entry.sessionId, approvalId, reason: 'answered' })
+      return { ok: true, choice: decision.scope, outcome: decision.outcome }
+    },
+    respondClarification({ clarifyId, response }) {
+      const entry = pendingClarifications.get(clarifyId)
+      if (entry === undefined) return { ok: false, stale: true }
+      pendingClarifications.delete(clarifyId)
+      this.lastClarificationResponse = { clarifyId, response }
+      notify({ kind: 'clarify-resolved', sessionId: entry.sessionId, clarifyId, reason: 'answered' })
       return { ok: true }
     },
-    respondClarification() { return { ok: true } },
     dispose() {},
     /**
-     * Simulate an agent asking for approval.
+     * Simulate an agent asking for approval. A standing grant from an earlier
+     * "session"/"always" answer means no card is recorded.
      * @param {string} sessionId session id.
+     * @param {object} [overrides] pending fields to override.
      * @returns {object} pending payload.
      */
-    simulateApproval(sessionId = 'sess-mock') {
-      const pending = { approval_id: 'ap-' + Math.random().toString(36).slice(2, 8), command: 'bash', description: 'Run npm test' }
-      pendingApprovals.set(sessionId, pending)
+    simulateApproval(sessionId = 'sess-mock', overrides = {}) {
+      const pending = {
+        approval_id: overrides.approval_id ?? 'ap-' + Math.random().toString(36).slice(2, 8),
+        command: overrides.command ?? 'bash',
+        description: overrides.description ?? 'Run npm test',
+      }
+      if (granted(sessionId, pending.command)) return pending
+      pendingApprovals.set(pending.approval_id, { sessionId, pending })
       notify({ kind: 'approval', sessionId, pending })
       return pending
+    },
+    /**
+     * Simulate an agent asking for clarification.
+     * @param {string} sessionId session id.
+     * @param {object} [overrides] pending fields to override.
+     * @returns {object} pending payload.
+     */
+    simulateClarification(sessionId = 'sess-mock', overrides = {}) {
+      const pending = {
+        clarify_id: overrides.clarify_id ?? 'cq-' + Math.random().toString(36).slice(2, 8),
+        question: overrides.question ?? 'Which database should I use?',
+        choices_offered: overrides.choices_offered ?? ['SQLite', 'Postgres'],
+        session_id: sessionId,
+        requested_at: Math.floor(Date.now() / 1000),
+      }
+      pendingClarifications.set(pending.clarify_id, { sessionId, pending })
+      notify({ kind: 'clarify', sessionId, pending })
+      return pending
+    },
+    /**
+     * Simulate a prompt resolving without the phone (timeout, GUI answer, or a
+     * cancelled turn), so tests can watch the retraction clear the card.
+     * @param {string} sessionId session id.
+     * @param {string} [kind] approval|clarify.
+     * @returns {void}
+     */
+    simulatePromptResolved(sessionId = 'sess-mock', kind = 'approval') {
+      if (kind === 'clarify') {
+        for (const [id, entry] of pendingClarifications) {
+          if (entry.sessionId === sessionId) pendingClarifications.delete(id)
+        }
+        notify({ kind: 'clarify-resolved', sessionId, reason: 'timeout' })
+        return
+      }
+      for (const [id, entry] of pendingApprovals) {
+        if (entry.sessionId === sessionId) pendingApprovals.delete(id)
+      }
+      notify({ kind: 'approval-resolved', sessionId, reason: 'timeout' })
     },
   }
 }

@@ -17,6 +17,35 @@ import { basename, dirname, extname, join } from 'node:path'
 /** How long a pending interaction waits before it is released to the GUI. */
 const INTERACTION_TIMEOUT_MS = 10 * 60 * 1000
 
+/**
+ * The one grant DeepSeek Harness's approval contract accepts
+ * (`ApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'`;
+ * "allowed-once is the only grant").
+ */
+const APPROVAL_GRANT = 'allowed-once'
+
+/**
+ * Translate the app's four-way approval choice onto the DSH outcome vocabulary.
+ *
+ * Hermex offers once/session/always/deny, but DeepSeek Harness grants one
+ * decision at a time: there is no host-side session or always scope. All three
+ * allow choices therefore resolve the pending ask with 'allowed-once', and the
+ * wider scope is remembered by the facade (see `sessionGrants`/`alwaysGrants`)
+ * so later asks for the same tool are answered without a fresh card. An
+ * unrecognised choice is refused rather than silently granted.
+ * @param {string} choice app choice: once|session|always|deny.
+ * @returns {{outcome: string, scope: string}|undefined} decision, undefined for an unknown choice.
+ */
+export function approvalDecision(choice) {
+  switch (choice) {
+    case 'once': return { outcome: APPROVAL_GRANT, scope: 'once' }
+    case 'session': return { outcome: APPROVAL_GRANT, scope: 'session' }
+    case 'always': return { outcome: APPROVAL_GRANT, scope: 'always' }
+    case 'deny': return { outcome: 'rejected', scope: 'deny' }
+    default: return undefined
+  }
+}
+
 /** How long a model catalog read is reused before asking the host again. */
 const CATALOG_TTL_MS = 15 * 1000
 
@@ -186,10 +215,23 @@ export function createDshHost({ ctx, logger = console }) {
     return gateway.invoke({ namespace, method, args, peer, ...(signal ? { signal } : {}) })
   }
 
-  /** @type {Map<string, {sessionId: string, resolve: Function, reject: Function}>} */
+  /**
+   * Pending approvals, keyed by the id the phone answers with. The display
+   * fields are kept here, not only in the live notice: a phone that re-attaches
+   * asks GET /api/approval/pending and must get the command/description back.
+   * @type {Map<string, {sessionId: string, toolName: string, pending: object, resolve: Function, reject: Function}>}
+   */
   const pendingApprovals = new Map()
-  /** @type {Map<string, {sessionId: string, resolve: Function, reject: Function}>} */
+  /**
+   * Pending clarifications, keyed the same way and kept for the same reason:
+   * the app classifies a clarification by its question or choices_offered, so a
+   * payload with only clarify_id renders as an approval that can never answer.
+   * @type {Map<string, {sessionId: string, questionId?: string, pending: object, resolve: Function, reject: Function}>}
+   */
   const pendingQuestions = new Map()
+  /** Tool names allowed for the rest of one session, and for the whole process. */
+  const sessionGrants = new Map()
+  const alwaysGrants = new Set()
   /** @type {Set<Function>} */
   const interactionListeners = new Set()
 
@@ -204,32 +246,118 @@ export function createDshHost({ ctx, logger = console }) {
     }
   }
 
+  /**
+   * Whether a standing grant answers this ask without showing a card.
+   * @param {string} sessionId session id.
+   * @param {string} toolName tool the ask is about.
+   * @returns {boolean} granted.
+   */
+  function standingGrant(sessionId, toolName) {
+    if (toolName.length === 0) return false
+    if (alwaysGrants.has(toolName)) return true
+    return sessionGrants.get(sessionId)?.has(toolName) === true
+  }
+
+  /**
+   * Remember an "Allow session" / "Always allow" choice.
+   * @param {string} sessionId session id.
+   * @param {string} toolName tool that was allowed.
+   * @param {string} scope session|always.
+   * @returns {void}
+   */
+  function rememberGrant(sessionId, toolName, scope) {
+    if (toolName.length === 0) return
+    if (scope === 'always') {
+      alwaysGrants.add(toolName)
+      return
+    }
+    if (scope !== 'session') return
+    const tools = sessionGrants.get(sessionId) ?? new Set()
+    tools.add(toolName)
+    sessionGrants.set(sessionId, tools)
+  }
+
   // Approvals arrive as a cordis waterfall: prepending means we are asked
   // first, and calling next() hands the question back to the GUI.
   const disposeApproval = ctx.on('approval/request', (request, next) => {
     const sessionId = String(request?.agent?.id ?? '')
-    if (!sessionId || !hasStreamClient(sessionId)) return next()
+    const toolName = typeof request?.toolName === 'string' ? request.toolName.trim() : ''
+    // DeepSeek Harness grants one decision at a time ('allowed-once' is the
+    // whole grant vocabulary), so "Allow session" and "Always allow" are kept
+    // as facade-side standing grants and replayed as 'allowed-once' here. The
+    // choice is therefore not collapsed into a one-shot answer: later asks for
+    // the same tool are answered without showing the card again.
+    if (sessionId.length > 0 && standingGrant(sessionId, toolName)) return Promise.resolve(APPROVAL_GRANT)
+    if (!sessionId || !hasStreamClient(sessionId)) {
+      // No phone attached: the GUI answers, and any card left from an earlier
+      // attach is told the request is no longer the facade's.
+      return Promise.resolve(next()).finally(() => {
+        notify({ kind: 'approval-resolved', sessionId, reason: 'delegated' })
+      })
+    }
     const approvalId = String(request?.callId ?? request?.approvalId ?? randomUUID())
+    // displayReason is localized copy ({en, …}); the app shows one string, so
+    // prefer its English form and fall back to the asker's raw reason.
+    const displayReason = request?.displayReason
+    const description = typeof displayReason === 'string'
+      ? displayReason
+      : (typeof displayReason?.en === 'string'
+        ? displayReason.en
+        : (typeof request?.reason === 'string' ? request.reason : undefined))
+    // The phone loses these fields after a reconnect unless the pending record
+    // keeps them: GET /api/approval/pending serves this exact object.
+    const pending = {
+      approval_id: approvalId,
+      ...(toolName.length === 0 ? {} : { command: toolName }),
+      ...(description === undefined || description.length === 0 ? {} : { description }),
+    }
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      let settled = false
+      /**
+       * Remove the request and tell the phone its card is over.
+       * @param {string} reason timeout|cancelled.
+       * @returns {boolean} whether this call withdrew the request.
+       */
+      const withdraw = reason => {
+        if (settled) return false
+        settled = true
+        clearTimeout(timer)
         pendingApprovals.delete(approvalId)
+        notify({ kind: 'approval-resolved', sessionId, approvalId, reason })
+        return true
+      }
+      const timer = setTimeout(() => {
+        // An unanswered ask expires: retract the card first, then hand the
+        // question to the GUI, which is where an abandoned prompt belongs.
+        if (!withdraw('timeout')) return
         resolve(next())
       }, INTERACTION_TIMEOUT_MS)
       if (typeof timer.unref === 'function') timer.unref()
       pendingApprovals.set(approvalId, {
         sessionId,
-        resolve: outcome => { clearTimeout(timer); resolve(outcome) },
-        reject: error => { clearTimeout(timer); reject(error) },
-      })
-      notify({
-        kind: 'approval',
-        sessionId,
-        pending: {
-          approval_id: approvalId,
-          command: typeof request?.toolName === 'string' ? request.toolName : undefined,
-          description: typeof request?.displayReason === 'string' ? request.displayReason : request?.reason,
+        toolName,
+        pending,
+        resolve: outcome => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          pendingApprovals.delete(approvalId)
+          resolve(outcome)
+        },
+        reject: error => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          pendingApprovals.delete(approvalId)
+          reject(error)
         },
       })
+      // A cancelled turn withdraws the ask; the sheet must go with it.
+      request?.signal?.addEventListener?.('abort', () => {
+        if (!withdraw('cancelled')) return
+        resolve('cancelled')
+      }, { once: true })
+      notify({ kind: 'approval', sessionId, pending })
     })
   }, { prepend: true })
 
@@ -237,28 +365,67 @@ export function createDshHost({ ctx, logger = console }) {
     const sessionId = String(request?.agent?.id ?? '')
     if (!sessionId || !hasStreamClient(sessionId)) return next()
     const clarifyId = String(request?.id ?? randomUUID())
+    const first = Array.isArray(request?.questions) ? request.questions[0] : undefined
+    // The app classifies a pending payload by question/choices_offered; a bare
+    // clarify_id decodes as an approval, whose respond can never succeed.
+    const pending = {
+      clarify_id: clarifyId,
+      question: typeof first?.question === 'string' ? first.question : '',
+      ...(Array.isArray(first?.options)
+        ? { choices_offered: first.options.map(option => option?.label).filter(label => typeof label === 'string' && label.length > 0) }
+        : {}),
+      session_id: sessionId,
+      requested_at: Math.floor(Date.now() / 1000),
+    }
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      let settled = false
+      /**
+       * Remove the question and tell the phone its card is over.
+       * @param {string} reason timeout|cancelled.
+       * @returns {boolean} whether this call withdrew the question.
+       */
+      const withdraw = reason => {
+        if (settled) return false
+        settled = true
+        clearTimeout(timer)
         pendingQuestions.delete(clarifyId)
+        notify({ kind: 'clarify-resolved', sessionId, clarifyId, reason })
+        return true
+      }
+      const timer = setTimeout(() => {
+        if (!withdraw('timeout')) return
         resolve(next())
       }, INTERACTION_TIMEOUT_MS)
       if (typeof timer.unref === 'function') timer.unref()
       pendingQuestions.set(clarifyId, {
         sessionId,
-        resolve: answers => { clearTimeout(timer); resolve(answers) },
-        reject: error => { clearTimeout(timer); reject(error) },
-      })
-      const first = Array.isArray(request?.questions) ? request.questions[0] : undefined
-      notify({
-        kind: 'clarify',
-        sessionId,
-        pending: {
-          clarify_id: clarifyId,
-          question: typeof first?.question === 'string' ? first.question : undefined,
-          choices_offered: Array.isArray(first?.options) ? first.options.map(option => option?.label).filter(Boolean) : undefined,
-          requested_at: Math.floor(Date.now() / 1000),
+        ...(typeof first?.id === 'string' && first.id.length > 0 ? { questionId: first.id } : {}),
+        pending,
+        resolve: answers => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          pendingQuestions.delete(clarifyId)
+          resolve(answers)
+        },
+        reject: error => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          pendingQuestions.delete(clarifyId)
+          reject(error)
         },
       })
+      // A cancelled turn withdraws the question; close the sheet with it.
+      request?.signal?.addEventListener?.('abort', () => {
+        if (!withdraw('cancelled')) return
+        const cancelled = Object.assign(
+          new Error('the user-questions request was cancelled'),
+          { name: 'UserQuestionError', code: 'ASK_CANCELLED' },
+        )
+        reject(cancelled)
+      }, { once: true })
+      notify({ kind: 'clarify', sessionId, pending })
     })
   }, { prepend: true })
 
@@ -270,27 +437,25 @@ export function createDshHost({ ctx, logger = console }) {
   let hasStreamClient = () => false
 
   /**
-   * Pending approval for a session.
+   * Pending approval for a session, with the fields a re-attached phone needs.
    * @param {string} sessionId session id.
    * @returns {object|undefined} pending payload.
    */
   function pendingApproval(sessionId) {
-    for (const [approvalId, entry] of pendingApprovals) {
-      if (entry.sessionId === sessionId) {
-        return { approval_id: approvalId }
-      }
+    for (const entry of pendingApprovals.values()) {
+      if (entry.sessionId === sessionId) return { ...entry.pending }
     }
     return undefined
   }
 
   /**
-   * Pending clarification for a session.
+   * Pending clarification for a session, with question and choices_offered.
    * @param {string} sessionId session id.
    * @returns {object|undefined} pending payload.
    */
   function pendingClarification(sessionId) {
-    for (const [clarifyId, entry] of pendingQuestions) {
-      if (entry.sessionId === sessionId) return { clarify_id: clarifyId }
+    for (const entry of pendingQuestions.values()) {
+      if (entry.sessionId === sessionId) return { ...entry.pending }
     }
     return undefined
   }
@@ -967,19 +1132,29 @@ export function createDshHost({ ctx, logger = console }) {
     },
 
     /**
-     * Answer a pending approval.
+     * Answer a pending approval with one of the app's four choices.
+     *
+     * All three allow choices resolve the ask with 'allowed-once' (the only
+     * grant DeepSeek Harness accepts); "session"/"always" also leave a standing
+     * grant so later asks for the same tool are answered automatically. An
+     * already-resolved (or timed-out) id reports stale, which the HTTP layer
+     * turns into the 409 the app reads as "that prompt already expired".
      * @param {object} input input.
      * @param {string} input.approvalId approval id.
      * @param {string} input.choice once|session|always|deny.
-     * @returns {{ok: boolean}} outcome.
+     * @returns {{ok: boolean, stale?: boolean, choice?: string, outcome?: string, error?: string}} outcome.
      */
     respondApproval({ approvalId, choice }) {
       const entry = pendingApprovals.get(approvalId)
-      if (entry === undefined) return { ok: false }
-      pendingApprovals.delete(approvalId)
-      entry.resolve(choice === 'deny' ? 'rejected' : 'allowed-once')
-      notify({ kind: 'approval-resolved', sessionId: entry.sessionId })
-      return { ok: true }
+      if (entry === undefined) return { ok: false, stale: true }
+      const decision = approvalDecision(choice)
+      // A choice we cannot name is not a grant: keep the card up rather than
+      // answering "allowed-once" on the user's behalf.
+      if (decision === undefined) return { ok: false, error: 'unknown approval choice: ' + String(choice) }
+      entry.resolve(decision.outcome)
+      rememberGrant(entry.sessionId, entry.toolName, decision.scope)
+      notify({ kind: 'approval-resolved', sessionId: entry.sessionId, approvalId, reason: 'answered' })
+      return { ok: true, choice: decision.scope, outcome: decision.outcome }
     },
 
     /**
@@ -988,14 +1163,20 @@ export function createDshHost({ ctx, logger = console }) {
      * @param {string} input.clarifyId clarification id.
      * @param {string} input.response free-text or chosen label.
      * @param {string} input.sessionId session id.
-     * @returns {{ok: boolean}} outcome.
+     * @returns {{ok: boolean, stale?: boolean}} outcome.
      */
     respondClarification({ clarifyId, response, sessionId }) {
       const entry = pendingQuestions.get(clarifyId)
-      if (entry === undefined) return { ok: false }
-      pendingQuestions.delete(clarifyId)
-      entry.resolve({ answers: [{ selected: response }] })
-      notify({ kind: 'clarify-resolved', sessionId: entry.sessionId })
+      if (entry === undefined) return { ok: false, stale: true }
+      // The answer batch names the question it answers: the host schema
+      // (AskUserQuestionAnswerItem) requires the id echoed in the request.
+      entry.resolve({
+        answers: [{
+          ...(entry.questionId === undefined ? {} : { id: entry.questionId }),
+          selected: [response],
+        }],
+      })
+      notify({ kind: 'clarify-resolved', sessionId: entry.sessionId, clarifyId, reason: 'answered' })
       return { ok: true }
     },
 
@@ -1013,6 +1194,8 @@ export function createDshHost({ ctx, logger = console }) {
       for (const entry of pendingQuestions.values()) entry.reject(new Error('facade shutting down'))
       pendingApprovals.clear()
       pendingQuestions.clear()
+      sessionGrants.clear()
+      alwaysGrants.clear()
     },
   }
 }

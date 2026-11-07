@@ -108,8 +108,8 @@ curl.
 | session list, session detail, history | full: newest 200 + 50-message scroll-back pages within the newest 800 |
 | chat start / SSE stream / cancel / stream status | full; a failed or cancelled turn ends the stream with `error`/`cancel` instead of `done`; `profile`/`attachments` in the start body are ignored |
 | token deltas, thinking, tool cards | full: live and reloaded transcripts carry tool results, error verdicts and durations |
-| approvals (once / deny) | partial: session/always collapse to once; details are lost after reconnect; no stale/retraction |
-| clarifications / agent questions | partial: live works; a re-attached pending renders as an approval |
+| approvals (once / session / always / deny) | full: a reconnect keeps command/description, expired prompts answer `409 {"stale":true}` and are retracted. `session`/`always` are standing grants keyed by tool name (no command-pattern allowlist) |
+| clarifications / agent questions | full: live and re-attached cards carry `question`/`choices_offered` and answer correctly |
 | reasoning effort | full: levels come from the model catalog |
 | model picker | full: applied through `session/selectModel`; the catalog id/provider is resolved and the reasoning effort carried over |
 | live model overlay / providers | full (derived): both read the DSH model catalog; providers is read-only |

@@ -61,6 +61,8 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   user/assistant only, so hidden `role:"tool"` rows never consume a page; arguments still ride on
   each assistant message's `tool_calls`, and a compaction-replaced result is priced against the
   event it replaced so its duration stays truthful.
+- `/health` also advertises two new build markers, `approval-retract` and `clarify-markers`, so a
+  hot-reloaded build can be told apart from one that still loses approval details on reconnect.
 
 ### Fixed
 
@@ -87,6 +89,35 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   now stamps `finishedAt` and prunes: finished streams older than the replay window (30 min by
   default, `streamRetainMs` to tune it) go, and at most 64 finished streams are kept for
   reconnect, oldest first. Live streams are never pruned.
+- **Approval cards explain themselves after a reconnect.** `GET /api/approval/pending` and the
+  `initial`/live SSE payloads used to carry only `approval_id`, so a phone that re-attached (or
+  polled) showed a bare card with no command/description. The pending record now keeps both — the
+  tool name as `command`, the asker's localized `displayReason.en` (else its `reason`) as
+  `description` — and every payload is built from it. The pending approval is also retracted when
+  it stops being answerable: answering it, a GUI-side answer, a cancelled turn and the 10-minute
+  timeout all send `{"pending":null,"pending_count":0}` on `/api/approval/stream` and on the live
+  chat stream, and responding to an id that is already resolved (or timed out) answers
+  `409 {"stale":true}`, which the app renders as "that approval request already expired" and
+  dismisses the card. An empty/unknown `choice` is refused with `200 {ok:false}` instead of
+  silently becoming a grant.
+- **Approve for a session, or always.** "Allow session" and "Always allow" were collapsed into a
+  single `allowed-once` and forgotten, so the card came straight back. DeepSeek Harness's approval
+  contract grants exactly one outcome (`allowed-once`; the other vocabulary is `rejected`,
+  `cancelled`, `unavailable`), so the wider scopes are now held by the facade: the current ask is
+  still granted with `allowed-once`, and the tool is remembered for the rest of that session
+  ("session") or for the process ("always"), answering later asks for the same tool without a new
+  card. The grant is keyed by tool name — the only subject the host exposes — so it is coarser than
+  webui's command-pattern allowlist; `pattern_key`/`pattern_keys` are still not sent, so the app's
+  "Allow session covers every …" sentence stays hidden. "Deny" still rejects once and remembers
+  nothing.
+- **A clarification re-attaches as a clarification.** `GET /api/clarify/pending` and the `initial`
+  SSE payload sent only `{clarify_id}`; the app classifies a pending payload by
+  `question`/`choices_offered`, so a re-attached prompt rendered as an approval card whose respond
+  could never succeed. The pending record now keeps the question, the offered choice labels,
+  `session_id` and `requested_at`, and the clarify stream clears the card
+  (`{"pending":null,"pending_count":0}`) when the prompt resolves or times out. The answer batch now
+  names the question id the host echoed, as `AskUserQuestionAnswerItem` requires, so the model sees
+  which question was answered rather than an anonymous `{selected:[…]}`.
 - **The model picker actually applies.** `POST /api/session/update` (the picker's call),
   `POST /api/session/new` and `POST /api/chat/start` used to drop `model`/`model_provider`; the
   chip showed a model the next turn did not use. They now resolve the client's id against the DSH

@@ -127,6 +127,56 @@ function build(existingWorkspaces = {}, options = {}) {
   return { host: createDshHost({ ctx, logger: { info() {}, warn() {} } }), calls }
 }
 
+
+/**
+ * Build a host adapter whose cordis waterfalls the test can fire.
+ *
+ * `build()` keeps `on()` inert; approvals and questions arrive as waterfalls,
+ * so they need a fake ctx that records the listeners and a way to fire them.
+ * @param {object} [options] options.
+ * @param {boolean} [options.client] whether a phone is attached.
+ * @returns {object} harness with the host, its notices and fire helpers.
+ */
+function buildInteractions(options = {}) {
+  const handlers = new Map()
+  const gateway = {
+    async invoke() { return {} },
+    stream() { return Promise.resolve((async function* empty() {})()) },
+  }
+  const ctx = {
+    typertGateway: gateway,
+    connection: { createPeer: () => ({ principal: 'owner' }) },
+    on(event, handler) {
+      handlers.set(event, handler)
+      return () => handlers.delete(event)
+    },
+  }
+  const host = createDshHost({ ctx, logger: { info() {}, warn() {} } })
+  host.setClientPredicate(() => options.client !== false)
+  const notices = []
+  host.onInteraction(notice => notices.push(notice))
+  return {
+    host,
+    notices,
+    /**
+     * Fire one approval request.
+     * @param {object} request approval request.
+     * @returns {Promise<string>} the outcome the waterfall settles on.
+     */
+    ask(request) {
+      return handlers.get('approval/request')(request, () => Promise.resolve('unavailable'))
+    },
+    /**
+     * Fire one user-questions request.
+     * @param {object} request question request.
+     * @returns {Promise<object>} the answer batch the waterfall settles on.
+     */
+    askQuestion(request) {
+      return handlers.get('user-questions/request')(request, () => Promise.resolve({ answers: [] }))
+    },
+  }
+}
+
 test('listSessions uses the literal _request argument', async () => {
   const { host, calls } = build()
   const items = await host.listSessions()
@@ -455,4 +505,197 @@ test('pinSession drops the cached baseline so a new pin shows up immediately', a
   await host.pinSession({ sessionId: 's1', pinned: true })
   await host.workspaces()
   assert.equal(follows(), 2, 'the pin invalidated the baseline cache')
+})
+
+
+// ---- approvals & clarifications ---------------------------------------------
+
+test('a pending approval keeps its command and description for a reconnect', async () => {
+  const { host, ask } = buildInteractions()
+  const outcome = ask({ agent: { id: 's1' }, toolName: 'bash', callId: 'call-1', reason: 'needs to run the tests' })
+
+  // GET /api/approval/pending is served from this map: a bare approval_id is
+  // what made the phone lose the command/description after a reconnect.
+  assert.deepEqual(host.pendingApproval('s1'), {
+    approval_id: 'call-1',
+    command: 'bash',
+    description: 'needs to run the tests',
+  })
+
+  assert.deepEqual(host.respondApproval({ approvalId: 'call-1', choice: 'once' }), {
+    ok: true,
+    choice: 'once',
+    outcome: 'allowed-once',
+  })
+  assert.equal(await outcome, 'allowed-once')
+  assert.equal(host.pendingApproval('s1'), undefined)
+})
+
+test('the localized displayReason is preferred over the raw reason', async () => {
+  const { host, ask } = buildInteractions()
+  ask({
+    agent: { id: 's1' },
+    toolName: 'bash',
+    callId: 'call-1',
+    reason: 'internal reason',
+    displayReason: { en: 'Run the test suite', de: 'Testlauf starten' },
+  })
+  assert.equal(host.pendingApproval('s1').description, 'Run the test suite')
+  host.respondApproval({ approvalId: 'call-1', choice: 'deny' })
+})
+
+test('deny rejects the ask and leaves no grant', async () => {
+  const { host, ask } = buildInteractions()
+  const outcome = ask({ agent: { id: 's1' }, toolName: 'bash', callId: 'call-1' })
+  assert.deepEqual(host.respondApproval({ approvalId: 'call-1', choice: 'deny' }), {
+    ok: true,
+    choice: 'deny',
+    outcome: 'rejected',
+  })
+  assert.equal(await outcome, 'rejected')
+  // The same tool asks again next time: deny is not remembered.
+  ask({ agent: { id: 's1' }, toolName: 'bash', callId: 'call-2' })
+  assert.notEqual(host.pendingApproval('s1'), undefined)
+  host.respondApproval({ approvalId: 'call-2', choice: 'deny' })
+})
+
+test('session grants the tool for the rest of that session only', async () => {
+  const { host, ask } = buildInteractions()
+  const first = ask({ agent: { id: 's1' }, toolName: 'bash', callId: 'call-1' })
+  assert.equal(host.respondApproval({ approvalId: 'call-1', choice: 'session' }).choice, 'session')
+  assert.equal(await first, 'allowed-once')
+
+  // Same session and tool: answered with the one grant DSH accepts, no card.
+  assert.equal(await ask({ agent: { id: 's1' }, toolName: 'bash', callId: 'call-2' }), 'allowed-once')
+  assert.equal(host.pendingApproval('s1'), undefined)
+
+  // A different tool still asks.
+  const write = ask({ agent: { id: 's1' }, toolName: 'write', callId: 'call-3' })
+  assert.equal(host.pendingApproval('s1').command, 'write')
+  host.respondApproval({ approvalId: 'call-3', choice: 'deny' })
+  assert.equal(await write, 'rejected')
+
+  // Another session still asks for the same tool.
+  const other = ask({ agent: { id: 's2' }, toolName: 'bash', callId: 'call-4' })
+  assert.notEqual(host.pendingApproval('s2'), undefined)
+  host.respondApproval({ approvalId: 'call-4', choice: 'deny' })
+  assert.equal(await other, 'rejected')
+})
+
+test('always grants the tool in every session', async () => {
+  const { host, ask } = buildInteractions()
+  const first = ask({ agent: { id: 's1' }, toolName: 'bash', callId: 'call-1' })
+  assert.equal(host.respondApproval({ approvalId: 'call-1', choice: 'always' }).choice, 'always')
+  assert.equal(await first, 'allowed-once')
+  assert.equal(await ask({ agent: { id: 's2' }, toolName: 'bash', callId: 'call-2' }), 'allowed-once')
+  assert.equal(host.pendingApproval('s2'), undefined)
+})
+
+test('an unknown approval choice is refused instead of granted', async () => {
+  const { host, ask } = buildInteractions()
+  const outcome = ask({ agent: { id: 's1' }, toolName: 'bash', callId: 'call-1' })
+  assert.deepEqual(host.respondApproval({ approvalId: 'call-1', choice: 'sometimes' }), {
+    ok: false,
+    error: 'unknown approval choice: sometimes',
+  })
+  // The card stays up so the user can choose again.
+  assert.notEqual(host.pendingApproval('s1'), undefined)
+  host.respondApproval({ approvalId: 'call-1', choice: 'deny' })
+  assert.equal(await outcome, 'rejected')
+})
+
+test('answering an already-resolved approval reports stale', async () => {
+  const { host, ask } = buildInteractions()
+  const outcome = ask({ agent: { id: 's1' }, toolName: 'bash', callId: 'call-1' })
+  assert.equal(host.respondApproval({ approvalId: 'c1', choice: 'once' }).stale, true, 'unknown id')
+  host.respondApproval({ approvalId: 'call-1', choice: 'once' })
+  await outcome
+  assert.deepEqual(host.respondApproval({ approvalId: 'call-1', choice: 'once' }), { ok: false, stale: true })
+})
+
+test('a timed-out approval is retracted before it is handed to the GUI', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { host, ask, notices } = buildInteractions()
+  const outcome = ask({ agent: { id: 's1' }, toolName: 'bash', callId: 'call-1' })
+  assert.notEqual(host.pendingApproval('s1'), undefined)
+
+  t.mock.timers.tick(10 * 60 * 1000)
+  assert.equal(await outcome, 'unavailable', 'the GUI is asked after the phone card is withdrawn')
+  assert.equal(host.pendingApproval('s1'), undefined)
+  assert.ok(
+    notices.some(notice => notice.kind === 'approval-resolved' && notice.reason === 'timeout'),
+    'the phone is told to clear the card',
+  )
+})
+
+test('a cancelled turn clears the approval card', async () => {
+  const { host, ask, notices } = buildInteractions()
+  const controller = new AbortController()
+  const outcome = ask({ agent: { id: 's1' }, toolName: 'bash', callId: 'call-1', signal: controller.signal })
+  controller.abort()
+  assert.equal(await outcome, 'cancelled')
+  assert.equal(host.pendingApproval('s1'), undefined)
+  assert.ok(notices.some(notice => notice.kind === 'approval-resolved' && notice.reason === 'cancelled'))
+})
+
+test('a delegated approval reports resolved so a stale card clears', async () => {
+  const { host, ask, notices } = buildInteractions({ client: false })
+  assert.equal(await ask({ agent: { id: 's1' }, toolName: 'bash' }), 'unavailable')
+  assert.equal(host.pendingApproval('s1'), undefined)
+  assert.ok(notices.some(notice => notice.kind === 'approval-resolved' && notice.reason === 'delegated'))
+})
+
+test('a pending clarification keeps its question and choices for a reconnect', async () => {
+  const { host, askQuestion } = buildInteractions()
+  const answer = askQuestion({
+    agent: { id: 's1' },
+    id: 'q-1',
+    questions: [{
+      id: 'q-1',
+      question: 'Which database should I use?',
+      options: [{ label: 'SQLite' }, { label: 'Postgres' }],
+    }],
+  })
+
+  const pending = host.pendingClarification('s1')
+  assert.equal(pending.clarify_id, 'q-1')
+  assert.equal(pending.question, 'Which database should I use?')
+  assert.deepEqual(pending.choices_offered, ['SQLite', 'Postgres'])
+  assert.equal(pending.session_id, 's1')
+  assert.equal(typeof pending.requested_at, 'number')
+
+  assert.deepEqual(host.respondClarification({ clarifyId: 'q-1', response: 'Postgres', sessionId: 's1' }), { ok: true })
+  // The answer batch names the question id the host echoed in the request.
+  assert.deepEqual(await answer, { answers: [{ id: 'q-1', selected: ['Postgres'] }] })
+  assert.equal(host.pendingClarification('s1'), undefined)
+})
+
+test('a clarification always carries a question marker, even without options', async () => {
+  const { host, askQuestion } = buildInteractions()
+  askQuestion({ agent: { id: 's1' }, id: 'q-2', questions: [{ id: 'q-2', question: 'What should I name it?' }] })
+  const pending = host.pendingClarification('s1')
+  assert.equal(pending.question, 'What should I name it?')
+  assert.ok(!('choices_offered' in pending), 'no options means no choices_offered key')
+  host.respondClarification({ clarifyId: 'q-2', response: 'Facade', sessionId: 's1' })
+})
+
+test('answering an already-resolved clarification reports stale', async () => {
+  const { host, askQuestion } = buildInteractions()
+  const answer = askQuestion({ agent: { id: 's1' }, id: 'q-3', questions: [{ id: 'q-3', question: 'Well?' }] })
+  host.respondClarification({ clarifyId: 'q-3', response: 'yes', sessionId: 's1' })
+  await answer
+  assert.deepEqual(host.respondClarification({ clarifyId: 'q-3', response: 'yes', sessionId: 's1' }), {
+    ok: false,
+    stale: true,
+  })
+})
+
+test('a timed-out clarification is retracted', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { host, askQuestion, notices } = buildInteractions()
+  const answer = askQuestion({ agent: { id: 's1' }, id: 'q-4', questions: [{ id: 'q-4', question: 'Well?' }] })
+  t.mock.timers.tick(10 * 60 * 1000)
+  assert.deepEqual(await answer, { answers: [] }, 'the GUI is asked after the phone card is withdrawn')
+  assert.equal(host.pendingClarification('s1'), undefined)
+  assert.ok(notices.some(notice => notice.kind === 'clarify-resolved' && notice.reason === 'timeout'))
 })

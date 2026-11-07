@@ -63,6 +63,14 @@ const DEFAULT_HISTORY_PAGE = 200
 const EXPORT_MAX_MESSAGES = 5000
 
 /**
+ * The payload that clears a pending-prompt card on the phone.
+ *
+ * Hermex treats an approval update as a clear only when `pending_count` is 0
+ * (`pending` null alone is "unrecognised"), so a retraction needs both keys.
+ */
+const CLEARED = { pending: null, pending_count: 0 }
+
+/**
  * Reject when a host call outlives the client's patience.
  *
  * The app shows a transport banner when a request never answers, which reads to
@@ -255,7 +263,34 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
 
   host.setClientPredicate(sessionId => registry.forSession(sessionId) !== undefined)
 
+  /**
+   * Mirror one interaction notice into the live chat stream, journal included.
+   *
+   * The app applies approval/clarify payloads from the chat SSE as well as from
+   * the per-session monitor streams, so a resolved prompt must reach both: a
+   * clear that only travelled on /api/approval/stream would leave a card up on
+   * a phone whose monitor stream is not running.
+   * @param {object} notice host interruption notice.
+   * @returns {void}
+   */
+  function publishInteraction(notice) {
+    const stream = registry.forSession(notice.sessionId)
+    if (stream === undefined) return
+    if (notice.kind === 'approval' || notice.kind === 'approval-resolved') {
+      // Re-read instead of trusting the notice: a resolved event can race a
+      // newer ask for the same session, and a clear would wipe the new card.
+      const pending = host.pendingApproval?.(notice.sessionId)
+      registry.publish(stream, 'approval', pending === undefined ? CLEARED : { pending })
+      return
+    }
+    if (notice.kind === 'clarify' || notice.kind === 'clarify-resolved') {
+      const pending = host.pendingClarification?.(notice.sessionId)
+      registry.publish(stream, 'clarify', pending === undefined ? CLEARED : { pending })
+    }
+  }
+
   host.onInteraction?.(notice => {
+    publishInteraction(notice)
     for (const deliver of interactionChannels) deliver(notice)
   })
 
@@ -633,7 +668,7 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         sendJson(res, 200, {
           status: 'ok',
           active_streams: registry.activeCount(),
-          features: ['history-paging', 'tool-results', 'model-switch', 'session-export', 'pin-archive', 'providers'],
+          features: ['history-paging', 'tool-results', 'model-switch', 'session-export', 'pin-archive', 'providers', 'approval-retract', 'clarify-markers'],
           history: { page: historyPage, window: historyWindow },
         })
         return
@@ -1077,14 +1112,24 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
 
       if (method === 'GET' && path === '/api/approval/stream') {
         const sessionId = url.searchParams.get('session_id') ?? ''
-        const channel = openSse(res, { onClose: () => interactionChannels.delete(deliver) })
         const deliver = notice => {
           if (notice.sessionId !== sessionId) return
-          if (notice.kind === 'approval') channel.send('approval', { pending: notice.pending })
+          if (notice.kind !== 'approval' && notice.kind !== 'approval-resolved') return
+          // Send the state we actually hold, not the notice's guess: a clear
+          // must never wipe a card for a newer ask in the same session.
+          const pending = host.pendingApproval?.(sessionId)
+          channel.send('approval', pending === undefined ? CLEARED : { pending })
         }
+        const channel = openSse(res, { onClose: () => interactionChannels.delete(deliver) })
         interactionChannels.add(deliver)
         const pending = host.pendingApproval?.(sessionId)
-        if (pending !== undefined) channel.send('initial', { pending })
+        if (pending !== undefined) {
+          channel.send('initial', { pending })
+        } else {
+          // Nothing pending means any card this client still draws is stale
+          // (resolved while it was away, or answered in the GUI): clear it.
+          channel.send('approval', CLEARED)
+        }
         return
       }
 
@@ -1092,9 +1137,21 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         const body = await readJson(req)
         const result = host.respondApproval({
           approvalId: String(body.approval_id ?? body.approvalId ?? ''),
-          choice: String(body.choice ?? 'once'),
+          // No default: an empty/unknown choice must not become a grant.
+          choice: String(body.choice ?? ''),
         })
-        sendJson(res, result.ok ? 200 : 200, result.ok ? { ok: true } : { ok: false })
+        if (result?.stale === true) {
+          // The prompt already resolved (answered elsewhere or timed out):
+          // Hermex reads 409 {"stale":true} as "expired" and dismisses the card.
+          sendJson(res, 409, { stale: true })
+          return
+        }
+        if (result?.ok !== true) {
+          // 200 {ok:false} keeps the card up and shows the message.
+          sendJson(res, 200, { ok: false, error: result?.error ?? 'approval not accepted' })
+          return
+        }
+        sendJson(res, 200, { ok: true, ...(result.choice === undefined ? {} : { choice: result.choice }) })
         return
       }
 
@@ -1107,14 +1164,22 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
 
       if (method === 'GET' && path === '/api/clarify/stream') {
         const sessionId = url.searchParams.get('session_id') ?? ''
-        const channel = openSse(res, { onClose: () => interactionChannels.delete(deliver) })
         const deliver = notice => {
           if (notice.sessionId !== sessionId) return
-          if (notice.kind === 'clarify') channel.send('clarify', { pending: notice.pending })
+          if (notice.kind !== 'clarify' && notice.kind !== 'clarify-resolved') return
+          const pending = host.pendingClarification?.(sessionId)
+          channel.send('clarify', pending === undefined ? CLEARED : { pending })
         }
+        const channel = openSse(res, { onClose: () => interactionChannels.delete(deliver) })
         interactionChannels.add(deliver)
         const pending = host.pendingClarification?.(sessionId)
-        if (pending !== undefined) channel.send('initial', { pending })
+        if (pending !== undefined) {
+          // question/choices_offered travel with it so `initial` classifies as
+          // a clarification instead of an approval card.
+          channel.send('initial', { pending })
+        } else {
+          channel.send('clarify', CLEARED)
+        }
         return
       }
 
