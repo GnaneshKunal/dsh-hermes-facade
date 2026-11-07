@@ -552,7 +552,7 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
       }
 
       if (method === 'GET' && path === '/api/sessions') {
-        const items = await host.listSessions()
+        const items = (await host.listSessions()).filter(item => item?.origin !== 'subagent')
         const index = typeof host.workspaceIndex === 'function' ? await host.workspaceIndex() : new Map()
         sendJson(res, 200, {
           sessions: items.map(item => summaryOf(item, index.get(String(item?.sessionId)))),
@@ -576,9 +576,18 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         // that pages back gets the chunk immediately before its cursor; the
         // cursor is the index of the page's first message, so scrolling stops
         // exactly at index 0.
-        const snapshot = await host.readSession(sessionId, { maxMessages: historyWindow })
         const list = await host.listSessions()
         const item = list.find(row => String(row?.sessionId) === sessionId)
+        let snapshot
+        try {
+          snapshot = await host.readSession(sessionId, { maxMessages: historyWindow })
+        } catch (error) {
+          if (error?.code === 'subagent-session') {
+            sendJson(res, 400, { detail: String(error.message) })
+            return
+          }
+          throw error
+        }
         if (item === undefined && snapshot.events.length === 0) {
           sendJson(res, 404, { error: 'not found', detail: 'Session not found' })
           return

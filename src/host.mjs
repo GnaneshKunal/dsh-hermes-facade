@@ -319,7 +319,12 @@ export function createDshHost({ ctx, logger = console }) {
      */
     async listSessions() {
       const value = await invoke('session', 'list', { _request: {} })
-      return Array.isArray(value?.items) ? value.items : []
+      // DSH subagent sessions are runner-owned and only addressable through
+      // their durable parent; a plain chat row would fail when opened. Hide
+      // them for now (Hermex's own toggle needs row tagging + parent-address
+      // reads, which are future work).
+      return (Array.isArray(value?.items) ? value.items : [])
+        .filter(item => item?.origin !== 'subagent')
     },
 
     /**
@@ -354,6 +359,13 @@ export function createDshHost({ ctx, logger = console }) {
         const records = Array.isArray(snapshot?.records) ? snapshot.records : []
         const events = records.map(record => record?.event).filter(Boolean)
         return { item: undefined, events, projections: snapshot?.projections ?? {} }
+      } catch (error) {
+        if (/durable parent address|owned by subagent routing/i.test(String(error?.message ?? error))) {
+          const rejected = new Error('This is a subagent session; open the parent chat instead.')
+          rejected.code = 'subagent-session'
+          throw rejected
+        }
+        throw error
       } finally {
         controller.abort(new Error('snapshot received'))
       }

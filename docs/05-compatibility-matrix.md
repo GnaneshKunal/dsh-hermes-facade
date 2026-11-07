@@ -33,7 +33,7 @@ points to your configured server." Only the 408/502/503/504 statuses fall back t
 | Surface | Endpoint(s) | State | What the phone shows | Bridgeable? |
 |---|---|---|---|---|
 | Add server / sign in | `/health`, `/api/auth/{status,login,logout}` | **WORKS** | normal sign-in, signed cookie | — |
-| Session list, grouping by project | `GET /api/sessions` | **WORKS** | rows grouped into project lanes | — |
+| Session list, grouping by project | `GET /api/sessions` | **WORKS** | rows grouped into project lanes; DSH subagent sessions are hidden for now (runner-owned, parent-addressed only) | enabling Hermex's Subagent Sessions toggle needs row tagging + parent-address reads |
 | Pinned / archived state | same | **PARTIAL** | every row reports `pinned:false, archived:false`; pin/archive writes land in DSH but the list never shows them, and Archived is always empty | yes: read `pinnedSessionIds`/`archivedSessionIds` from the workspace baseline, honour `include_archived` |
 | Session search | `GET /api/sessions/search` | **404** | "endpoint not found"; only the local title filter still works | yes: `session/search` |
 | Open chat / history | `GET /api/session` | **WORKS** (bounded) | newest **200** messages, then 50-message scroll-back pages, within the newest **800**; tool results, error verdicts and durations ride along as persisted tool calls | unbounded history still needs a `session/page` walk |
@@ -77,6 +77,27 @@ points to your configured server." Only the 408/502/503/504 statuses fall back t
 | Voice dictation | `POST /api/transcribe` | **STUB** | server refuses; app falls back to on-device dictation | optional; on-device path is fine |
 | Listen / TTS | `GET /api/tts` | **STUB** | server speech refused; app uses on-device voice | optional |
 | Live Activity / run status | `GET /api/chat/stream/status` | **WORKS** while connected | status polling reconciles the Live Activity | — |
+
+## Subagent sessions
+
+DSH child-agent sessions carry `origin: "subagent"` and are only addressable through their durable
+parent — `{kind:"subagent", parentSessionId, childSessionId, mode:"one-shot"|"continuable"|"unknown"}`.
+A plain `{kind:"session", sessionId}` read is rejected with "subagent Sessions require their durable
+parent address" (surfaced as a 500 before this fix).
+
+Hermex has **Settings → Sessions → Subagent Sessions** (default off). It classifies delegated
+children only from an explicit source marker (`session_source`/`source_tag`/`raw_source` =
+"subagent"), hides them by default, and marks them view-only when shown. It does not infer them from
+`parent_session_id`.
+
+For now the facade **hides** subagent sessions: `GET /api/sessions` filters `origin: "subagent"`
+rows, and a direct `GET /api/session` for one answers `400` with a readable detail. They are
+runner-owned, view-only, and the app's toggle is off by default, so they add no value in the list
+and previously produced broken chats.
+
+Future work to enable the toggle: tag those rows `session_source: "subagent"` + `read_only: true`,
+and read them through the durable parent address (`{kind:"subagent", parentSessionId,
+childSessionId, mode:"unknown"}`) so the toggle opens a view-only transcript.
 
 ## Hermes-host (gateway) surfaces — not servable here
 

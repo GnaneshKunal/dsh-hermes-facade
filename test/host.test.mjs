@@ -61,20 +61,17 @@ function build(existingWorkspaces = {}, options = {}) {
     lastUsed: { provider: 'deepseek-official', model: 'deepseek-v4-pro', reasoningEffort: 'medium' },
     pending: null,
   }
+  const rows = [{
+    sessionId: 's1',
+    updatedAt: 1700000000000,
+    running: false,
+    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+    projections: { values: { modelSelection: selection } },
+  }, ...(options.extraRows ?? [])]
   const gateway = {
     async invoke(request) {
       calls.push(request)
-      if (request.method === 'list') {
-        return {
-          items: [{
-            sessionId: 's1',
-            updatedAt: 1700000000000,
-            running: false,
-            ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-            projections: { values: { modelSelection: selection } },
-          }],
-        }
-      }
+      if (request.method === 'list') return { items: rows }
       if (request.method === 'create' && request.namespace === 'workspace') {
         return { workspace: { workspaceId: 'ws-1', path: '/tmp', title: 'tmp', sessionIds: [] }, created: true }
       }
@@ -91,6 +88,11 @@ function build(existingWorkspaces = {}, options = {}) {
     // Promise wrapper that used to break the for-await consumer.
     stream(request) {
       calls.push(request)
+      if (request.namespace === 'session' && request.method === 'follow'
+        && request.args?.request?.address?.kind === 'session'
+        && request.args?.request?.address?.sessionId === 'sub-1') {
+        throw new Error('subagent Sessions require their durable parent address')
+      }
       if (request.namespace === 'workspace' && request.method === 'follow') {
         const items = Object.entries(existingWorkspaces).map(([path, workspaceId]) => ({
           workspaceId,
@@ -346,6 +348,20 @@ test('creating a session drops the cached workspace baseline', async () => {
   await host.ensureSession(undefined, '/tmp')
   await host.workspaces()
   assert.equal(baselineReads(), before + 1, 'the baseline is refetched after a create')
+})
+
+test('listSessions hides DSH subagent sessions', async () => {
+  const { host } = build({}, { extraRows: [{ sessionId: 'sub-1', origin: 'subagent', parentSessionId: 's1' }] })
+  const rows = await host.listSessions()
+  assert.deepEqual(rows.map(row => row.sessionId), ['s1'], 'subagent rows stay internal for now')
+})
+
+test('readSession turns a DSH subagent rejection into a typed error', async () => {
+  const { host } = build()
+  await assert.rejects(
+    () => host.readSession('sub-1'),
+    error => error.code === 'subagent-session' && /parent chat/.test(error.message),
+  )
 })
 
 test('models returns the raw ModelCatalog', async () => {
