@@ -1885,13 +1885,15 @@ test('the Usage screen reads token analytics and the message count', async () =>
     const cookie = await signIn(harness.base, harness.password)
     const usage = await api(harness.base, '/api/analytics/usage?days=30&profile=default', { cookie })
     assert.equal(usage.status, 200)
-    assert.deepEqual(usage.json.totals, { total_input: 1200, total_output: 300, total_cache_read: 100, total_sessions: 2 })
+    assert.deepEqual(usage.json.totals, { total_input: 1200, total_output: 300, total_cache_read: 100, total_sessions: 2, total_estimated_cost: 0.42 })
     assert.equal(usage.json.period_days, 30)
     assert.equal(usage.json.daily[0].day, '2026-11-07')
+    assert.equal(usage.json.daily[0].estimated_cost, 0.42)
 
     const models = await api(harness.base, '/api/analytics/models?days=30&profile=default', { cookie })
     assert.equal(models.status, 200)
     assert.equal(models.json.models[0].model, 'deepseek-v4-pro')
+    assert.equal(models.json.models[0].estimated_cost, 0.42)
 
     const socket = await openSocket(harness.base, cookie)
     try {

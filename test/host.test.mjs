@@ -84,6 +84,7 @@ function build(existingWorkspaces = {}, options = {}) {
       if (request.namespace === 'session' && request.method === 'create') return { sessionId: 'created-1' }
       if (request.method === 'prompt') return { accepted: true }
       if (request.method === 'cancel') return { accepted: true }
+      if (request.namespace === 'costMeter' && request.method === 'getBillingStatistics') return options.costStats
       if (request.namespace === 'skills' && request.method === 'list') {
         return { skills: [{ name: 'demo', description: 'D', path: options.skillPath ?? '/nonexistent/SKILL.md' }] }
       }
@@ -764,6 +765,58 @@ test('skills come from the newest session catalog and read only its SKILL.md', a
   assert.equal(await host.readSkill('missing'), null)
   const call = calls.find(entry => entry.namespace === 'skills' && entry.method === 'list')
   assert.deepEqual(call.args, { request: { sessionId: 's1' } })
+})
+
+test('usage merges dsh-cost-meter billing statistics, including cost-only rows', async () => {
+  const now = Date.now()
+  const localDay = date => String(date.getFullYear()) + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0')
+  const day = localDay(new Date(now))
+  const older = localDay(new Date(now - 100 * 86400000))
+  const costStats = {
+    totals: { cost: 3.5 },
+    days: [{ date: day, cost: 1.5 }, { date: older, cost: 2 }],
+    models: [
+      { provider: 'deepseek-official', model: 'deepseek-v4-pro', cost: 1.5 },
+      { provider: 'openrouter', model: 'vendor:variant', cost: 2 },
+    ],
+  }
+  const { host, calls } = build({}, { updatedAt: now, costStats })
+  const report = await host.usageReport(120)
+  assert.equal(report.usage.totals.total_estimated_cost, 3.5)
+  assert.equal(report.usage.daily.find(row => row.day === day).estimated_cost, 1.5)
+  const extraDay = report.usage.daily.find(row => row.day === older)
+  assert.equal(extraDay.estimated_cost, 2)
+  assert.equal(extraDay.input_tokens, 0)
+  assert.equal(report.models.models[0].estimated_cost, 1.5)
+  const extraModel = report.models.models.find(row => row.model === 'vendor:variant')
+  assert.equal(extraModel.estimated_cost, 2)
+  assert.equal(extraModel.input_tokens, 0)
+  const call = calls.find(entry => entry.namespace === 'costMeter' && entry.method === 'getBillingStatistics')
+  assert.equal(call.args.query.basis, 'total')
+  assert.equal(call.args.query.to, day)
+  assert.equal(call.args.query.from, localDay(new Date(now - 120 * 86400000)))
+})
+
+test('zero cost entries from dsh-cost-meter add no daily or model rows', async () => {
+  const now = Date.now()
+  const localDay = date => String(date.getFullYear()) + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0')
+  const costStats = {
+    totals: { cost: 0 },
+    days: [{ date: localDay(new Date(now)), cost: 0 }, { date: localDay(new Date(now - 2 * 86400000)), cost: 0 }],
+    models: [{ provider: 'openrouter', model: 'free-model', cost: 0 }],
+  }
+  const { host } = build({}, { updatedAt: now, costStats })
+  const report = await host.usageReport(30)
+  assert.equal(report.usage.totals.total_estimated_cost, 0)
+  assert.equal(report.usage.daily.length, 1)
+  assert.equal(report.models.models.length, 1)
+})
+
+test('usage stays token-only when dsh-cost-meter is absent', async () => {
+  const { host } = build({}, { updatedAt: Date.now() })
+  const report = await host.usageReport(30)
+  assert.equal('total_estimated_cost' in report.usage.totals, false)
+  assert.equal('estimated_cost' in report.usage.daily[0], false)
 })
 
 test('usage includes subagent sessions, excludes the window and attributes last-prompt days', async () => {

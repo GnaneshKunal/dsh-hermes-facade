@@ -153,12 +153,12 @@ export function createMockHost({ cwd = process.cwd() } = {}) {
     async usageReport(days = 30) {
       return {
         usage: {
-          totals: { total_input: 1200, total_output: 300, total_cache_read: 100, total_sessions: 2 },
-          daily: [{ day: '2026-11-07', input_tokens: 1200, output_tokens: 300, cache_read_tokens: 100, sessions: 2 }],
+          totals: { total_input: 1200, total_output: 300, total_cache_read: 100, total_sessions: 2, total_estimated_cost: 0.42 },
+          daily: [{ day: '2026-11-07', input_tokens: 1200, output_tokens: 300, cache_read_tokens: 100, sessions: 2, estimated_cost: 0.42 }],
           period_days: days,
         },
         models: {
-          models: [{ model: 'deepseek-v4-pro', provider: 'deepseek-official', input_tokens: 1200, output_tokens: 300, cache_read_tokens: 100, sessions: 2 }],
+          models: [{ model: 'deepseek-v4-pro', provider: 'deepseek-official', input_tokens: 1200, output_tokens: 300, cache_read_tokens: 100, sessions: 2, estimated_cost: 0.42 }],
           period_days: days,
         },
       }

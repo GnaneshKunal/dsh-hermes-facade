@@ -14,6 +14,14 @@ import { open, readFile, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, join } from 'node:path'
 
+/**
+ * A host-local day key (`YYYY-MM-DD`), the calendar dsh-cost-meter writes.
+ * @param {Date} date date.
+ * @returns {string} local day key.
+ */
+function localDayKey(date) {
+  return String(date.getFullYear()) + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0')
+}
 /** How long a pending interaction waits before it is released to the GUI. */
 const INTERACTION_TIMEOUT_MS = 10 * 60 * 1000
 
@@ -170,6 +178,7 @@ function selectionOf(row) {
  * @returns {object} host surface consumed by the HTTP layer.
  */
 export function createDshHost({ ctx, logger = console }) {
+  let costWarningLogged = false
   const gateway = ctx.typertGateway
   const connection = ctx.connection
   if (gateway === undefined || connection === undefined) {
@@ -530,16 +539,41 @@ export function createDshHost({ ctx, logger = console }) {
     },
     /**
      * One usage window as the Usage screen reads it: tokens and sessions from
-     * DSH's cached session projections, grouped by the session's last activity
-     * day and last-used model. DSH has no per-day ledger or price table, so a
-     * session's cumulative tokens land on its last active day and cost is absent.
+     * DSH's cached session projections, grouped by the session's last prompt day
+     * and last-used model, plus dsh-cost-meter's cost for the same window when
+     * that plugin is installed.
      * @param {number} days window size, clamped to 1-365.
      * @returns {Promise<{usage: object, models: object}>} analytics payloads.
      */
+    /**
+     * dsh-cost-meter's billing statistics for the same window, or null when the
+     * plugin is absent or refuses. `getBillingStatistics` walks the retained
+     * ledger (not the 90-record state history), and the ledger's amounts are USD.
+     * @param {number} days window size, clamped to 1-365.
+     * @returns {Promise<object|null>} billing statistics.
+     */
+    async costReport(days) {
+      const span = Math.min(Math.max(Number.parseInt(String(days ?? 30), 10) || 30, 1), 365)
+      // The ledger keys its days by host-local date, so the query must use the
+      // same calendar; UTC would miss the current local day before UTC midnight.
+      const from = localDayKey(new Date(Date.now() - span * 86400000))
+      const to = localDayKey(new Date())
+      try {
+        const value = await invoke('costMeter', 'getBillingStatistics', { query: { from, to, basis: 'total' } })
+        return value !== null && typeof value === 'object' && Array.isArray(value.days) ? value : null
+      } catch {
+        if (!costWarningLogged) {
+          costWarningLogged = true
+          logger.warn?.('hermes-facade: dsh-cost-meter statistics unavailable; Usage is token-only')
+        }
+        return null
+      }
+    },
     async usageReport(days) {
       const span = Math.min(Math.max(Number.parseInt(String(days ?? 30), 10) || 30, 1), 365)
       const cutoff = Date.now() - span * 86400000
       const rows = (await this.listSessions({ includeSubagent: true })).filter(row => Number(row?.updatedAt) >= cutoff)
+      const ledger = await this.costReport(span)
       const models = new Map()
       const daily = new Map()
       let input = 0
@@ -578,8 +612,55 @@ export function createDshHost({ ctx, logger = console }) {
         }
       }
       const dailyRows = [...daily.values()].sort((left, right) => left.day.localeCompare(right.day))
-      const modelRows = [...models.values()].sort((left, right) =>
+      let modelRows = [...models.values()].sort((left, right) =>
         (right.input_tokens + right.output_tokens) - (left.input_tokens + left.output_tokens))
+
+      // dsh-cost-meter, when installed, owns the cost ledger. Its
+      // getBillingStatistics walks the retained ledger for the same window and
+      // reports USD, so no display-currency conversion is needed.
+      let totalCost = 0
+      const costDaily = new Map()
+      const costModels = new Map()
+      if (ledger !== null) {
+        totalCost = Number(ledger.totals?.cost) || 0
+        for (const day of ledger.days ?? []) {
+          if (typeof day?.date === 'string') costDaily.set(day.date, Number(day.cost) || 0)
+        }
+        for (const row of ledger.models ?? []) {
+          const provider = typeof row?.provider === 'string' ? row.provider : ''
+          const model = typeof row?.model === 'string' ? row.model : ''
+          const cost = Number(row?.cost) || 0
+          if (model.length === 0 || cost <= 0) continue
+          costModels.set(provider + ':' + model, { provider, model, cost })
+        }
+        for (const row of dailyRows) row.estimated_cost = costDaily.get(row.day) ?? 0
+        for (const [date, amount] of costDaily) {
+          // getBillingStatistics emits a zero entry for every date in range;
+          // only an actual cost warrants a chart row.
+          if (daily.has(date) || amount <= 0) continue
+          dailyRows.push({
+            day: date, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0,
+            sessions: 0, estimated_cost: amount,
+          })
+        }
+        dailyRows.sort((left, right) => left.day.localeCompare(right.day))
+
+        for (const row of modelRows) {
+          const entry = costModels.get(row.provider + ':' + row.model)
+          if (entry !== undefined) row.estimated_cost = entry.cost
+        }
+        for (const [key, entry] of costModels) {
+          if (modelRows.some(row => row.provider + ':' + row.model === key)) continue
+          modelRows.push({
+            model: entry.model, provider: entry.provider, input_tokens: 0,
+            output_tokens: 0, cache_read_tokens: 0, sessions: 0,
+            estimated_cost: entry.cost,
+          })
+        }
+        modelRows = modelRows.sort((left, right) =>
+          (right.input_tokens + right.output_tokens) - (left.input_tokens + left.output_tokens))
+      }
+
       return {
         usage: {
           totals: {
@@ -587,6 +668,7 @@ export function createDshHost({ ctx, logger = console }) {
             total_output: output,
             total_cache_read: cacheRead,
             total_sessions: rows.length,
+            ...(ledger !== null ? { total_estimated_cost: totalCost } : {}),
           },
           daily: dailyRows,
           period_days: span,
