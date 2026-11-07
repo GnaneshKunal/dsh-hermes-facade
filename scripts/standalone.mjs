@@ -74,6 +74,8 @@ export function createMockHost({ cwd = process.cwd() } = {}) {
   let seq = 0
   /** How the next mocked turns end: 'completed', 'failed' or 'cancelled'. */
   let turnOutcome = 'completed'
+  /** Every prompt the mock accepted, for assertions about images/files. */
+  const promptLog = []
   /** Delay before a mocked reply streams, so a test can interleave. */
   let turnDelay = 10
 
@@ -288,10 +290,11 @@ export function createMockHost({ cwd = process.cwd() } = {}) {
       this.lastEnsure = { sessionId, workspacePath, workspaceId }
       return ensure(sessionId).sessionId
     },
-    async prompt({ sessionId, text }) {
+    async prompt({ sessionId, text, images = [] }) {
       const record = ensure(sessionId)
       record.running = true
       record.updatedAt = Date.now()
+      promptLog.push({ sessionId, text, images })
       record.events.push({ type: 'user/message', seq: seq++, time: Date.now(), data: { content: [{ type: 'text', text }] } })
       const queue = queues.get(sessionId)
       const reply = 'Echo: ' + text
@@ -345,6 +348,7 @@ export function createMockHost({ cwd = process.cwd() } = {}) {
       }
     },
     warm() {},
+    lastPrompt() { return promptLog[promptLog.length - 1] },
     async commands() { return [] },
     async workspaces() {
       return {

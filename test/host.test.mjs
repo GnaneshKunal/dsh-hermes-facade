@@ -237,6 +237,21 @@ test('prompt sends an idempotent request envelope', async () => {
   assert.equal(typeof call.args.request.requestId, 'string')
 })
 
+test('prompt attaches native image parts', async () => {
+  const { host, calls } = build()
+  const result = await host.prompt({
+    sessionId: 's1',
+    text: 'look',
+    images: [{ mediaType: 'image/png', data: 'AAAA', name: 'pixel.png' }],
+  })
+  assert.deepEqual(result, { accepted: true })
+  const call = calls.find(entry => entry.method === 'prompt')
+  assert.deepEqual(call.args.request.content, [
+    { type: 'text', text: 'look' },
+    { type: 'image', mediaType: 'image/png', data: 'AAAA', name: 'pixel.png' },
+  ])
+})
+
 test('follow iterates a promise-wrapped stream', async () => {
   const { host } = build()
   const frames = []

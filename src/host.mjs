@@ -1185,13 +1185,26 @@ export function createDshHost({ ctx, logger = console }) {
      * @param {'queue'|'steer'} [options.mode] delivery mode.
      * @returns {Promise<{accepted: boolean}>} acceptance.
      */
-    async prompt({ sessionId, text, mode = 'queue' }) {
+    async prompt({ sessionId, text, images = [], mode = 'queue' }) {
+      const content = []
+      if (typeof text === 'string' && text.length > 0) content.push({ type: 'text', text })
+      for (const image of Array.isArray(images) ? images : []) {
+        if (typeof image?.mediaType !== 'string' || typeof image?.data !== 'string') continue
+        if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(image.mediaType)) continue
+        content.push({
+          type: 'image',
+          mediaType: image.mediaType,
+          data: image.data,
+          ...(typeof image.name === 'string' && image.name.length > 0 ? { name: image.name } : {}),
+        })
+      }
+      if (content.length === 0) throw new Error('prompt content required')
       const value = await invoke('session', 'prompt', {
         request: {
           requestId: randomUUID(),
           sessionId,
           mode,
-          content: [{ type: 'text', text }],
+          content,
         },
       })
       return { accepted: value?.accepted !== false }

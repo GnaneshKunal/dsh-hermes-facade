@@ -13,9 +13,9 @@
 
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
-import { readFile, realpath } from 'node:fs/promises'
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { homedir, networkInterfaces } from 'node:os'
-import { join, resolve, sep } from 'node:path'
+import { basename, extname, join, resolve, sep } from 'node:path'
 
 import { createBackend } from './backend.mjs'
 import { createFileRoutes } from './files.mjs'
@@ -23,6 +23,7 @@ import { createPathFence } from './fence.mjs'
 import { branches, fileDiff, findGitRoot, GitRefusal, repoStatus, revParse, reviewDiff, reviewList } from './git.mjs'
 import { createEventHub } from './events.mjs'
 import { createMethods } from './methods.mjs'
+import { decodeUpload, sanitizeUploadName } from './uploads.mjs'
 import {
   COOKIE_AT,
   COOKIE_PROVIDER,
@@ -126,7 +127,9 @@ async function readJson(req) {
  * @param {object} [options.logger] logger.
  * @returns {object} gateway.
  */
-export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome: memoryHomeOverride, logger = console }) {
+export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome: memoryHomeOverride, uploadsDir, logger = console }) {
+  /** Absolute uploads root shared by image-upload and file.attach. */
+  const uploads = uploadsDir ?? join(homedir(), '.hermes-uploads')
   const installId = ensureInstallId(config.dir)
   const replayEpoch = randomUUID()
   const tickets = createTicketStore({ ttlSeconds: TICKET_TTL_SECONDS })
@@ -360,7 +363,7 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
     onSettled: id => bumpRevision(id),
     logger,
   })
-  const methods = createMethods({ backend, hub, runner, requests, sessions, bumpRevision, logger })
+  const methods = createMethods({ backend, hub, runner, requests, sessions, uploadsDir: uploads, bumpRevision, logger })
 
   /**
    * Directories the in-chat Files browser may read.
@@ -390,6 +393,8 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
       }
     } catch { /* the session folders are advisory */ }
     for (const cwd of sessions.cwds()) roots.add(cwd)
+    // Uploaded images/documents are readable by the app's preview and by the agent.
+    roots.add(uploads)
     return [...roots]
   }
 
@@ -400,6 +405,8 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
   // file fence denies to the in-chat Files browser, so Memory reads it here
   // through a path allowlist rather than through /api/fs/*.
   const memoryHome = memoryHomeOverride ?? dshHome
+  // App uploads live outside the facade state (which is fenced off) and outside
+  // $DSH_HOME, so the app's preview and the agent can read them by absolute path.
   const fence = createPathFence({
     deny: [
       config.dir,
@@ -855,6 +862,25 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
       const body = await readJson(req)
       const reply = await backend.call('PUT', '/api/skills/toggle', { body })
       sendJson(res, reply.status, reply.json ?? { detail: 'Skills cannot be disabled on this host.' })
+      return
+    }
+    // A composer image is staged under the uploads root; the app then names its
+    // path in the vision-reference block, and prompt.submit turns it into a
+    // native image part.
+    if (method === 'POST' && path === '/api/chat/image-upload') {
+      const body = await readJson(req)
+      const decoded = decodeUpload(body.data_url, 20 * 1024 * 1024)
+      if (decoded === null || !new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']).has(decoded.mime)) {
+        sendJson(res, 400, { detail: 'data_url must be a base64 PNG, JPEG, WebP or GIF' })
+        return
+      }
+      const extension = ({ 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif' })[decoded.mime]
+      let leaf = sanitizeUploadName(body.filename, 'image' + extension)
+      if (!new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']).has(extname(leaf).toLowerCase())) leaf += extension
+      await mkdir(uploads, { recursive: true, mode: 0o700 })
+      const target = join(uploads, randomUUID() + '-' + leaf)
+      await writeFile(target, decoded.bytes, { mode: 0o600 })
+      sendJson(res, 200, { ok: true, path: target, name: basename(target), bytes: decoded.bytes.length, mime_type: decoded.mime })
       return
     }
     // The Memory screen's managed file routes. Only the two paths its Profile

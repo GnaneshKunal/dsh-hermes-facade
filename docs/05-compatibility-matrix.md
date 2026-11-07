@@ -144,7 +144,7 @@ through the durable parent address.
 | Approvals | server→client `approval` + `approval.respond` | **WORKS** | once/session/always/deny; a reconnect replays open cards; a turn end withdraws them | — |
 | Clarifications | server→client `clarify` then `request.answer`/`clarify.lock` | **WORKS** | single-question cards (the legacy shape the client decodes); a batch would be answered one question deep | — |
 | Title updates | `session.title` | **WORKS** | live rename; omitting the title reads the current one | — |
-| Attachments | `file.attach`, `POST /api/chat/image-upload` | **404/-32601** | attach affordances are hidden or fail; a send with an attachment never reaches the model | yes: `fileUploads/upload` returns a receipt, so a staging path is needed |
+| Attachments | `file.attach`, `POST /api/chat/image-upload` | **WORKS** (image + document staging) | an image is written under the facade's uploads root and returned as an absolute path; the app's appended vision-reference block is replaced with a native image content part (and a markdown line for the transcript), so the agent sees the picture without a vision tool. `file.attach` stages a document and returns `@file:<path>`; the app's preview reads it through the same uploads root. Names are sanitized and sizes capped (20 MiB image, 25 MiB document) | documents are path-based (no native file content part), and the uploads live in one shared root |
 | Side tasks (`/btw`, `/background`) | `prompt.btw`, `prompt.background` | **-32601** | side panels hidden | needs DSH primitives |
 | Goal / loop / heartbeat | `session.control.read`, `session.control` | **-32601** | the goal menu is hidden | partly: DSH has a `goal` projection, no loop/heartbeat |
 | Delegated work | `subagent.list/tail/interrupt` | **-32601** | the follow-a-subagent fold is hidden | partly: DSH has subagent sessions |
@@ -225,7 +225,7 @@ capability probes, so an absent backend shows the screen's own error. Kanban is 
 | Usage | stub (`/api/insights`) | works; cost via `dsh-cost-meter`, messages ≈0 |
 | Git | panel unavailable | read-only: status, changes, diffs, branches; writes refused |
 | Kanban | stub | 404, "unavailable" |
-| Attachments | refused | RPC missing; a send with an attachment fails |
+| Attachments | works | image + document upload; image reached the model natively, document by path |
 | YOLO | POST reports false | refused with a key-level error (honest) |
 | `@path` completion | n/a | `complete.path` -32601 |
 
@@ -237,7 +237,7 @@ capability probes, so an absent backend shows the screen's own error. Kanban is 
 
 1. **Approval scope is coarser than the app's copy.** Grants are keyed by tool name; a `bash` grant covers every
    `bash` call, and `pattern_key` is not sent. Grants live in the process and are lost on restart.
-2. **Silent profile/attachment loss** on `chat/start` and `session/new` (the model is applied).
+2. **Silent profile loss** on `chat/start` and `session/new` (the model is applied; attachments are staged on the Hermes listener only).
 3. **History is bounded at 800 messages**; export uses the host snapshot (wider cap 5000).
 4. **Stream journals are bounded**: replayable for 30 minutes and the newest 64 are kept.
 5. **A clarification answer is one question**; several-at-once would answer only the first.

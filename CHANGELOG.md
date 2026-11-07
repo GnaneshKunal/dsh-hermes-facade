@@ -122,6 +122,22 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   sessions is a real empty state. Tests cover the host aggregation, the
   subagent/window attribution, the cost merge (including cost-only rows) and
   the routes/RPC.
+- **Chat attachments (images and documents).** The Hermes listener now stages
+  what the phone attaches. `POST /api/chat/image-upload` validates a base64
+  PNG/JPEG/WebP/GIF (≤20 MiB), writes it under the facade uploads root
+  (default `~/.hermes-uploads`) and returns the absolute path the app appends
+  in its vision-reference block. `prompt.submit` reads that block, strips the
+  vision line, sends the bytes as a native `session/prompt` image part, and
+  leaves a markdown image line so the transcript renders it after reload; a
+  queued prompt keeps its images. `file.attach` stages one document (≤25 MiB)
+  and answers `{attached, path, ref_text:'@file:<path>'}`; the app's preview
+  reads the same path through `/api/fs/download`, whose fence now admits the
+  uploads root. Filenames are sanitized and generated; the state dir and
+  `$DSH_HOME` stay fenced off. Documents remain path-based (DSH's native file
+  part needs a `fileUploads/upload` receipt the adapter does not broker),
+  which is the remaining honest limit. Tests cover both upload routes, the
+  native image part, the stripped vision block, the preview read and the
+  document ref.
 - **A shared path fence for file surfaces** (`src/hermes/fence.mjs`). Hermex
   sends absolute host paths and its own check is explicitly not a security
   boundary, so a path is served only when its realpath is inside a chat folder

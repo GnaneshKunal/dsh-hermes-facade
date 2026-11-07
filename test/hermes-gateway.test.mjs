@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -37,6 +37,7 @@ async function boot({ hostCwd } = {}) {
     facadeUrl: 'http://127.0.0.1:' + address.port,
     facadeAuth: facade.auth,
     memoryHome: dir,
+    uploadsDir: dir + '-uploads',
   })
   const gatewayAddress = await gateway.listen()
   return {
@@ -44,6 +45,7 @@ async function boot({ hostCwd } = {}) {
     facade,
     gateway,
     dir,
+    uploadsDir: dir + '-uploads',
     base: 'http://127.0.0.1:' + gatewayAddress.port,
     facadeBase: 'http://127.0.0.1:' + address.port,
     password: facade.auth.generatedPassword,
@@ -282,6 +284,72 @@ test('sessions REST: list, row, messages and rename', async () => {
     })
     assert.equal(unread.status, 400)
     assert.match(unread.json.detail, /unread/i)
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('image upload stages bytes and prompt.submit sends them as a native image', async () => {
+  const harness = await boot()
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK9GkAAAAABJRU5ErkJggg=='
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const uploaded = await api(harness.base, '/api/chat/image-upload', {
+      method: 'POST',
+      cookie,
+      body: { filename: 'pixel.png', data_url: 'data:image/png;base64,' + png },
+    })
+    assert.equal(uploaded.status, 200)
+    assert.equal(uploaded.json.ok, true)
+    assert.equal(uploaded.json.mime_type, 'image/png')
+    assert.ok(uploaded.json.path.startsWith(harness.uploadsDir + '/'))
+    assert.ok(existsSync(uploaded.json.path))
+
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      await socket.call('session.create', { profile: 'default' })
+      const text = 'what is this?\n\n[The user attached an image: pixel.png]\n[Examine it with the vision_analyze tool using image_url: ' + uploaded.json.path + ']'
+      await socket.call('prompt.submit', { session_id: 'sess-mock', text })
+      await socket.waitFor(frame => frame.params?.type === 'message.complete')
+      const prompt = harness.host.lastPrompt()
+      assert.equal(prompt.images.length, 1)
+      assert.equal(prompt.images[0].mediaType, 'image/png')
+      assert.equal(prompt.images[0].data, png)
+      assert.match(prompt.text, /^what is this\?\n\n!\[.*\]\(/)
+      assert.equal(prompt.text.includes('vision_analyze'), false)
+
+      const preview = await api(harness.base, '/api/fs/download?path=' + encodeURIComponent(uploaded.json.path), { cookie })
+      assert.equal(preview.status, 200)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('file.attach stages a document and returns its @file reference', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const reply = await socket.call('file.attach', {
+        session_id: 'sess-mock',
+        name: 'notes.txt',
+        data_url: 'data:text/plain;base64,' + Buffer.from('hello file').toString('base64'),
+      })
+      assert.equal(reply.result.attached, true)
+      assert.ok(reply.result.path.startsWith(harness.uploadsDir + '/'))
+      assert.equal(reply.result.ref_text, '@file:' + reply.result.path)
+      assert.equal(readFileSync(reply.result.path, 'utf8'), 'hello file')
+    } finally {
+      socket.ws.close()
+    }
   } finally {
     await harness.gateway.close()
     await harness.facade.close()

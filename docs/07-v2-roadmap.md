@@ -9,7 +9,7 @@ The goal has two parts, in this order:
 1. **Parity.** Anything the **Legacy** server (`:9120`, hermes-webui) already does for the phone must also work on
    the **Hermes host** (`:9121`). That is the "similar to how V1 was" bar.
 2. **Full V2.** Then add the surfaces only a Hermes host unlocks (Git writes, Bots,
-session search, attachments),
+session search, attachments — attachments now shipped),
    but only where DSH has a real primitive to back them. A screen that half-renders is worse than one that is
    cleanly hidden.
 
@@ -36,7 +36,7 @@ The gaps split cleanly:
 |---|---|---|
 | Chat telemetry | `usage` on turn events, `terminal_backend`, canonical turn status | the context ring and token counts work (no cost); Files/Git now appear |
 | Disabled feature that exists on the other transport | YOLO honesty | V2 is worse than V1 for that one feature |
-| Screens with no backend yet | Git writes, Bots, attachments | the screen errors (the sidebar toggles are local, not probes) |
+| Screens with no backend yet | Git writes, Bots | the screen errors (the sidebar toggles are local, not probes); attachments are done |
 | Silent misbehaviour | edit/regenerate appends, fast/yolo echo | the phone believes something happened that did not |
 
 ---
@@ -55,8 +55,9 @@ V1 too, so real parity work is short:
 | P5 | Chat transcript fidelity | tool results + verdicts | same over REST; status is canonical and `message.complete` now carries usage | add `persisted_turn` when the row ids are known | S |
 | P6 | `@path` / file completion | n/a | `complete.path` -32601 | map to directory listing | S |
 
-**Chat attachments are not parity work** — V1 refused them too. They are a Phase-2 item because the V2 contract
-makes them first-class.
+**Chat attachments are shipped** (v1.12): the Hermes listener stages images/documents, image uploads become native
+image parts plus a transcript markdown line, and a document is an `@file:<path>` reference. V1 still refuses them;
+the V2 contract is where they become first-class.
 
 ---
 
@@ -77,7 +78,7 @@ Effort: **S** = one route/method over an existing facade primitive; **M** = new 
 | 8 | Git write | stage / commit / push | `review/{stage,unstage,revert,commit,push}`, `branch/switch` | exec `git`, with the idle guard the client already expects | M | later |
 | 9 | Skills | browse skills and their files | `/api/skills`, `/api/skills/content` | `skills/list` (read-only) + the catalog SKILL.md path | S/M | done (read-only) |
 | 10 | Usage / Insights | token and session usage | `/api/analytics/{usage,models}`, `insights.get` | a facade ledger over the session projections, plus `dsh-cost-meter` cost when installed | M/L | done (tokens + cost) |
-| 11 | Attachments | send a photo or a file | `POST /api/chat/image-upload`, `file.attach` | `fileUploads/upload` returns a receipt, not a path — needs a staging convention | M | later |
+| 11 | Attachments | send a photo or a file | `POST /api/chat/image-upload`, `file.attach` | native `session/prompt` image parts + a facade uploads staging root; documents stay path-based | M | done (v1.12) |
 | 12 | Goal / loop / heartbeat | the goal menu | `session.control.read`, `session.control` | `goal` projection only; no loop/heartbeat | M/L | later |
 | 13 | `/btw`, `/background` | side questions and background runs | `prompt.btw`, `prompt.background` | no DSH primitive | L | later |
 | 14 | Delegated work | follow a subagent | `subagent.list/tail/interrupt` | DSH subagent sessions exist, their events do not | L | later |
@@ -143,10 +144,11 @@ host's own Files guard: credential basenames (`.env`, `.env.*`, `.envrc`, `.git-
 `credentials`, `config.yaml`, …) and any `mcp-tokens`/`pairing` component are refused and hidden, and the host's
 build/VCS caches are hidden from listings. Sizes match the host: a preview reads only the first 512 KiB through the
 facade's new `max_bytes`, and a source over 64 MiB answers `413 File too large` before anything is buffered; a
-relative MEDIA path resolves against `session_id`'s folder and is then fenced (`attachment:` refs answer 400).
+relative MEDIA path resolves against `session_id`'s folder and is then fenced (`attachment:` refs answer 400);
+the facade uploads root is an additional read root so an attached image/document can be previewed.
 A denied path answers `403` with a detail; a directory answers `400 Path points to a directory`. Tests cover
 listing (draft and session roots), text/binary previews, the truncation, downloads, traversal, a symlink escape,
-credential files/directories, the 64 MiB cap on both routes, relative MEDIA resolution and the attachment refusal.
+credential files/directories, the 64 MiB cap on both routes, relative MEDIA resolution and the uploads-root preview.
 
 **The Git menu, read-only.** `src/hermes/git.mjs` runs `git` with `execFile` (no shell), a timeout, a bounded
 output, and `$DSH_HOME`/SSH-style secret directories excluded; the shared fence admits the chat folder, and the
@@ -235,39 +237,39 @@ the figure is the plugin's estimate. `insights.get` answers `{messages:0}` becau
 already marks its Messages total approximate. No sessions in the window is a real empty state. Tests cover the host
 aggregation, both routes and the RPC.
 
-Verify: `npm run check && npm test` (205 tests), then rename a chat from the phone's list, pin it, archive it,
+Verify: `npm run check && npm test` (208 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---
 
 ## 5. Next picks, with acceptance criteria
 
-Files, Git read, session search, chat telemetry, Tasks, Memory, Skills and Usage are done (see §4). The next three, in order:
+Files, Git read, session search, chat telemetry, Tasks, Memory, Skills, Usage and Attachments are done (see §4).
+The next three, in order:
 
-### Pick 1 — Attachments
-
-Calls: the composer's image/document upload and the `MEDIA` references the transcript renders. Backing: DSH's own
-attachment parts plus a staging convention under the session workspace. Done when: an image the phone attaches is
-visible to the agent and in the phone transcript, a file the agent references opens from the chat, and an
-unsupported or too-large upload is refused with a reason.
-
-### Pick 2 — Side tasks (`/btw`, `/background`)
+### Pick 1 — Side tasks (`/btw`, `/background`)
 
 Calls: `prompt.btw`/`prompt.background` and the side-chain frames. Backing: DSH's btw sidechains/background jobs
 where they are exposed; otherwise the socket keeps answering `-32601` honestly. Done when: a side prompt runs
 without disturbing the main turn and its result has its own panel.
 
-### Pick 3 — Git writes
+### Pick 2 — Git writes
 
 Calls: `/api/git/review/{stage,commit,push}` and branch switch. Backing: the read-only Git routes plus an idle-turn
 guard; every write is staged inside the chat's repo and refused while a turn runs. Done when: stage/commit/push
 round-trip from the phone, a running turn refuses the write with a reason, and the diff refreshes after.
 
+### Pick 3 — Bots
+
+Calls: `profiles.create`/`configure`/`set_asset` and the bot chat's hidden session list. Backing: DSH's
+`agentPresets/*` is read-only, so creating a bot needs a facade store and a soul injection; the socket should keep
+answering `-32601` until that exists. Done when a bot can be created and chatted with from the phone.
+
 ---
 
 ## 6. Sequencing and cross-cutting work
 
-Order after this change: **attachments → goal/btw/background → Git write → Bots**.
+Order after this change: **goal/btw/background → Git write → Bots**.
 
 Cross-cutting items that should ride the first task that touches them. The capability gate, the honest refusals,
 the rate-limit key and the prompt-concurrency guards landed in the bugfix pass; these remain:
