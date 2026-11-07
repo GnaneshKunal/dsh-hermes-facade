@@ -17,6 +17,7 @@ import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { homedir, networkInterfaces } from 'node:os'
 import { basename, extname, join, resolve, sep } from 'node:path'
 
+import { convertToWav, NO_CONVERTER_CODE, WAV_MIME_TYPES } from './audio.mjs'
 import { createBackend } from './backend.mjs'
 import { createFileRoutes } from './files.mjs'
 import { createPathFence } from './fence.mjs'
@@ -155,10 +156,12 @@ async function readJson(req, maxBytes = MAX_BODY_BYTES) {
  * @param {object} [options.host] DSH host adapter, for the surfaces the facade's
  *   REST shape cannot carry (dictation's `speech/transcribe`). Omitted in a
  *   composition without a host, where those routes refuse honestly.
+ * @param {Function} [options.convertAudio] audio transcoder behind dictation;
+ *   injectable so tests never need afconvert or ffmpeg on the machine.
  * @param {object} [options.logger] logger.
  * @returns {object} gateway.
  */
-export function createGatewayServer({ config, facadeUrl, facadeAuth, host, memoryHome: memoryHomeOverride, uploadsDir, logger = console }) {
+export function createGatewayServer({ config, facadeUrl, facadeAuth, host, convertAudio = convertToWav, memoryHome: memoryHomeOverride, uploadsDir, logger = console }) {
   /** Absolute uploads root shared by image-upload and file.attach. */
   const uploads = uploadsDir ?? join(homedir(), '.hermes-uploads')
   const installId = ensureInstallId(config.dir)
@@ -926,12 +929,14 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, host, memor
     }
     // Dictation: one complete recording in, the host's recognized text out.
     //
-    // The client records AAC and posts it as a data URL, but DSH's speech
-    // Remote admits only canonical 16 kHz mono PCM16 WAV: its intake check runs
-    // before any provider is resolved, so anything else is refused there. That
-    // refusal is forwarded with the host's own wording instead of being
-    // transposed into some other format or a made-up transcript; silence is the
-    // provider's empty string, which stays a real success.
+    // The phone records AAC in an m4a container, while DSH's speech Remote
+    // validates one canonical shape before any provider runs: 16 kHz mono
+    // PCM16 WAV. A compressed recording is therefore converted on the host
+    // first (afconvert on macOS, else ffmpeg) and a host with no converter
+    // refuses honestly; compressed bytes are never handed to the speech
+    // controller to fail there, and no transcript is ever invented. WAV input
+    // still passes through untouched, and a provider's empty string is
+    // silence, which stays a real success.
     if (method === 'POST' && path === '/api/audio/transcribe') {
       const profile = url.searchParams.get('profile')
       // One profile exists; a phone names its chat's, so anything else is a
@@ -959,8 +964,37 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, host, memor
         sendJson(res, 400, { detail: 'Speech-to-text is not available on this host' })
         return
       }
+      let recording = decoded.bytes
+      if (!WAV_MIME_TYPES.has(decoded.mime)) {
+        let converted
+        try {
+          converted = await convertAudio(decoded.bytes, { mime: decoded.mime })
+        } catch (error) {
+          if (error?.code === NO_CONVERTER_CODE) {
+            sendJson(res, 400, { detail: 'Speech-to-text needs a WAV recording and this host has no audio converter' })
+            return
+          }
+          // A host with no converter is an expected refusal; a converter that
+          // ran and failed is worth a line, without the stack.
+          if (error?.code !== NO_CONVERTER_CODE) {
+            logger.warn?.('hermes-gateway: dictation conversion failed: ' + String(error?.message ?? error))
+          }
+          sendJson(res, 400, { detail: 'The recording could not be converted to WAV' })
+          return
+        }
+        const bytes = Buffer.isBuffer(converted) ? converted : (converted instanceof Uint8Array ? Buffer.from(converted) : null)
+        if (bytes === null || bytes.length === 0) {
+          sendJson(res, 400, { detail: 'The recording could not be converted to WAV' })
+          return
+        }
+        if (bytes.length > MAX_DICTATION_BYTES) {
+          sendJson(res, 400, { detail: 'The converted recording is too large' })
+          return
+        }
+        recording = bytes
+      }
       try {
-        const result = await host.transcribe({ audioBase64: decoded.bytes.toString('base64') })
+        const result = await host.transcribe({ audioBase64: recording.toString('base64') })
         // Only real recognized text may reach the composer: a host reply without
         // it is a failure, never an empty success that reads as silence.
         if (typeof result?.text !== 'string') {

@@ -14,7 +14,7 @@ import { createMockHost } from '../scripts/standalone.mjs'
  * Boot the facade and the gateway on ephemeral ports.
  * @returns {Promise<object>} harness.
  */
-async function boot({ hostCwd } = {}) {
+async function boot({ hostCwd, convertAudio } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'hermes-gateway-'))
   const host = hostCwd === undefined ? createMockHost() : createMockHost({ cwd: hostCwd })
   const config = {
@@ -38,6 +38,7 @@ async function boot({ hostCwd } = {}) {
     facadeUrl: 'http://127.0.0.1:' + address.port,
     facadeAuth: facade.auth,
     host,
+    ...(convertAudio === undefined ? {} : { convertAudio }),
     memoryHome: dir,
     uploadsDir: dir + '-uploads',
   })
@@ -2347,12 +2348,12 @@ test('dictation forwards the speech controller refusal for unsupported audio', a
         details: { reason: 'encoding-or-size' },
       })
     }
-    // What the phone's m4a recording actually meets on this host: DSH admits
-    // only canonical WAV, and the refusal must reach the composer verbatim.
+    // A WAV that still fails DSH's canonical-shape check (wrong rate, depth or
+    // length): the refusal must reach the composer verbatim.
     const reply = await api(harness.base, '/api/audio/transcribe', {
       method: 'POST',
       cookie,
-      body: { data_url: 'data:audio/m4a;base64,eA==', mime_type: 'audio/m4a' },
+      body: { data_url: 'data:audio/wav;base64,eA==', mime_type: 'audio/wav' },
     })
     assert.equal(reply.status, 400)
     assert.match(reply.json.detail, /canonical 16 kHz mono PCM16 WAV/)
@@ -2375,6 +2376,109 @@ test('dictation answers an unexpected failure as a 500 with no transcript', asyn
     })
     assert.equal(reply.status, 500)
     assert.deepEqual(reply.json, { detail: 'Transcription failed' })
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('dictation passes a WAV recording through without converting it', async () => {
+  let conversions = 0
+  const harness = await boot({ convertAudio: async () => { conversions += 1; return Buffer.from('unused') } })
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const reply = await api(harness.base, '/api/audio/transcribe?profile=default', {
+      method: 'POST',
+      cookie,
+      body: { data_url: 'data:audio/wav;base64,' + Buffer.from('RIFF....WAVEfmt ').toString('base64'), mime_type: 'audio/wav' },
+    })
+    assert.equal(reply.status, 200)
+    assert.deepEqual(reply.json, { ok: true, transcript: 'Mock transcript', provider: 'mock' })
+    assert.equal(conversions, 0, 'a WAV recording is already in the intake shape')
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('dictation converts a compressed recording to WAV before the speech call', async () => {
+  const calls = []
+  const wav = Buffer.from('RIFF converted 16 kHz mono PCM16 WAV')
+  const harness = await boot({
+    convertAudio: async (bytes, options) => {
+      calls.push({ bytes, options })
+      return wav
+    },
+  })
+  let received
+  harness.host.transcribe = async request => {
+    received = Buffer.from(request.audioBase64, 'base64')
+    return { text: 'converted dictation', provider: 'mock' }
+  }
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    for (const mime of ['audio/m4a', 'audio/mp4', 'audio/aac']) {
+      calls.length = 0
+      received = undefined
+      const recording = Buffer.from('fake ' + mime + ' bytes')
+      const reply = await api(harness.base, '/api/audio/transcribe?profile=default', {
+        method: 'POST',
+        cookie,
+        body: { data_url: 'data:' + mime + ';base64,' + recording.toString('base64'), mime_type: mime },
+      })
+      assert.equal(reply.status, 200, mime + ' must transcribe')
+      assert.deepEqual(reply.json, { ok: true, transcript: 'converted dictation', provider: 'mock' })
+      assert.equal(calls.length, 1, mime + ' is converted exactly once')
+      assert.deepEqual(calls[0].bytes, recording, 'the converter receives the recorded bytes')
+      assert.equal(calls[0].options.mime, mime)
+      assert.deepEqual(received, wav, 'the speech Remote only ever sees WAV bytes')
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('dictation refuses compressed audio when the host has no converter', async () => {
+  let spoken = 0
+  const harness = await boot({
+    convertAudio: async () => {
+      throw Object.assign(new Error('no audio converter is installed (afconvert or ffmpeg is required)'), { code: 'dictation/no-converter' })
+    },
+  })
+  harness.host.transcribe = async () => { spoken += 1; return { text: 'unused' } }
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const reply = await api(harness.base, '/api/audio/transcribe', {
+      method: 'POST',
+      cookie,
+      body: { data_url: 'data:audio/m4a;base64,eA==', mime_type: 'audio/m4a' },
+    })
+    assert.equal(reply.status, 400)
+    assert.match(reply.json.detail, /no audio converter/)
+    assert.equal('transcript' in reply.json, false)
+    assert.equal(spoken, 0, 'compressed bytes never reach the speech Remote')
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('dictation refuses when the conversion itself fails', async () => {
+  let spoken = 0
+  const harness = await boot({ convertAudio: async () => { throw new Error('afconvert exited 1') } })
+  harness.host.transcribe = async () => { spoken += 1; return { text: 'unused' } }
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const reply = await api(harness.base, '/api/audio/transcribe', {
+      method: 'POST',
+      cookie,
+      body: { data_url: 'data:audio/m4a;base64,eA==', mime_type: 'audio/m4a' },
+    })
+    assert.equal(reply.status, 400)
+    assert.match(reply.json.detail, /could not be converted/)
+    assert.equal('transcript' in reply.json, false)
+    assert.equal(spoken, 0)
   } finally {
     await harness.gateway.close()
     await harness.facade.close()
