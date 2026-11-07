@@ -167,9 +167,11 @@ the write refusal.
 `:9121`. One facade reply carries both shapes: `results` (the Hermes host rows: `session_id`, `id`,
 `lineage_root`, title, recency, model, snippet, role, match type) and `sessions` (the webui rows with
 `match_preview`/`match_type`). Matching runs id first, then DSH's message-content search (`session/search`, a
-literal FTS read that never resumes an agent), then a title supplement; each row carries the session summary and a
-snippet, one row per session, capped by `limit` (1–100). An empty query answers an empty result, and a source
-filter DSH cannot satisfy (`sources=cron`) honestly matches nothing because DSH stores no session provenance.
+literal FTS read that never resumes an agent), then a title supplement; each row carries the session
+summary; the webui rows also carry `match_preview`, while the host rows carry no excerpt because DSH's search API
+exposes no author and Hermex drops a snippet without a role. One row per session, capped by `limit` (1–100); DSH
+returns at most 20 content hits, so the id/title lanes fill the rest. An empty query answers an empty result, and a
+source filter DSH cannot satisfy (`sources=cron`) honestly matches nothing because DSH stores no session provenance.
 Tests cover both shapes, id/content/title lanes, the empty query, the limit, the source filters and `/stats`
 staying 404.
 

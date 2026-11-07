@@ -175,7 +175,7 @@ with reason `resolved`, like the `approval.respond`/`request.answer` path.
 | Route | Behaviour |
 |---|---|
 | `GET /api/sessions` | `profile, order=recent|created, archived=exclude|only|include, limit, offset`; `scheduled=1` answers empty (no cron rows are exposed) |
-| `GET /api/sessions/search` | `q`, `limit<=100`, `profile`, `source`/`sources`, `exclude_sources`, `content=false`; `{results:[row with snippet, role, match_type]}`. An empty query is `{results:[]}`; a source DSH cannot satisfy (`cron`) honestly matches nothing. The facade also returns the webui `sessions` rows, so the Legacy listener's search works too |
+| `GET /api/sessions/search` | `q`, `limit<=100`, `profile`, `source`/`sources`, `exclude_sources`, `content=false`; `{results:[row with match_type]}`. Host content rows carry no excerpt: DSH's search API exposes no author, and Hermex drops a snippet without a role; the webui `sessions` rows keep `match_preview`, so the Legacy listener shows excerpts. DSH returns at most 20 content hits, so the id/title lanes fill the rest of the 1–100 clamp. An empty query is `{results:[]}`; a source DSH cannot satisfy (`cron`) honestly matches nothing |
 | `GET /api/sessions/{id}` | one row, 404 when unknown |
 | `GET /api/sessions/{id}/messages` | `order=latest|oldest, limit<=500, offset`; rows in the transcript shape (`role, content, timestamp, row_id, tool_calls…`) |
 | `PATCH /api/sessions/{id}` | `title`, `pinned`, `archived` through the facade's rename/pin/archive routes. A `request_id` + `expected_revision` pair is validated: a stale pair answers `409 revision_conflict`, half a pair `409 mutation_identity_required`, neither is applied bare for an older client. `unread` is refused (DSH has no flag) |

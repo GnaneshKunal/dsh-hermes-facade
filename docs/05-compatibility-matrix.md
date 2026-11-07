@@ -177,7 +177,7 @@ through the durable parent address.
 | Delete | `session.delete`, `DELETE /api/sessions/{id}` | **STUB** | "not supported by DeepSeek Harness" | needs DSH |
 | Duplicate / import | `POST /api/sessions/import` | **STUB** | 400: DSH cannot inject a transcript, so Move to Hermes cannot land here yet | needs DSH |
 | Export | `GET /api/sessions/{id}/export` | **WORKS** | JSON transcript download (the form Move to Hermes imports) | bounded by the host snapshot |
-| Search | `GET /api/sessions/search`, `session/search` | **WORKS** (REST) | the list search field returns titles, content matches and snippets; the RPC stays `-32601` (2.0.1 uses the REST route) | — |
+| Search | `GET /api/sessions/search`, `session/search` | **WORKS** (REST) | the list search field returns id/content/title matches; host content rows carry no excerpt (DSH exposes no author), the Legacy rows keep `match_preview`; the RPC stays `-32601` (2.0.1 uses the REST route) | — |
 | Live Working / Needs-you | `session.active_list`, `sessions.changed` | **-32601** | the live dots are absent | yes: S over the runner's state |
 | Projects (lanes) | `projects.tree` | **WORKS** | DSH workspaces drawn as folder lanes | project delete/edit missing |
 | Session store health | `GET /api/sessions/stats`, `/prune` | **—** | never called by 2.0.1 | — |

@@ -1649,7 +1649,9 @@ test('session search returns id, content and title matches on both listeners', a
       assert.equal(found.json.results.length, 2)
       const hit = found.json.results.find(result => result.session_id === 'sess-mock')
       assert.equal(hit.title, 'Mock session')
-      assert.match(hit.snippet, /alpha/)
+      // DSH's search API exposes no author, and Hermex drops a snippet without a
+      // role, so the host shape is honest: a row with no excerpt.
+      assert.equal(hit.snippet, null)
       assert.equal(hit.role, null)
       assert.equal(hit.match_type, 'content')
       assert.equal(hit.lineage_root, 'sess-mock')

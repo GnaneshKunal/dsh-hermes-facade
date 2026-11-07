@@ -764,6 +764,7 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         const allowed = entry => !excludeSources.has(entry.source)
           && (includeSources.size === 0 || includeSources.has(entry.source))
         const results = []
+        const sessions = []
         const seen = new Set()
         const add = (sessionId, snippet, role, matchType) => {
           if (results.length >= limit || seen.has(String(sessionId))) return
@@ -773,7 +774,7 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
           const row = entry.row
           const text = String(snippet ?? '')
           const matchPreview = text.length > 124 ? text.slice(0, 124) : text
-          results.push({
+          const summary = {
             ...row,
             session_id: row.session_id,
             id: row.session_id,
@@ -781,16 +782,18 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
             // each result is its own lineage root.
             lineage_root: row.session_id,
             source: entry.source,
-            snippet: text,
-            role: role ?? null,
-            match_preview: matchPreview,
             match_type: matchType,
             last_active: row.last_message_at,
             session_started: row.created_at,
             started_at: row.created_at,
             archived: row.archived === true,
             profile: 'default',
-          })
+          }
+          // Hermex's host decoder only keeps a snippet when it also knows the
+          // author, and DSH's search API exposes no role. So the host shape
+          // carries no excerpt; the webui shape keeps match_preview for Legacy.
+          results.push({ ...summary, snippet: null, role: null })
+          sessions.push({ ...summary, snippet: text, role: role ?? null, match_preview: matchPreview })
         }
         const needle = q.toLowerCase()
         for (const entry of entries) {
@@ -810,7 +813,7 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
           const title = typeof entry.row.title === 'string' ? entry.row.title : ''
           if (title.length > 0 && title.toLowerCase().includes(needle)) add(entry.row.session_id, title, null, 'title')
         }
-        sendJson(res, 200, { results, sessions: results, query: q, count: results.length })
+        sendJson(res, 200, { results, sessions, query: q, count: results.length })
         return
       }
 
