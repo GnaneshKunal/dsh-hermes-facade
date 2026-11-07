@@ -9,16 +9,16 @@ Hermes host contract, so the same iOS app can be pointed at DeepSeek Harness as
 a native Hermes server. It is additive: port 9120 keeps serving the webui
 contract unchanged.
 
-Status: **v1.9** (2026-11-07). Chat (with context/token telemetry), sessions
+Status: **v1.10** (2026-11-07). Chat (with context/token telemetry), sessions
 (including the write fence the session list needs and the list's search),
 approvals, clarifications, models, commands, export, Tasks/cron, Memory and
-Skills (both read-only), the read-only in-chat Files browser and the read-only
-Git menu.
+Skills (both read-only), Usage/Insights (token-only), the read-only in-chat Files
+browser and the read-only Git menu.
 The 2026-11-07 audit's wire defects (turn status, stop vocabulary, title read,
 list rows, multi-field PATCH, collection 404s, source matching, `limit=0`,
 capability-gated reverse requests, forwarded-client rate limiting, prompt races,
 Fast/yolo honesty) are fixed in the same change.
-Not implemented: session import, kanban, insights, bots and the bot screen. Those answer `-32601` (socket) or 404
+Not implemented: session import, kanban, the Legacy insights screen, bots and the bot screen. Those answer `-32601` (socket) or 404
 (REST), which the client degrades on. The full per-surface state, and the plan
 for closing the gaps, are [05-compatibility-matrix.md](05-compatibility-matrix.md)
 §2 and [07-v2-roadmap.md](07-v2-roadmap.md); this document is the listener's own
@@ -191,6 +191,7 @@ with reason `resolved`, like the `approval.respond`/`request.answer` path.
 | `GET /api/config` | `{platform_hints:{}, profile, memory:{memory_enabled:true, user_profile_enabled:false, limits}}`; only the memory block is meaningful, and the app's platform note is advisory and not stored |
 | `GET /api/profiles/{name}/soul`, `PUT …` | `{content:"",exists:false}` for `default`; a PUT answers 400 (this host has no SOUL.md) |
 | `GET /api/files/read?path=…`, `POST /api/files/upload` | Memory's managed file routes. Only a path ending `/memories/MEMORY.md` is served, as `$DSH_HOME/AGENTS.md` in a `data_url` (a missing file is 404); `/memories/USER.md` and every other path are 404, so this is not a second file browser. Upload answers 400 (read-only). `profiles.list[].path` is the absolute `$DSH_HOME` path; only the suffix is ever opened |
+| `GET /api/analytics/usage`, `GET /api/analytics/models` | `{totals:{total_input,total_output,total_cache_read,total_sessions}, daily:[{day,input_tokens,output_tokens,cache_read_tokens,sessions}], period_days}` and `{models:[{model,provider,input_tokens,output_tokens,cache_read_tokens,sessions}], period_days}`. DSH has no per-day ledger (a session's cumulative tokens land on its last prompt day, falling back to last activity), no pricing fields, and no message count: `insights.get` returns `{messages:0}`. Archived and subagent sessions are included |
 | `GET /api/profiles/active`, `GET /api/profiles` | the single Profile |
 | `GET /api/skills` | a bare array of DSH's catalogue for the newest session (`name`, `description`, `enabled: true`); no sessions means `[]` |
 | `GET /api/skills/content`, `PUT /api/skills/toggle` | `{name, content, path}` for a catalog skill's SKILL.md (404 when the name is not in the catalogue); the toggle answers 400 (DSH has no skill-disable primitive) |
@@ -238,15 +239,16 @@ answers `403`, and the all-add fallback runs only for an untracked file.
   `/api/fs/*` routes), the read-only Git menu (status, changes, diffs, branches)
   and the Tasks screen (list/create/edit/pause/resume/trigger/delete and run
   history; local delivery only), Memory (the global `$DSH_HOME/AGENTS.md` as
-  MEMORY.md, read-only) and Skills (the DSH catalogue and each skill's SKILL.md;
-  the toggle is refused).
+  MEMORY.md, read-only), Skills (the DSH catalogue and each skill's SKILL.md;
+  the toggle is refused) and Usage/Insights (tokens and sessions only; cost 0
+  because DSH has no pricing, and the Messages total is approximate 0).
 - **Partial:** the session rows carry no `preview`; Fast and yolo are refused, so their controls
   revert instead of showing a false state; Git is read-only (stage/commit/push
   and branch switch answer 400 with a reason).
-- **Empty/absent:** Kanban, Usage, Bots, Bot
+- **Empty/absent:** Kanban, Bots, Bot
   screen. Those screens exist on a Hermes host; here they have no backend, and
   unimplemented methods make their controls hide rather than error (the sidebar
-  toggles for Tasks/Usage are local, so those screens show their
+  toggles for Tasks are local, so that screen shows its
   own error; Kanban's config 404 gives the clean "unavailable").
 - **No "Move to Hermes" invite:** the app offers that only for servers it
   classified as webui. A Hermes-kind server never shows it. The webui entry on

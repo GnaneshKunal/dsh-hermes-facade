@@ -480,16 +480,18 @@ export function createDshHost({ ctx, logger = console }) {
 
     /**
      * List sessions.
+     * @param {object} [options] options.
+     * @param {boolean} [options.includeSubagent] keep runner-owned subagent rows
+     *   (their tokens are real usage; they are hidden from the chat list only).
      * @returns {Promise<Array<object>>} rows.
      */
-    async listSessions() {
+    async listSessions({ includeSubagent = false } = {}) {
       const value = await invoke('session', 'list', { _request: {} })
       // DSH subagent sessions are runner-owned and only addressable through
       // their durable parent; a plain chat row would fail when opened. Hide
-      // them for now (Hermex's own toggle needs row tagging + parent-address
-      // reads, which are future work).
+      // them from the chat list; usage analytics reads them explicitly.
       return (Array.isArray(value?.items) ? value.items : [])
-        .filter(item => item?.origin !== 'subagent')
+        .filter(item => includeSubagent || item?.origin !== 'subagent')
     },
     /**
      * List the user-invocable skills for the newest session. DSH's catalog is
@@ -524,6 +526,72 @@ export function createDshHost({ ctx, logger = console }) {
         return { name: wanted, content, path: skill.path }
       } catch {
         return null
+      }
+    },
+    /**
+     * One usage window as the Usage screen reads it: tokens and sessions from
+     * DSH's cached session projections, grouped by the session's last activity
+     * day and last-used model. DSH has no per-day ledger or price table, so a
+     * session's cumulative tokens land on its last active day and cost is absent.
+     * @param {number} days window size, clamped to 1-365.
+     * @returns {Promise<{usage: object, models: object}>} analytics payloads.
+     */
+    async usageReport(days) {
+      const span = Math.min(Math.max(Number.parseInt(String(days ?? 30), 10) || 30, 1), 365)
+      const cutoff = Date.now() - span * 86400000
+      const rows = (await this.listSessions({ includeSubagent: true })).filter(row => Number(row?.updatedAt) >= cutoff)
+      const models = new Map()
+      const daily = new Map()
+      let input = 0
+      let output = 0
+      let cacheRead = 0
+      for (const row of rows) {
+        const values = row?.projections?.values ?? {}
+        const token = values.tokenUsage ?? {}
+        const rowInput = Math.max(0, Number(token.uncachedInputTokens) || 0)
+        const rowOutput = Math.max(0, Number(token.outputTokens) || 0)
+        const rowCache = Math.max(0, Number(token.cacheReadTokens) || 0)
+        input += rowInput
+        output += rowOutput
+        cacheRead += rowCache
+        const at = Number(values.sessionListMetadata?.lastPromptAt ?? row.updatedAt)
+        const day = new Date(Number.isFinite(at) ? at : Date.now()).toISOString().slice(0, 10)
+        const dayRow = daily.get(day) ?? { day, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, sessions: 0 }
+        dayRow.input_tokens += rowInput
+        dayRow.output_tokens += rowOutput
+        dayRow.cache_read_tokens += rowCache
+        dayRow.sessions += 1
+        daily.set(day, dayRow)
+        const selected = values.modelSelection?.lastUsed ?? values.modelSelection?.next ?? null
+        const model = typeof selected?.model === 'string' ? selected.model : ''
+        const provider = typeof selected?.provider === 'string' ? selected.provider : ''
+        // A blank chat has no model to name; its tokens are still in the totals
+        // and daily chart, but an "Unknown Model" row with zero tokens is noise.
+        if (model.length > 0) {
+          const key = model + '\u0000' + provider
+          const modelRow = models.get(key) ?? { model, provider, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, sessions: 0 }
+          modelRow.input_tokens += rowInput
+          modelRow.output_tokens += rowOutput
+          modelRow.cache_read_tokens += rowCache
+          modelRow.sessions += 1
+          models.set(key, modelRow)
+        }
+      }
+      const dailyRows = [...daily.values()].sort((left, right) => left.day.localeCompare(right.day))
+      const modelRows = [...models.values()].sort((left, right) =>
+        (right.input_tokens + right.output_tokens) - (left.input_tokens + left.output_tokens))
+      return {
+        usage: {
+          totals: {
+            total_input: input,
+            total_output: output,
+            total_cache_read: cacheRead,
+            total_sessions: rows.length,
+          },
+          daily: dailyRows,
+          period_days: span,
+        },
+        models: { models: modelRows, period_days: span },
       }
     },
 

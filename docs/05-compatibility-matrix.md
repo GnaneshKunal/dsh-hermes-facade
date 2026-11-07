@@ -184,7 +184,7 @@ through the durable parent address.
 
 ### 2.5 The other screens a Hermes host unlocks
 
-The sidebar toggles for Usage and Kanban are local preferences (on by default), not
+The sidebar toggle for Kanban is a local preference (on by default), not
 capability probes, so an absent backend shows the screen's own error. Kanban is the exception: its
 `/api/plugins/kanban/config` 404 gives the clean "unavailable" state.
 
@@ -195,7 +195,7 @@ capability probes, so an absent backend shows the screen's own error. Kanban is 
 | Tasks / cron | `GET /api/cron/jobs`, `/runs`, `POST /api/cron/jobs`, `PUT /api/cron/jobs/{id}`, `POST …/{pause,resume,trigger}`, `DELETE`, `/api/cron/delivery-targets` | **WORKS** (local delivery) | the Tasks list shows schedules with next/last run and state; create/edit/pause/resume/trigger/delete round-trip; a run's output opens as its session. Delivery is local only, model/provider/skills are refused, run history is the schedule's delivery records (no cost), and `sources=cron` on the agenda is still empty because DSH has no session provenance | — |
 | Skills | `GET /api/skills`, `/api/skills/content`, `PUT /api/skills/toggle` + `/api/fs/*` for linked files | **WORKS** (read-only) | the Skills screen lists the host's skills with descriptions, opening one shows its SKILL.md, and an empty catalogue is a real empty state. DSH's catalogue is per session composition, so the newest session (archived included) is used; no sessions means an empty list. The toggle answers 400 (DSH has no skill-disable primitive). Linked files show only when the skill sits inside a chat's fenced roots; a skill in `$DSH_HOME` opens without them | — |
 | Memory | `GET /api/config` `.memory`, `/api/profiles/{name}/soul`, `GET /api/files/read`, `POST /api/files/upload`, `profiles.list[].path` | **WORKS** (read-only) | the Memory screen shows the global `$DSH_HOME/AGENTS.md` as MEMORY.md (a missing file is an honest empty state), no USER.md (the config turns that section off), and an empty soul. `profiles.list` carries the real `$DSH_HOME` path (absolute, as Hermex treats it as a host path); `/api/files/read` serves only a `.../memories/MEMORY.md` suffix and 404s every other path, so it is not a second file browser. Saves answer 400 (read-only). Project AGENTS.md files are not shown: the screen is global, not per-workspace. Two nuances: DSH's user-global chain is `$DSH_HOME/AGENTS.md` then `$DSH_AGENTS_HOME/AGENTS.md` (default `~/.agents/AGENTS.md`), and this screen shows the first only; the config's `memory_char_limit` is the editor's counter, not a DSH instruction budget, and the read is not size-capped | — |
-| Usage / Insights | `GET /api/analytics/{usage,models}`, `insights.get` | **-32601 / 404** | the Usage screen errors (503/5017 states are different copy); no cost data exists | possible: M/L — a facade ledger over DSH token usage; cost stays 0 |
+| Usage / Insights | `GET /api/analytics/{usage,models}`, `insights.get` | **WORKS** (token-only) | the screen shows sessions, input/output/cache tokens, per-model rows and a daily chart from DSH's cached session projections. DSH has no per-day ledger, so a session's cumulative tokens land on its last prompt day (falling back to last activity); archived and subagent sessions are included because their tokens are real usage. A session with no model still counts in totals but has no model row. Cost stays 0 because DSH has no pricing; the Messages total is 0 because DSH exposes no message count (the screen marks it approximate) | — |
 | Kanban | `/api/plugins/kanban/*` | **404** | the tab shows "unavailable" cleanly | no: a whole board + workers DSH does not model |
 | Bots / Bot screen | `profiles.*`, `/api/dashboard/plugins/*`, `display.*`, `/api/display/ws`, `hermex-screen` routes | **PARTIAL / 404** | one Profile; creating/configuring a bot is refused; the live bot screen is unavailable | Bots: L (a facade store + preset); screen: no |
 | Push / Live Activity | `/api/plugins/hermex-push/*` | **404** | every plugin-backed control disappears — the intended graceful path | no: a relay + APNs, not a host route |
@@ -222,7 +222,7 @@ capability probes, so an absent backend shows the screen's own error. Kanban is 
 | Tasks | stub (`/api/crons`) | works over `/api/cron/*` (local delivery only) |
 | Memory | works read-only | the global AGENTS.md, no USER/soul editing |
 | Skills | works read-only | list and SKILL.md; toggle refused |
-| Usage | stub screen | error screen (the real backend is missing) |
+| Usage | stub (`/api/insights`) | works token-only; cost 0, messages ≈0 |
 | Git | panel unavailable | read-only: status, changes, diffs, branches; writes refused |
 | Kanban | stub | 404, "unavailable" |
 | Attachments | refused | RPC missing; a send with an attachment fails |

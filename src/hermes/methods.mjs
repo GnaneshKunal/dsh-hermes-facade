@@ -164,6 +164,10 @@ export function createMethods({ backend, hub, runner, requests, sessions, bumpRe
         return profilesListBody()
       case 'profiles.describe':
         return profileRow()
+      case 'insights.get':
+        // DSH exposes no message count; the Usage screen marks its Messages total
+        // approximate, and 0 is the honest value rather than a fabricated count.
+        return { messages: 0 }
       case 'session.most_recent':
         return { ok: true }
       case 'session.list': {
