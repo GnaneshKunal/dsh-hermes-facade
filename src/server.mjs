@@ -1062,6 +1062,16 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
           return
         } catch (error) {
           if (error instanceof CronRefusal) { sendJson(res, error.status, { detail: error.detail }); return }
+          // DSH's schedule service refuses invalid input with a RemoteError; the
+          // phone shows its detail as the editor's error, not an opaque 500.
+          if (error?.code === 'schedule/input-invalid') {
+            sendJson(res, 400, { detail: String(error?.message ?? 'The schedule is invalid.') })
+            return
+          }
+          if (error?.code === 'schedule/target-archived') {
+            sendJson(res, 409, { detail: String(error?.message ?? 'The target session is archived.') })
+            return
+          }
           logger.warn?.('hermes-facade: cron request failed: ' + String(error?.message ?? error))
           sendJson(res, 500, { detail: 'Task operation failed' })
           return

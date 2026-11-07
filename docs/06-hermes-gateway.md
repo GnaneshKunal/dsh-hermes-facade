@@ -186,7 +186,7 @@ with reason `resolved`, like the `approval.respond`/`request.answer` path.
 | `GET /api/sessions/{id}/export` | forwards the facade's JSON transcript download |
 | `POST /api/sessions/import` | 400: DSH cannot inject a transcript, so Move to Hermes cannot land here yet |
 | `GET /api/cron/jobs` | a bare array of jobs (`id`, `name`, `prompt`, `schedule`, `schedule_display`, `enabled`, `state`, `next_run_at`, `last_run_at`), one per DSH schedule |
-| `POST /api/cron/jobs`, `PUT /api/cron/jobs/{id}`, `POST …/{pause,resume,trigger}`, `DELETE /api/cron/jobs/{id}` | create/edit/lifecycle against the schedule service. Local delivery only: a non-local `deliver`, or non-empty `model`/`provider`/`skills`, answers 400 with the reason; a trigger whose schedule reports a pending execution answers 409 |
+| `POST /api/cron/jobs`, `PUT /api/cron/jobs/{id}`, `POST …/{pause,resume,trigger}`, `DELETE /api/cron/jobs/{id}` | create/edit/lifecycle against the schedule service. Local delivery only: a non-local `deliver`, or non-empty `model`/`provider`/`skills`, answers 400 with the reason; a trigger whose schedule reports a pending execution answers 409. Schedule text must satisfy DSH: five numeric cron fields, `every` ≥60 s, `daily`/`weekdays`/`weekly` at HH:MM (stored as HH:mm:ss, ISO weekdays), an ISO time with an offset, or DTSTART+RRULE; invalid text or a host `schedule/input-invalid` answers 400 |
 | `GET /api/cron/jobs/{id}/runs`, `GET /api/cron/delivery-targets` | run rows from the schedule's delivery history (`id` is the target session, `started_at`/`ended_at`, `is_active`), and `{targets:[local]}` |
 | `GET /api/profiles/active`, `GET /api/profiles` | the single Profile |
 | `GET /api/config` | `{platform_hints:{}}`; the app's note is advisory |

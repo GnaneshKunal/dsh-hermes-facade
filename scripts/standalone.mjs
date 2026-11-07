@@ -152,6 +152,9 @@ export function createMockHost({ cwd = process.cwd() } = {}) {
     setSessionUsage(values) { sessionUsageOverride = values },
     async listSchedules() { return [...schedules.values()] },
     async createSchedule(request) {
+      if (request?.prompt === 'reject me') {
+        throw Object.assign(new Error('title must be 1-120 characters'), { code: 'schedule/input-invalid' })
+      }
       const now = new Date()
       const timing = request?.timing ?? {}
       const entry = {

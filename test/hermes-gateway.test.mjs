@@ -1808,6 +1808,10 @@ test('the Tasks screen lists, edits, runs and deletes schedules', async () => {
     const badModel = await api(harness.base, jobs, { cookie, method: 'POST', body: { prompt: 'x', schedule: 'every 5m', model: 'deepseek-v4-pro' } })
     assert.equal(badModel.status, 400)
     assert.match(badModel.json.detail, /Model and provider/)
+    // A DSH schedule/input-invalid refusal reaches the editor as a 400 detail.
+    const refused = await api(harness.base, jobs, { cookie, method: 'POST', body: { prompt: 'reject me', schedule: 'every 5m' } })
+    assert.equal(refused.status, 400)
+    assert.match(refused.json.detail, /title must be/)
 
     const deleted = await api(harness.base, '/api/cron/jobs/' + id, { cookie, method: 'DELETE' })
     assert.equal(deleted.status, 200)

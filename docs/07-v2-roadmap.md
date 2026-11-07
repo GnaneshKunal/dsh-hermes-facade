@@ -191,15 +191,17 @@ detail/export snapshot, the host mapping against fake projections, and the gatew
 
 **Tasks / cron.** `GET /api/cron/jobs`, `/runs` and the create/edit/pause/resume/trigger/delete routes now translate
 DSH's `schedule/*` service: a schedule entry becomes a job (name, prompt, schedule text, next/last run, state), one
-delivery becomes a run whose `id` is the session it ran in, and the editor's text becomes a DSH timing (cron,
-`every 5m`, `daily at 09:00`, an ISO time or an RRULE). Delivery is **local only** (a DSH schedule delivers into a
+delivery becomes a run whose `id` is the session it ran in, and the editor's text becomes a timing DSH's own
+validators accept: five-field numeric cron, `every` (60 s minimum), `daily`/`weekdays`/`weekly` at HH:MM (sent as
+HH:mm:ss with ISO weekdays 1-7), an ISO time with an explicit offset, or the two-line DTSTART/RRULE form. Invalid
+text, or a host `schedule/input-invalid` refusal, answers 400 with the reason. Delivery is **local only** (a DSH schedule delivers into a
 session); a non-local `deliver`, model, provider or skills are refused with a reason instead of being ignored, and a
 trigger the service reports as already pending answers `409`. Run history is the schedule's delivery records, so a
 run opens as its session and there are no host output files or per-run cost. `sources=cron` on the agenda stays empty
 because DSH stores no session provenance. Tests cover the mapping and the full lifecycle through the gateway and the
 facade.
 
-Verify: `npm run check && npm test` (191 tests), then rename a chat from the phone's list, pin it, archive it,
+Verify: `npm run check && npm test` (192 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---

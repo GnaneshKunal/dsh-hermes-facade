@@ -75,7 +75,10 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   `GET /api/cron/jobs/{id}/runs` maps a delivery to a run whose `id` is the
   session it ran in, and create/edit/pause/resume/trigger/delete translate to
   `schedule/create|edit|run`. The editor's schedule text is parsed into a DSH
-  timing (cron, `every 5m`, `daily at 09:00`, an ISO time or an RRULE). Delivery
+  timing DSH's validators accept (five-field numeric cron, `every` ≥60 s,
+  `daily`/`weekdays`/`weekly` at HH:MM stored as HH:mm:ss with ISO weekdays, an
+  ISO time with an offset, or DTSTART+RRULE); invalid text or a host
+  `schedule/input-invalid` answers 400. Delivery
   is local only: a non-local `deliver`, model, provider or skills are refused
   with a reason instead of being silently ignored, and a trigger the service
   reports as already pending answers `409`. Run history is the schedule's
