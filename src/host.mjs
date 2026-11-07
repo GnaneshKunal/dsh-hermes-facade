@@ -1363,6 +1363,52 @@ export function createDshHost({ ctx, logger = console }) {
     },
 
     /**
+     * Transcribe one complete recording through the host's speech Remote.
+     *
+     * The speech controller owns the intake rules: it accepts canonical base64
+     * of a 16 kHz mono PCM16 WAV, validates it before any provider runs, and
+     * refuses everything else with `speech/invalid-audio`. Those failures are
+     * forwarded unchanged (the listener turns them into a refusal with the
+     * host's own wording) instead of being softened into an empty transcript.
+     *
+     * A reply without text is a broken host reply, not silence: a provider that
+     * heard nothing answers with an empty string, which stays a real success.
+     *
+     * @param {object} request request.
+     * @param {string} request.audioBase64 base64 of one complete recording.
+     * @param {string} [request.providerId] recognizer id; the host default when omitted.
+     * @param {string} [request.language] language hint.
+     * @returns {Promise<{text: string, provider?: string}>} transcript and the recognizer that produced it.
+     */
+    async transcribe({ audioBase64, providerId, language } = {}) {
+      if (typeof audioBase64 !== 'string' || audioBase64.length === 0) {
+        throw new Error('speech/transcribe needs a non-empty audioBase64')
+      }
+      const value = await invoke('speech', 'transcribe', {
+        request: {
+          audioBase64,
+          ...(typeof providerId === 'string' && providerId.length > 0 ? { providerId } : {}),
+          ...(typeof language === 'string' && language.length > 0 ? { language } : {}),
+        },
+      })
+      if (typeof value?.text !== 'string') {
+        throw new Error('speech/transcribe returned no transcript')
+      }
+      // The Remote reports the text only; the recognizer is named by the
+      // catalog's current selection. A failed catalog read leaves it unknown,
+      // which is honest, rather than guessing a provider that did not run.
+      let provider = typeof providerId === 'string' && providerId.length > 0 ? providerId : undefined
+      if (provider === undefined) {
+        try {
+          const catalog = await invoke('speech', 'catalog', {})
+          const selected = catalog?.selection?.providerId
+          if (typeof selected === 'string' && selected.length > 0) provider = selected
+        } catch { /* a transcript that already succeeded must not fail on its label */ }
+      }
+      return { text: value.text, ...(provider === undefined ? {} : { provider }) }
+    },
+
+    /**
      * Workspace list plus the registry-global pin/archive sets.
      *
      * The pin and archive state is not per-workspace and has no Remote of its

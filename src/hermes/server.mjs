@@ -17,6 +17,7 @@ import { mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promis
 import { homedir, networkInterfaces } from 'node:os'
 import { basename, extname, join, resolve, sep } from 'node:path'
 
+import { convertToWav, NO_CONVERTER_CODE, WAV_MIME_TYPES } from './audio.mjs'
 import { createBackend } from './backend.mjs'
 import { createFileRoutes } from './files.mjs'
 import { createPathFence } from './fence.mjs'
@@ -33,6 +34,7 @@ import {
   COOKIE_RT,
   ensureInstallId,
   meBody,
+  PROFILE_NAME,
   profilesActiveBody,
   readCookie,
   sessionCookies,
@@ -47,6 +49,26 @@ import { acceptUpgrade } from './ws.mjs'
 
 /** Largest accepted JSON body. */
 const MAX_BODY_BYTES = 4 * 1024 * 1024
+
+/**
+ * Largest recording one dictation may carry, matching the app's own 25 MiB
+ * advertisement; a data URL expands the bytes by 4/3 before JSON adds its own.
+ */
+const MAX_DICTATION_BYTES = 25 * 1024 * 1024
+
+/** Body bound that can carry a maximum-size recording as a base64 data URL. */
+const MAX_DICTATION_BODY_BYTES = 36 * 1024 * 1024
+
+/**
+ * Gateway dispatch codes that mean the speech Remote is not mounted at all.
+ * They are a host-capability refusal, not a transcription answer.
+ */
+const SPEECH_UNAVAILABLE_CODES = new Set([
+  'gateway/invocation-unavailable',
+  'gateway/service-unavailable',
+  'gateway/definition-unavailable',
+  'gateway/method-unavailable',
+])
 
 /**
  * The memory section a managed file path addresses, if any. Only the two
@@ -171,10 +193,15 @@ async function readJson(req, maxBytes = MAX_BODY_BYTES) {
  * @param {object} options.config resolved facade config.
  * @param {string} options.facadeUrl facade origin, for example http://127.0.0.1:9120.
  * @param {object} options.facadeAuth the facade's auth surface (password + cookies).
+ * @param {object} [options.host] DSH host adapter, for the surfaces the facade's
+ *   REST shape cannot carry (dictation's `speech/transcribe`). Omitted in a
+ *   composition without a host, where those routes refuse honestly.
+ * @param {Function} [options.convertAudio] audio transcoder behind dictation;
+ *   injectable so tests never need afconvert or ffmpeg on the machine.
  * @param {object} [options.logger] logger.
  * @returns {object} gateway.
  */
-export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome: memoryHomeOverride, uploadsDir, logger = console }) {
+export function createGatewayServer({ config, facadeUrl, facadeAuth, host, convertAudio = convertToWav, memoryHome: memoryHomeOverride, uploadsDir, logger = console }) {
   /** Absolute uploads root shared by image-upload and file.attach. */
   const uploads = uploadsDir ?? join(homedir(), '.hermes-uploads')
   const installId = ensureInstallId(config.dir)
@@ -943,6 +970,104 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
       const target = join(uploads, randomUUID() + '-' + leaf)
       await writeFile(target, decoded.bytes, { mode: 0o600 })
       sendJson(res, 200, { ok: true, path: target, name: basename(target), bytes: decoded.bytes.length, mime_type: decoded.mime })
+      return
+    }
+    // Dictation: one complete recording in, the host's recognized text out.
+    //
+    // The phone records AAC in an m4a container, while DSH's speech Remote
+    // validates one canonical shape before any provider runs: 16 kHz mono
+    // PCM16 WAV. A compressed recording is therefore converted on the host
+    // first (afconvert on macOS, else ffmpeg) and a host with no converter
+    // refuses honestly; compressed bytes are never handed to the speech
+    // controller to fail there, and no transcript is ever invented. WAV input
+    // still passes through untouched, and a provider's empty string is
+    // silence, which stays a real success.
+    if (method === 'POST' && path === '/api/audio/transcribe') {
+      const profile = url.searchParams.get('profile')
+      // One profile exists; a phone names its chat's, so anything else is a
+      // stale pairing rather than a recording to transcribe.
+      if (profile !== null && profile.length > 0 && profile !== PROFILE_NAME) {
+        sendJson(res, 404, { detail: 'Profile not found' })
+        return
+      }
+      const body = await readJson(req, MAX_DICTATION_BODY_BYTES)
+      const declared = typeof body.mime_type === 'string' ? body.mime_type.trim().toLowerCase() : ''
+      const decoded = decodeUpload(body.data_url, MAX_DICTATION_BYTES)
+      if (decoded === null) {
+        sendJson(res, 400, { detail: 'data_url must be base64 audio under 25 MiB' })
+        return
+      }
+      if (!decoded.mime.startsWith('audio/')) {
+        sendJson(res, 400, { detail: 'data_url must name an audio media type' })
+        return
+      }
+      if (declared.length > 0 && declared !== decoded.mime) {
+        sendJson(res, 400, { detail: 'mime_type must match the data_url media type' })
+        return
+      }
+      if (typeof host?.transcribe !== 'function') {
+        sendJson(res, 400, { detail: 'Speech-to-text is not available on this host' })
+        return
+      }
+      let recording = decoded.bytes
+      if (!WAV_MIME_TYPES.has(decoded.mime)) {
+        let converted
+        try {
+          converted = await convertAudio(decoded.bytes, { mime: decoded.mime })
+        } catch (error) {
+          if (error?.code === NO_CONVERTER_CODE) {
+            sendJson(res, 400, { detail: 'Speech-to-text needs a WAV recording and this host has no audio converter' })
+            return
+          }
+          // A host with no converter is an expected refusal; a converter that
+          // ran and failed is worth a line, without the stack.
+          if (error?.code !== NO_CONVERTER_CODE) {
+            logger.warn?.('hermes-gateway: dictation conversion failed: ' + String(error?.message ?? error))
+          }
+          sendJson(res, 400, { detail: 'The recording could not be converted to WAV' })
+          return
+        }
+        const bytes = Buffer.isBuffer(converted) ? converted : (converted instanceof Uint8Array ? Buffer.from(converted) : null)
+        if (bytes === null || bytes.length === 0) {
+          sendJson(res, 400, { detail: 'The recording could not be converted to WAV' })
+          return
+        }
+        if (bytes.length > MAX_DICTATION_BYTES) {
+          sendJson(res, 400, { detail: 'The converted recording is too large' })
+          return
+        }
+        recording = bytes
+      }
+      try {
+        const result = await host.transcribe({ audioBase64: recording.toString('base64') })
+        // Only real recognized text may reach the composer: a host reply without
+        // it is a failure, never an empty success that reads as silence.
+        if (typeof result?.text !== 'string') {
+          logger.warn?.('hermes-gateway: transcription returned no transcript')
+          sendJson(res, 500, { detail: 'Transcription failed' })
+          return
+        }
+        sendJson(res, 200, {
+          ok: true,
+          transcript: result.text,
+          ...(typeof result.provider === 'string' && result.provider.length > 0 ? { provider: result.provider } : {}),
+        })
+      } catch (error) {
+        const code = typeof error?.code === 'string' ? error.code : ''
+        // The speech controller's two named failures are both refusals the
+        // caller can act on: malformed/oversize audio and a provider that would
+        // not transcribe it.
+        if (code === 'speech/invalid-audio' || code === 'speech/transcription-failed') {
+          sendJson(res, 400, { detail: String(error?.message ?? 'Transcription refused') })
+          return
+        }
+        if (SPEECH_UNAVAILABLE_CODES.has(code)) {
+          sendJson(res, 400, { detail: 'Speech-to-text is not available on this host' })
+          return
+        }
+        logger.warn?.('hermes-gateway: transcription failed: ' + String(error?.stack ?? error))
+        sendJson(res, 500, { detail: 'Transcription failed' })
+      }
       return
     }
     // The Memory screen's managed file routes. Only the two paths its Profile
