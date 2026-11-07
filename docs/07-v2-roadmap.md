@@ -223,10 +223,10 @@ refused toggle.
 
 **Usage/Insights (token-only).** `GET /api/analytics/usage` and `/models` aggregate DSH's cached session
 projections: sessions, input/output/cache-read tokens, per-model rows and a UTC daily chart for the requested
-window (1-365 days). DSH has no per-day ledger, so a session's cumulative tokens are attributed to its last active
-day (its last prompt day, falling back to last activity); its last-used model names its row. Archived and
-subagent sessions are included because their tokens are real usage, and a session with no model still counts in the
-totals but has no model row. There is **no cost**: DSH has no pricing, so the cost cells read 0 rather
+window (1-365 days). DSH has no per-day ledger, so a session's cumulative tokens are attributed to its last prompt
+day (falling back to the row's `updatedAt`); its last-used model names its row. Archived and subagent sessions are
+included because their tokens are real usage, and a session with no model still counts in totals/daily but has no
+model row. There is **no cost**: DSH has no pricing, so the cost cells read 0 rather
 than a fabricated estimate. `insights.get` answers `{messages:0}` because DSH exposes no message count; the screen
 already marks its Messages total approximate. No sessions in the window is a real empty state. Tests cover the host
 aggregation, both routes and the RPC.
