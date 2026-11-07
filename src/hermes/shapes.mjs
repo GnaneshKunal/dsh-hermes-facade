@@ -42,6 +42,11 @@ export function transcriptRowOf(message, index) {
   return {
     role: typeof message?.role === 'string' ? message.role : 'assistant',
     content: typeof content === 'string' || Array.isArray(content) ? content : (content === undefined ? '' : String(content)),
+    // The host's transcript identity is `id`; Hermex's history joins and pages on
+    // it and drops a row without one, so emitting only row_id left a reopened
+    // chat empty. It must be stable across pages, so the caller passes the row's
+    // absolute position in the session, not its position in the page.
+    id: index + 1,
     row_id: index + 1,
     ...(Number.isFinite(message?.timestamp) ? { timestamp: message.timestamp } : {}),
     ...(Array.isArray(message?.tool_calls) ? { tool_calls: message.tool_calls } : {}),

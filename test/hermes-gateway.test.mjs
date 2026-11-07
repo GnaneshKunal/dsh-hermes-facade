@@ -536,3 +536,33 @@ test('config.set applies a model and an effort and echoes the host fields', asyn
   }
 })
 
+
+test('transcript pages carry the host row id and keep it stable across pages', async () => {
+  const harness = await boot()
+  harness.host.setTurnDelay(5)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      for (const text of ['one', 'two', 'three']) {
+        const sent = await socket.call('prompt.submit', { session_id: 'sess-mock', text })
+        assert.equal(sent.result.status, 'streaming')
+        await socket.waitFor(frame =>
+          frame.params?.type === 'message.complete' && String(frame.params.payload.text).includes('Echo: ' + text))
+      }
+    } finally {
+      socket.ws.close()
+    }
+    const newest = await api(harness.base, '/api/sessions/sess-mock/messages?order=latest&limit=2&offset=0', { cookie })
+    const older = await api(harness.base, '/api/sessions/sess-mock/messages?limit=2&offset=2&order=latest', { cookie })
+    assert.ok(newest.json.messages.every(row => Number.isInteger(row.id)), 'every row needs the host id')
+    assert.deepEqual(newest.json.messages.map(row => row.id), [2, 3])
+    assert.deepEqual(older.json.messages.map(row => row.id), [1])
+    assert.equal(newest.json.messages[0].content, 'two')
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
