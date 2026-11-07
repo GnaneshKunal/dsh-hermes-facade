@@ -96,6 +96,33 @@ function build(existingWorkspaces = {}, options = {}) {
         if (request.method === 'history') return { id: request.args?.request?.id, records: [] }
       }
       if (request.method === 'modelCatalog') return options.catalog ?? defaultCatalog()
+      if (request.namespace === 'speech' && request.method === 'transcribe') {
+        // A fake speech Remote: the shape of failure is what the listener maps,
+        // so the test picks it with `speech`.
+        if (options.speech === 'invalid') {
+          throw Object.assign(new Error('Audio must be a canonical 16 kHz mono PCM16 WAV recording'), {
+            code: 'speech/invalid-audio',
+            details: { reason: 'encoding-or-size' },
+          })
+        }
+        if (options.speech === 'failed') {
+          throw Object.assign(new Error('Speech provider is unavailable: sensevoice'), {
+            code: 'speech/transcription-failed',
+            details: { reason: 'Speech provider is unavailable: sensevoice' },
+          })
+        }
+        if (options.speech === 'no-remote') {
+          throw Object.assign(new Error('no active Remote method exports this endpoint'), {
+            code: 'gateway/invocation-unavailable',
+          })
+        }
+        if (options.speech === 'no-text') return { audioSeconds: 1.5, inferenceSeconds: 0.2 }
+        return options.transcript ?? { text: 'plan the Nimbus migration', audioSeconds: 2.5, inferenceSeconds: 0.4 }
+      }
+      if (request.namespace === 'speech' && request.method === 'catalog') {
+        if (options.speechCatalog === 'failed') throw new Error('speech catalog unavailable')
+        return options.speechCatalog ?? { providers: [], selection: { providerId: 'fake-recognizer', language: 'auto' } }
+      }
       if (request.namespace === 'session' && request.method === 'selectModel') {
         return { selected: request.args?.request ?? {} }
       }
@@ -947,4 +974,50 @@ test('skills are empty when the host has no sessions', async () => {
   const { host, calls } = build({}, { noSessions: true })
   assert.deepEqual(await host.listSkills(), [])
   assert.equal(calls.some(entry => entry.namespace === 'skills'), false)
+})
+
+test('transcribe forwards one recording to the speech Remote', async () => {
+  const { host, calls } = build()
+  const result = await host.transcribe({ audioBase64: 'UklGRg==' })
+  assert.deepEqual(result, { text: 'plan the Nimbus migration', provider: 'fake-recognizer' })
+  const call = calls.find(entry => entry.namespace === 'speech' && entry.method === 'transcribe')
+  assert.deepEqual(call.args, { request: { audioBase64: 'UklGRg==' } })
+  assert.equal('providerId' in call.args.request, false, 'an unselected recognizer stays the host default')
+  assert.equal('language' in call.args.request, false)
+})
+
+test('transcribe passes an explicit recognizer and language through', async () => {
+  const { host, calls } = build()
+  const result = await host.transcribe({ audioBase64: 'UklGRg==', providerId: 'sensevoice', language: 'en' })
+  const call = calls.find(entry => entry.namespace === 'speech' && entry.method === 'transcribe')
+  assert.deepEqual(call.args.request, { audioBase64: 'UklGRg==', providerId: 'sensevoice', language: 'en' })
+  // The reply names the recognizer that was asked for without a second read.
+  assert.deepEqual(result, { text: 'plan the Nimbus migration', provider: 'sensevoice' })
+  assert.equal(calls.some(entry => entry.namespace === 'speech' && entry.method === 'catalog'), false)
+})
+
+test('transcribe keeps a provider-returned empty transcript as silence', async () => {
+  const { host } = build({}, { transcript: { text: '', audioSeconds: 0.5, inferenceSeconds: 0.1 } })
+  assert.deepEqual(await host.transcribe({ audioBase64: 'UklGRg==' }), { text: '', provider: 'fake-recognizer' })
+})
+
+test('transcribe never invents a transcript when the reply carries no text', async () => {
+  const { host } = build({}, { speech: 'no-text' })
+  await assert.rejects(host.transcribe({ audioBase64: 'UklGRg==' }), /returned no transcript/)
+})
+
+test('transcribe forwards the speech controller refusal unchanged', async () => {
+  const { host } = build({}, { speech: 'invalid' })
+  await assert.rejects(host.transcribe({ audioBase64: 'UklGRg==' }), error => {
+    assert.equal(error.code, 'speech/invalid-audio')
+    assert.match(error.message, /canonical 16 kHz mono PCM16 WAV/)
+    return true
+  })
+})
+
+test('transcribe omits the recognizer when the catalog cannot name it', async () => {
+  const { host } = build({}, { speechCatalog: 'failed' })
+  // The transcript already succeeded; a failed label read must not fail it or
+  // invent a provider that did not run.
+  assert.deepEqual(await host.transcribe({ audioBase64: 'UklGRg==' }), { text: 'plan the Nimbus migration' })
 })

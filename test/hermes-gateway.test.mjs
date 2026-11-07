@@ -37,6 +37,7 @@ async function boot({ hostCwd } = {}) {
     config,
     facadeUrl: 'http://127.0.0.1:' + address.port,
     facadeAuth: facade.auth,
+    host,
     memoryHome: dir,
     uploadsDir: dir + '-uploads',
   })
@@ -2222,3 +2223,160 @@ test('the Skills screen lists skills and opens SKILL.md read-only', async () => 
 
 
 
+
+test('dictation transcribes one recording to the recognized text', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    // The mock host stands in for the recognizer. DSH's WAV intake rule lives
+    // in the real speech controller, so this route only carries bytes and text.
+    const audio = Buffer.from('RIFF....WAVEfmt ')
+    for (const body of [
+      { data_url: 'data:audio/wav;base64,' + audio.toString('base64'), mime_type: 'audio/wav' },
+      { data_url: 'data:audio/wav;base64,' + audio.toString('base64') },
+    ]) {
+      const reply = await api(harness.base, '/api/audio/transcribe?profile=default', { method: 'POST', cookie, body })
+      assert.equal(reply.status, 200)
+      assert.deepEqual(reply.json, { ok: true, transcript: 'Mock transcript', provider: 'mock' })
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('dictation refuses malformed audio without calling the recognizer', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    let spoken = 0
+    harness.host.transcribe = async () => { spoken += 1; return { text: 'unused' } }
+    const cases = [
+      ['absent data_url', { mime_type: 'audio/wav' }],
+      ['not a data URL', { data_url: 'not-a-data-url', mime_type: 'audio/wav' }],
+      ['not audio', { data_url: 'data:text/plain;base64,aGk=', mime_type: 'text/plain' }],
+      ['mime_type mismatch', { data_url: 'data:audio/wav;base64,eA==', mime_type: 'audio/m4a' }],
+      ['empty payload', { data_url: 'data:audio/wav;base64,', mime_type: 'audio/wav' }],
+    ]
+    for (const [name, body] of cases) {
+      const reply = await api(harness.base, '/api/audio/transcribe', { method: 'POST', cookie, body })
+      assert.equal(reply.status, 400, name + ' must be refused')
+      assert.equal(typeof reply.json.detail, 'string', name + ' carries a detail')
+      assert.ok(reply.json.detail.length > 0)
+      assert.equal('transcript' in reply.json, false, name + ' must not carry a transcript')
+    }
+    assert.equal(spoken, 0, 'a malformed data_url never reaches the recognizer')
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('dictation reports an unknown profile as 404', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const reply = await api(harness.base, '/api/audio/transcribe?profile=ghost', {
+      method: 'POST',
+      cookie,
+      body: { data_url: 'data:audio/wav;base64,eA==', mime_type: 'audio/wav' },
+    })
+    assert.equal(reply.status, 404)
+    assert.equal(typeof reply.json.detail, 'string')
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('dictation refuses when the host has no speech service', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const recording = { data_url: 'data:audio/wav;base64,eA==', mime_type: 'audio/wav' }
+    // A composition without the speech Remote, then the gateway's own
+    // dispatch failure for one that is mounted elsewhere.
+    for (const failure of [
+      undefined,
+      Object.assign(new Error('no active Remote method exports this endpoint'), { code: 'gateway/invocation-unavailable' }),
+    ]) {
+      if (failure === undefined) harness.host.transcribe = undefined
+      else harness.host.transcribe = async () => { throw failure }
+      const reply = await api(harness.base, '/api/audio/transcribe', { method: 'POST', cookie, body: recording })
+      assert.equal(reply.status, 400)
+      assert.equal(reply.json.detail, 'Speech-to-text is not available on this host')
+      assert.equal('transcript' in reply.json, false)
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('dictation refuses when no recognizer is configured', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    harness.host.transcribe = async () => {
+      throw Object.assign(new Error('Speech provider is unavailable: default'), {
+        code: 'speech/transcription-failed',
+        details: { reason: 'Speech provider is unavailable: default' },
+      })
+    }
+    const reply = await api(harness.base, '/api/audio/transcribe', {
+      method: 'POST',
+      cookie,
+      body: { data_url: 'data:audio/wav;base64,eA==', mime_type: 'audio/wav' },
+    })
+    assert.equal(reply.status, 400)
+    assert.equal(reply.json.detail, 'Speech provider is unavailable: default')
+    assert.equal('transcript' in reply.json, false)
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('dictation forwards the speech controller refusal for unsupported audio', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    harness.host.transcribe = async () => {
+      throw Object.assign(new Error('Audio must be a canonical 16 kHz mono PCM16 WAV recording'), {
+        code: 'speech/invalid-audio',
+        details: { reason: 'encoding-or-size' },
+      })
+    }
+    // What the phone's m4a recording actually meets on this host: DSH admits
+    // only canonical WAV, and the refusal must reach the composer verbatim.
+    const reply = await api(harness.base, '/api/audio/transcribe', {
+      method: 'POST',
+      cookie,
+      body: { data_url: 'data:audio/m4a;base64,eA==', mime_type: 'audio/m4a' },
+    })
+    assert.equal(reply.status, 400)
+    assert.match(reply.json.detail, /canonical 16 kHz mono PCM16 WAV/)
+    assert.equal('transcript' in reply.json, false)
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('dictation answers an unexpected failure as a 500 with no transcript', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    harness.host.transcribe = async () => { throw new Error('unexpected host explosion') }
+    const reply = await api(harness.base, '/api/audio/transcribe', {
+      method: 'POST',
+      cookie,
+      body: { data_url: 'data:audio/wav;base64,eA==', mime_type: 'audio/wav' },
+    })
+    assert.equal(reply.status, 500)
+    assert.deepEqual(reply.json, { detail: 'Transcription failed' })
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})

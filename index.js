@@ -85,6 +85,7 @@ async function mount(ctx, config, logger) {
         config: resolved,
         facadeUrl: 'http://127.0.0.1:' + address.port,
         facadeAuth: facade.auth,
+        host,
         logger,
       })
       const gatewayAddress = await gateway.listen()

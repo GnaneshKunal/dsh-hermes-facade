@@ -354,6 +354,22 @@ export function createMockHost({ cwd = process.cwd() } = {}) {
     warm() {},
     lastPrompt() { return promptLog[promptLog.length - 1] },
     async commands() { return [] },
+    /**
+     * Mock speech-to-text for the dictation route: a fixed transcript, so the
+     * wire can be exercised without a microphone or a recognizer.
+     * @param {object} request request.
+     * @param {string} request.audioBase64 base64 recording.
+     * @returns {Promise<{text: string, provider: string}>} transcript.
+     */
+    async transcribe({ audioBase64 } = {}) {
+      if (typeof audioBase64 !== 'string' || audioBase64.length === 0) {
+        throw Object.assign(new Error('Audio must be a canonical 16 kHz mono PCM16 WAV recording'), {
+          code: 'speech/invalid-audio',
+          details: { reason: 'encoding-or-size' },
+        })
+      }
+      return { text: 'Mock transcript', provider: 'mock' }
+    },
     async workspaces() {
       return {
         workspaces: [{ id: 'ws-mock', name: 'mock workspace', path: cwd, sessionIds: ['sess-mock'] }],
@@ -650,6 +666,7 @@ if (isMain) {
       config,
       facadeUrl: 'http://127.0.0.1:' + address.port,
       facadeAuth: facade.auth,
+      host,
     })
     const gatewayAddress = await gateway.listen()
     console.log('hermes-gateway (standalone, MOCK agent) on http://' + gatewayAddress.host + ':' + gatewayAddress.port)
