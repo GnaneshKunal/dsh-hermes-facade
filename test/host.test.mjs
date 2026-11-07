@@ -803,7 +803,9 @@ test('usage includes subagent sessions, excludes the window and attributes last-
   const subModel = report.models.models.find(row => row.model === 'sub-model')
   assert.equal(subModel.input_tokens, 200)
   assert.equal(subModel.output_tokens, 100)
-  assert.equal(report.models.models.length, 2)
+  assert.equal(subModel.cache_read_tokens, 20)
+  assert.equal(subModel.provider, 'p2')
+  assert.equal(subModel.sessions, 1)
   assert.deepEqual(report.models.models.map(row => row.model).sort(), ['deepseek-v4-pro', 'sub-model'])
 })
 
