@@ -48,6 +48,16 @@ export function resolveConfig(raw = {}) {
     defaultWorkspace: typeof raw.defaultWorkspace === 'string' && raw.defaultWorkspace.length > 0
       ? raw.defaultWorkspace
       : undefined,
+    // Transcript window: how many recent display messages are read from the host
+    // and how large the first page is. Hermex asks for 50 then pages backwards;
+    // a bigger window makes old chats open complete and lets the facade answer
+    // scroll-back requests without a second host read per page.
+    historyWindow: Number.isSafeInteger(raw.historyWindow) && raw.historyWindow >= 50
+      ? raw.historyWindow
+      : 800,
+    historyPage: Number.isSafeInteger(raw.historyPage) && raw.historyPage > 0
+      ? raw.historyPage
+      : 200,
     lanHost: raw.lanHost === 'auto'
       ? 'auto'
       : (typeof raw.lanHost === 'string' && raw.lanHost.length > 0 ? raw.lanHost : undefined),

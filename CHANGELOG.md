@@ -15,6 +15,13 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   looks like from the server. Both rotate at 1 MiB and never throw.
 - `GET /api/list` and `GET /api/file` serve the workspace file browser: a directory listing and a
   text file's content. They were 404s, which the app renders as "the endpoint was not found".
+- **Transcript paging.** `GET /api/session` now honours `msg_before` and returns a real
+  `messages_offset`/`messages_truncated` cursor, and the first page is 200 messages instead of the
+  50 the client asks for. A chat can be scrolled back through its whole (bounded) transcript instead
+  of stopping at the newest window; `message_count` is the total, not the page length. Config
+  `historyWindow` (default 800) and `historyPage` (default 200) tune it.
+- `/health` also reports `active_streams` and the `history` page/window sizes. The client ignores
+  unknown keys; they let an external check see which build is live and whether a turn is streaming.
 
 ### Fixed
 
@@ -26,6 +33,9 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   deployment) instead of a hard-coded OpenAI list that advertised `xhigh`, a level the adapter
   rejects. A stale client spelling is translated (`xhigh → max`, `none → off`, `minimal → low`),
   and an impossible level answers `200 {ok:false}` listing the real ones.
+- **Hot reload no longer races the port.** The plugin's disposer fired `facade.close()` without
+  awaiting it, so a cordis module replacement could start the new listener before the old one
+  released 9120 (EADDRINUSE). The disposer now returns the close promise, which cordis awaits.
 - **Reads are bounded.** `/api/models`, `/api/workspaces`, `/api/projects` and `/api/reasoning`
   now give up after 8 s and answer a well-formed default instead of holding the connection open;
   the catalog is cached for 15 s and warmed at mount, so the first composer open is not a cold

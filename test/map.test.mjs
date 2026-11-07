@@ -9,7 +9,7 @@ function assistantWith(messages) {
 
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { detailOf, epochSeconds, messagesOf, normaliseEvent, summaryOf, textOf } from '../src/map.mjs'
+import { detailOf, epochSeconds, messagesOf, normaliseEvent, pageMessages, summaryOf, textOf } from '../src/map.mjs'
 
 test('epochSeconds converts milliseconds and leaves seconds alone', () => {
   assert.equal(epochSeconds(1700000000000), 1700000000)
@@ -77,6 +77,56 @@ test('detailOf returns messages and offset', () => {
   assert.equal(detail.session_id, 's1')
   assert.equal(detail.messages.length, 1)
   assert.equal(detail.messages_offset, 0)
+})
+
+test('detailOf reports the page cursor, truncation and total', () => {
+  const detail = detailOf(
+    { sessionId: 's1', updatedAt: 1700000000000 },
+    [{ role: 'user', content: 'x' }],
+    undefined,
+    { offset: 40, truncated: true, total: 41 },
+  )
+  assert.equal(detail.messages_offset, 40)
+  assert.equal(detail.messages_truncated, true)
+  assert.equal(detail.message_count, 41)
+})
+
+test('pageMessages opens the newest page and reports the older offset', () => {
+  const all = Array.from({ length: 260 }, (_, index) => ({ role: 'user', content: 'm' + String(index) }))
+
+  const first = pageMessages(all, { limit: 50, initial: 200 })
+  assert.equal(first.messages.length, 200)
+  assert.equal(first.messages[0].content, 'm60')
+  assert.equal(first.offset, 60)
+  assert.equal(first.truncated, true)
+  assert.equal(first.total, 260)
+
+  const older = pageMessages(all, { limit: 50, before: first.offset, initial: 200 })
+  assert.equal(older.messages.length, 50)
+  assert.equal(older.messages[0].content, 'm10')
+  assert.equal(older.messages.at(-1).content, 'm59')
+  assert.equal(older.offset, 10)
+  assert.equal(older.truncated, true)
+
+  const oldest = pageMessages(all, { limit: 50, before: older.offset, initial: 200 })
+  assert.equal(oldest.messages.length, 10)
+  assert.equal(oldest.messages[0].content, 'm0')
+  assert.equal(oldest.offset, 0)
+  assert.equal(oldest.truncated, false)
+})
+
+test('pageMessages tolerates short, empty and out-of-range windows', () => {
+  const short = pageMessages([{ role: 'user', content: 'a' }], { initial: 200 })
+  assert.equal(short.messages.length, 1)
+  assert.equal(short.offset, 0)
+  assert.equal(short.truncated, false)
+
+  assert.deepEqual(pageMessages([], {}).messages, [])
+
+  const clamped = pageMessages(Array.from({ length: 5 }, () => ({ role: 'user' })), { before: 99, limit: 2 })
+  assert.equal(clamped.messages.length, 2)
+  assert.equal(clamped.offset, 3)
+  assert.equal(clamped.truncated, true)
 })
 
 test('injected context never renders as a user message', () => {

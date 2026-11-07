@@ -98,6 +98,19 @@ export function createMockHost() {
       const record = sessions.get(sessionId)
       return { item: record, events: record ? record.events : [], projections: {} }
     },
+    /**
+     * Append durable events to a session, for tests that need a long transcript
+     * without running a turn for each message.
+     * @param {string} sessionId session id.
+     * @param {Array<object>} events events to append.
+     * @returns {object} session record.
+     */
+    seed(sessionId, events = []) {
+      const record = ensure(sessionId)
+      for (const event of events) record.events.push(event)
+      record.updatedAt = Date.now()
+      return record
+    },
     async ensureSession(sessionId, workspacePath, workspaceId) {
       this.lastEnsure = { sessionId, workspacePath, workspaceId }
       return ensure(sessionId).sessionId

@@ -74,9 +74,13 @@ async function mount(ctx, config, logger) {
     logger.info?.('hermes-facade: stored hashed at ' + facade.auth.passwordPath)
   }
 
+  // Return the close promise: on a hot reload cordis awaits the disposer
+  // before starting the replacement, and the replacement must find the port
+  // free. Firing it off unawaited races the new listener into EADDRINUSE.
   ctx.effect(() => () => {
     host.dispose()
-    void facade.close()
-    logger.info?.('hermes-facade: stopped')
+    return facade.close().then(() => {
+      logger.info?.('hermes-facade: stopped')
+    })
   })
 }

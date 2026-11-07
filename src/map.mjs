@@ -124,19 +124,69 @@ export function summaryOf(item, workspace) {
 }
 
 /**
+ * Select one backwards page of display messages for GET /api/session.
+ *
+ * Hermex opens a chat with msg_limit=50 and asks for older pages with
+ * msg_before=<messages_offset> until the offset reaches 0. DSH hands us a
+ * bounded recent window; this slices it the same way a hermes-webui host does:
+ * the initial page is the newest chunk (larger than the client asked for, so
+ * most chats open complete), every older page is the chunk immediately before
+ * the requested offset, and the offset is the index of the first returned
+ * message in that window.
+ *
+ * @param {Array<object>} messages every display message in the host window.
+ * @param {object} [options] paging options.
+ * @param {number} [options.limit] client page size for older pages.
+ * @param {number} [options.before] msg_before cursor (index of the current first message).
+ * @param {number} [options.initial] size of the first page when no cursor is sent.
+ * @returns {{messages: Array<object>, offset: number, truncated: boolean, total: number}} page.
+ */
+export function pageMessages(messages, { limit = 50, before, initial = 200 } = {}) {
+  const windowMessages = Array.isArray(messages) ? messages : []
+  const total = windowMessages.length
+  const pageSize = Number.isSafeInteger(limit) && limit > 0 ? Math.min(limit, 500) : 50
+
+  if (Number.isSafeInteger(before) && before > 0) {
+    const end = Math.min(before, total)
+    const start = Math.max(0, end - pageSize)
+    return {
+      messages: windowMessages.slice(start, end),
+      offset: start,
+      truncated: start > 0,
+      total,
+    }
+  }
+
+  const initialSize = Math.max(
+    1,
+    Number.isSafeInteger(initial) && initial > 0 ? initial : 200,
+    pageSize,
+  )
+  const start = Math.max(0, total - initialSize)
+  return {
+    messages: windowMessages.slice(start),
+    offset: start,
+    truncated: start > 0,
+    total,
+  }
+}
+
+/**
  * Map one DSH session row plus messages to a Hermex session detail.
  * @param {object} item session/list row.
- * @param {Array<object>} messages ChatMessage array.
+ * @param {Array<object>} messages ChatMessage array (one page).
+ * @param {object} [workspace] workspace row for project grouping.
+ * @param {object} [paging] page cursor: {offset, truncated, total}.
  * @returns {object} snake_case detail.
  */
-export function detailOf(item, messages, workspace) {
+export function detailOf(item, messages, workspace, paging = {}) {
   const summary = summaryOf(item, workspace)
   return {
     ...summary,
-    message_count: messages.length,
+    message_count: Number.isSafeInteger(paging.total) ? paging.total : messages.length,
     messages,
-    messages_offset: 0,
-    messages_truncated: false,
+    messages_offset: Number.isSafeInteger(paging.offset) ? paging.offset : 0,
+    messages_truncated: paging.truncated === true,
   }
 }
 

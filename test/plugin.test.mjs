@@ -50,7 +50,7 @@ test('the plugin entry mounts and serves /health', async t => {
 
   const health = await fetch('http://127.0.0.1:' + port + '/health')
   assert.equal(health.status, 200)
-  assert.deepEqual(await health.json(), { status: 'ok' })
+  assert.equal((await health.json()).status, 'ok')
 
   const status = await fetch('http://127.0.0.1:' + port + '/api/auth/status')
   assert.equal((await status.json()).auth_enabled, true)

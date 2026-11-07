@@ -14,7 +14,7 @@ import { networkInterfaces } from 'node:os'
 import { join as join_dir } from 'node:path'
 import { COOKIE_NAME, createAuth } from './auth.mjs'
 import { clip, createRequestLog } from './log.mjs'
-import { detailOf, epochSeconds, messagesOf, normaliseEvent, summaryOf } from './map.mjs'
+import { detailOf, epochSeconds, messagesOf, normaliseEvent, pageMessages, summaryOf } from './map.mjs'
 import { openSse } from './sse.mjs'
 import { createStreamRegistry } from './streams.mjs'
 
@@ -38,6 +38,19 @@ const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'max']
 
 /** How long a read-only host call may block a UI request before it gives up. */
 const READ_TIMEOUT_MS = 8000
+
+/**
+ * How many display messages we ask the host for when a chat opens.
+ *
+ * Hermex asks for 50 and pages backwards with msg_before. DSH's recent-history
+ * snapshot is cheap enough at this size, and reading a window larger than one
+ * page lets the facade serve real backwards pages without a second host call
+ * per scroll. Raise with config.historyWindow for very long sessions.
+ */
+const DEFAULT_HISTORY_WINDOW = 800
+
+/** Size of the first transcript page when the client sends no msg_before. */
+const DEFAULT_HISTORY_PAGE = 200
 
 /**
  * Reject when a host call outlives the client's patience.
@@ -150,6 +163,15 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
   logger.info?.('hermes-facade: unknown endpoints ' + requestLog.unknownPath)
 
   const registry = createStreamRegistry()
+
+  /** Bounded host transcript window and the initial page size (see constants). */
+  const historyWindow = Number.isSafeInteger(config.historyWindow) && config.historyWindow >= 50
+    ? config.historyWindow
+    : DEFAULT_HISTORY_WINDOW
+  const historyPage = Number.isSafeInteger(config.historyPage) && config.historyPage > 0
+    ? Math.min(config.historyPage, historyWindow)
+    : Math.min(DEFAULT_HISTORY_PAGE, historyWindow)
+
   const loginAttempts = new Map()
   /** @type {Set<Function>} */
   const interactionChannels = new Set()
@@ -440,7 +462,14 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
 
       // ---- public endpoints -------------------------------------------------
       if (method === 'GET' && path === '/health') {
-        sendJson(res, 200, { status: 'ok' })
+        // Extra fields are ignored by the client's HealthResponse decoder. They
+        // exist so an external check (and the hot-reload script) can tell which
+        // build is live and whether a turn is currently streaming.
+        sendJson(res, 200, {
+          status: 'ok',
+          active_streams: registry.activeCount(),
+          history: { page: historyPage, window: historyWindow },
+        })
         return
       }
 
@@ -501,19 +530,27 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         const sessionId = url.searchParams.get('session_id') ?? url.searchParams.get('sessionId') ?? ''
         if (!sessionId) { sendJson(res, 400, { detail: 'session_id required' }); return }
         const limitText = url.searchParams.get('msg_limit') ?? url.searchParams.get('message_limit')
-        const limit = Number.parseInt(limitText ?? '', 10)
-        const snapshot = await host.readSession(sessionId, {
-          maxMessages: Number.isSafeInteger(limit) && limit > 0 ? limit : 50,
-        })
+        const limitParsed = Number.parseInt(limitText ?? '', 10)
+        const limit = Number.isSafeInteger(limitParsed) && limitParsed > 0 ? limitParsed : 50
+        const beforeParsed = Number.parseInt(url.searchParams.get('msg_before') ?? '', 10)
+        const before = Number.isSafeInteger(beforeParsed) && beforeParsed > 0 ? beforeParsed : undefined
+        // Read a bounded recent window, then serve one page from it. A client
+        // that pages back gets the chunk immediately before its cursor; the
+        // cursor is the index of the page's first message, so scrolling stops
+        // exactly at index 0.
+        const snapshot = await host.readSession(sessionId, { maxMessages: historyWindow })
         const list = await host.listSessions()
         const item = list.find(row => String(row?.sessionId) === sessionId)
         if (item === undefined && snapshot.events.length === 0) {
           sendJson(res, 404, { error: 'not found', detail: 'Session not found' })
           return
         }
-        const messages = messagesOf(snapshot.events)
+        const all = messagesOf(snapshot.events)
+        const page = pageMessages(all, { limit, before, initial: historyPage })
         const index = typeof host.workspaceIndex === 'function' ? await host.workspaceIndex() : new Map()
-        sendJson(res, 200, { session: detailOf(item ?? { sessionId }, messages, index.get(String(sessionId))) })
+        sendJson(res, 200, {
+          session: detailOf(item ?? { sessionId }, page.messages, index.get(String(sessionId)), page),
+        })
         return
       }
 

@@ -67,6 +67,19 @@ export function createStreamRegistry() {
     },
 
     /**
+     * Count streams that have not finished yet.
+     *
+     * Used by /health so an external check can wait for a quiet moment before
+     * reloading the plugin (a reload closes the SSE the phone is reading).
+     * @returns {number} live stream count.
+     */
+    activeCount() {
+      let active = 0
+      for (const record of streams.values()) if (record.terminal === null) active += 1
+      return active
+    },
+
+    /**
      * Append one event and fan it out to attached channels.
      * @param {object} record stream record.
      * @param {string} event SSE event name.

@@ -24,6 +24,7 @@ async function boot(options = {}) {
     dir,
     tokenTtlSeconds: 3600,
     logRequests: options.logRequests === true,
+    ...(options.config ?? {}),
   }
   const facade = createFacadeServer({ config, host, logger })
   const address = await facade.listen()
@@ -68,13 +69,97 @@ function cookieOf(res) {
   return value.split(';')[0]
 }
 
+/**
+ * Build a transcript of alternating user/assistant events, oldest first.
+ * @param {number} count how many display messages.
+ * @returns {Array<object>} session events.
+ */
+function transcriptEvents(count) {
+  const base = 1800000000000
+  return Array.from({ length: count }, (_, index) => {
+    const time = base + index * 1000
+    if (index % 2 === 0) {
+      return { type: 'user/message', seq: index, time, data: { content: [{ type: 'text', text: 'u' + String(index) }] } }
+    }
+    return {
+      type: 'assistant/message', seq: index, time,
+      data: { message: { content: [{ type: 'text', text: 'a' + String(index) }] } },
+    }
+  })
+}
+
+test('a long transcript pages backwards instead of stopping at the newest window', async t => {
+  const { facade, host, base, password } = await boot({ config: { historyPage: 5, historyWindow: 20 } })
+  t.after(() => facade.close())
+  host.seed('sess-mock', transcriptEvents(12))
+  const cookie = await signIn(base, password)
+
+  /**
+   * Read one transcript page.
+   * @param {string} query query string.
+   * @returns {Promise<object>} session detail.
+   */
+  const page = async query => {
+    const res = await fetch(base + '/api/session?' + query, { headers: { cookie } })
+    assert.equal(res.status, 200)
+    return (await res.json()).session
+  }
+
+  // The initial page is the configured page size (5), not the client's 2, and
+  // reports how many older messages remain.
+  const first = await page('session_id=sess-mock&messages=1&msg_limit=2')
+  assert.deepEqual(first.messages.map(message => message.content), ['a7', 'u8', 'a9', 'u10', 'a11'])
+  assert.equal(first.messages_offset, 7)
+  assert.equal(first.messages_truncated, true)
+  assert.equal(first.message_count, 12)
+
+  // Each msg_before page is the chunk immediately before the cursor.
+  const second = await page('session_id=sess-mock&messages=1&msg_limit=2&msg_before=7')
+  assert.deepEqual(second.messages.map(message => message.content), ['a5', 'u6'])
+  assert.equal(second.messages_offset, 5)
+  assert.equal(second.messages_truncated, true)
+
+  const third = await page('session_id=sess-mock&messages=1&msg_limit=2&msg_before=5')
+  assert.deepEqual(third.messages.map(message => message.content), ['a3', 'u4'])
+  assert.equal(third.messages_offset, 3)
+
+  const fourth = await page('session_id=sess-mock&messages=1&msg_limit=2&msg_before=3')
+  assert.deepEqual(fourth.messages.map(message => message.content), ['a1', 'u2'])
+  assert.equal(fourth.messages_offset, 1)
+
+  // The last page reaches index 0, which is what tells the app to stop.
+  const last = await page('session_id=sess-mock&messages=1&msg_limit=2&msg_before=1')
+  assert.deepEqual(last.messages.map(message => message.content), ['u0'])
+  assert.equal(last.messages_offset, 0)
+  assert.equal(last.messages_truncated, false)
+})
+
+test('a short transcript opens complete and reports no older pages', async t => {
+  const { facade, host, base, password } = await boot()
+  t.after(() => facade.close())
+  host.seed('sess-mock', transcriptEvents(3))
+  const cookie = await signIn(base, password)
+
+  const res = await fetch(base + '/api/session?session_id=sess-mock&messages=1&msg_limit=50', { headers: { cookie } })
+  const body = await res.json()
+  assert.equal(body.session.messages.length, 3)
+  assert.equal(body.session.messages_offset, 0)
+  assert.equal(body.session.messages_truncated, false)
+})
+
 test('health and auth gating', async t => {
   const { facade, base } = await boot()
   t.after(() => facade.close())
 
   const health = await fetch(base + '/health')
   assert.equal(health.status, 200)
-  assert.deepEqual(await health.json(), { status: 'ok' })
+  const healthBody = await health.json()
+  assert.equal(healthBody.status, 'ok')
+  // Extra fields drive /health checks and the hot-reload script; the client's
+  // HealthResponse ignores keys it does not know.
+  assert.equal(healthBody.active_streams, 0)
+  assert.equal(healthBody.history.page, 200)
+  assert.equal(healthBody.history.window, 800)
 
   const status = await fetch(base + '/api/auth/status')
   const statusBody = await status.json()

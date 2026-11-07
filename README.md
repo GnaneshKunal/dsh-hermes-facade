@@ -105,7 +105,7 @@ curl.
 | Surface | State |
 |---|---|
 | health, auth (password + signed cookie) | full |
-| session list, session detail, history | full |
+| session list, session detail, history | full: newest 800 messages; scroll-back pages via `msg_before` within that window |
 | chat start / SSE stream / cancel / stream status | full |
 | token deltas, thinking, tool call + result cards | full |
 | approvals (once / deny) | full: session and always collapse to allow-once |
@@ -150,6 +150,10 @@ Everything the facade sees is in ~/.dsh/hermes-facade/:
 
     tail -f ~/.dsh/hermes-facade/unknown-endpoints.log   # what the app wants that we do not serve
     tail -f ~/.dsh/hermes-facade/access.log              # status and duration of everything
+
+`GET /health` also reports `active_streams` and the transcript `history` page/window sizes.
+The app ignores keys it does not know; they make it easy to see which build is live after a hot
+reload or restart, and whether a turn is still streaming.
 
 `client_gone: true` on an access-log line means the client hung up before the
 answer about a request the facade still finished — that is what a client-side
