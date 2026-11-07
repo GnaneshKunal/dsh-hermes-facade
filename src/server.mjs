@@ -1072,6 +1072,12 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
             sendJson(res, 409, { detail: String(error?.message ?? 'The target session is archived.') })
             return
           }
+          // readJson refuses a malformed or oversized body with its own status;
+          // forward it instead of turning a 400/413 into an opaque 500.
+          if (Number.isInteger(error?.statusCode) && error.statusCode >= 400 && error.statusCode < 500) {
+            sendJson(res, error.statusCode, { detail: String(error?.message ?? 'Invalid request') })
+            return
+          }
           logger.warn?.('hermes-facade: cron request failed: ' + String(error?.message ?? error))
           sendJson(res, 500, { detail: 'Task operation failed' })
           return

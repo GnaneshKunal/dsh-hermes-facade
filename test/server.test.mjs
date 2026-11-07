@@ -1371,3 +1371,16 @@ test('a resolved approval also clears the card on the live chat stream', async t
   assert.equal(retracted.event, 'approval')
   assert.deepEqual(JSON.parse(retracted.data), { pending: null, pending_count: 0 })
 })
+
+test('a malformed cron body answers 400, not 500', async t => {
+  const { facade, base, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+  const res = await fetch(base + '/api/cron/jobs', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: '{',
+  })
+  assert.equal(res.status, 400)
+  assert.match(JSON.stringify(await res.json()), /invalid json/i)
+})
