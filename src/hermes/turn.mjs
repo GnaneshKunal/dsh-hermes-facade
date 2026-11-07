@@ -113,11 +113,14 @@ export function createTurnRunner({
    * Start one turn.
    * @param {object} input input.
    * @param {string} input.sessionId session id.
-   * @param {string} input.text prompt.
+   * @param {string} input.text prompt text.
+   * @param {Array<object>} [input.images] image parts ({mediaType,data,name?}).
    * @returns {Promise<object>} prompt.submit reply.
    */
-  async function start({ sessionId, text }) {
-    if (typeof text !== 'string' || text.length === 0) throw new Error('text required')
+  async function start({ sessionId, text, images = [] }) {
+    if ((typeof text !== 'string' || text.length === 0) && (!Array.isArray(images) || images.length === 0)) {
+      throw new Error('text required')
+    }
     if (typeof sessionId !== 'string' || sessionId.length === 0) throw new Error('session_id required')
     if (active.has(sessionId) || starting.has(sessionId)) {
       // A second chat/start would create a second stream, and two consumers of
@@ -126,7 +129,7 @@ export function createTurnRunner({
       // window between this check and `active.set` below, where two concurrent
       // submits used to both pass.
       const pending = queued.get(sessionId) ?? []
-      pending.push(text)
+      pending.push({ text, images })
       queued.set(sessionId, pending)
       return { status: 'queued', session_id: sessionId, turn_isolation: null }
     }
@@ -134,7 +137,7 @@ export function createTurnRunner({
     try {
       const backendSessionId = resolveBackendSession(sessionId)
       const started = await backend.call('POST', '/api/chat/start', {
-        body: { session_id: backendSessionId, message: text },
+        body: { session_id: backendSessionId, message: text, ...(images.length > 0 ? { images } : {}) },
       })
       const streamId = started.json?.stream_id
       if (started.status !== 200 || typeof streamId !== 'string' || streamId.length === 0) {
@@ -276,7 +279,7 @@ export function createTurnRunner({
       if (pending !== undefined && pending.length === 0) queued.delete(sessionId)
       if (next !== undefined) {
         setTimeout(() => {
-          start({ sessionId, text: next }).catch(error => {
+          start({ sessionId, text: next.text, images: next.images }).catch(error => {
             logger.warn?.('hermes-gateway: queued prompt failed: ' + String(error?.message ?? error))
           })
         }, 0)

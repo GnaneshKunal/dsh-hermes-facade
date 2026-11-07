@@ -9,9 +9,13 @@
  * @module dsh-hermes-facade/src/hermes/methods
  */
 
+import { randomUUID } from 'node:crypto'
 import { statSync } from 'node:fs'
+import { mkdir, realpath, writeFile } from 'node:fs/promises'
+import { basename, join, sep } from 'node:path'
 
 import { commandsOf, modelOptionsOf, resumeReplyOf, sessionRowOf } from './shapes.mjs'
+import { decodeUpload, imageMediaType, sanitizeUploadName } from './uploads.mjs'
 import { profilesListBody, profileRow, PROFILE_NAME, TERMINAL_BACKEND } from './protocol.mjs'
 
 /**
@@ -36,8 +40,33 @@ function rpcError(code, message) {
  * @param {object} [options.logger] logger.
  * @returns {{dispatch: Function, unavailable: Set<string>}} methods.
  */
-export function createMethods({ backend, hub, runner, requests, sessions, bumpRevision = () => {}, logger = console }) {
+export function createMethods({ backend, hub, runner, requests, sessions, uploadsDir, bumpRevision = () => {}, logger = console }) {
   const unavailable = new Set()
+
+  /**
+   * Find the app's appended image reference blocks and resolve them to staged
+   * files inside the uploads root. The text is left exactly as the app sent it:
+   * Hermex parses the same two-line reference into an attachment chip, so the
+   * history row keeps it while DSH receives the bytes as a native image part.
+   * A path that resolves outside the uploads root (including a symlink) is
+   * ignored; an unrecognized block stays text.
+   * @param {string} text prompt text.
+   * @returns {Promise<{text: string, images: Array<{path: string, mediaType: string, name: string}>}>} text and staged files.
+   */
+  async function extractImages(text) {
+    const images = []
+    const root = await realpath(uploadsDir).catch(() => null)
+    if (root === null) return { text, images }
+    const pattern = /\[The user attached an image: ([^\]\n]*)\]\n\[Examine it with the vision_analyze tool using image_url: ([^\]\n]+)\]/g
+    for (const match of [...text.matchAll(pattern)]) {
+      const target = await realpath(match[2]).catch(() => null)
+      if (target === null || !target.startsWith(root + sep)) continue
+      const mediaType = imageMediaType(target)
+      if (mediaType === null) continue
+      images.push({ path: target, mediaType, name: basename(target) })
+    }
+    return { text, images }
+  }
   /** Cached catalog/reasoning defaults for chats that have no DSH session yet. */
   let defaultsCache
 
@@ -298,10 +327,10 @@ export function createMethods({ backend, hub, runner, requests, sessions, bumpRe
       case 'prompt.submit': {
         const sessionId = String(p.session_id ?? '')
         if (sessionId.length === 0) throw rpcError(-32602, 'session_id required')
-        const text = typeof p.text === 'string' ? p.text : ''
+        const { text, images } = await extractImages(typeof p.text === 'string' ? p.text : '')
         // Validate before promoting: an empty prompt used to create the DSH
         // session first and then fail, burning the draft's id for nothing.
-        if (text.trim().length === 0) throw rpcError(-32602, 'text required')
+        if (text.trim().length === 0 && images.length === 0) throw rpcError(-32602, 'text required')
         // The first prompt is when a draft becomes a real DSH session, in the
         // folder the composer picked (or the host default when it picked none).
         try {
@@ -309,9 +338,23 @@ export function createMethods({ backend, hub, runner, requests, sessions, bumpRe
         } catch (error) {
           throw rpcError(-32000, String(error?.message ?? error))
         }
-        const accepted = await runner.start({ sessionId, text })
+        const accepted = await runner.start({ sessionId, text, images })
         bumpRevision(sessionId)
         return accepted
+      }
+      case 'file.attach': {
+        // A document is staged under the facade's uploads directory; its
+        // absolute path travels in the prompt as @file:<path>, and the app's
+        // preview reads the same path through /api/fs/download.
+        const decoded = decodeUpload(p.data_url, 25 * 1024 * 1024)
+        if (decoded === null) throw rpcError(-32602, 'data_url required')
+        await mkdir(uploadsDir, { recursive: true, mode: 0o700 })
+        const target = join(uploadsDir, randomUUID() + '-' + sanitizeUploadName(p.name, 'upload'))
+        await writeFile(target, decoded.bytes, { mode: 0o600 })
+        // Hermex's @file parser stops at whitespace; pick a quote absent from the path.
+        const quote = /\s/.test(target) ? ['`', '"', "'"].find(char => !target.includes(char)) : undefined
+        const ref = quote === undefined ? '@file:' + target : '@file:' + quote + target + quote
+        return { attached: true, path: target, ref_text: ref }
       }
       case 'session.events.since': {
         const sessionId = String(p.session_id ?? '')

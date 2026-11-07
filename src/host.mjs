@@ -1185,13 +1185,39 @@ export function createDshHost({ ctx, logger = console }) {
      * @param {'queue'|'steer'} [options.mode] delivery mode.
      * @returns {Promise<{accepted: boolean}>} acceptance.
      */
-    async prompt({ sessionId, text, mode = 'queue' }) {
+    async prompt({ sessionId, text, images = [], mode = 'queue' }) {
+      const content = []
+      if (typeof text === 'string' && text.length > 0) content.push({ type: 'text', text })
+      for (const image of Array.isArray(images) ? images : []) {
+        if (typeof image?.mediaType !== 'string') continue
+        if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(image.mediaType)) continue
+        let data = typeof image.data === 'string' && image.data.length > 0 ? image.data : null
+        if (data === null && typeof image.path === 'string' && image.path.length > 0) {
+          // The Hermes listener passes the staged path, not bytes, so the
+          // gateway's and facade's JSON body caps never gate a full image.
+          try {
+            const info = await stat(image.path)
+            if (!info.isFile() || info.size === 0 || info.size > 25 * 1024 * 1024) {
+              throw new Error('staged image is not a readable file within the size limit')
+            }
+            data = (await readFile(image.path)).toString('base64')
+          } catch { /* an unreadable staged file is a failed prompt */ }
+        }
+        if (data === null) throw new Error('image bytes unavailable')
+        content.push({
+          type: 'image',
+          mediaType: image.mediaType,
+          data,
+          ...(typeof image.name === 'string' && image.name.length > 0 ? { name: image.name } : {}),
+        })
+      }
+      if (content.length === 0) throw new Error('prompt content required')
       const value = await invoke('session', 'prompt', {
         request: {
           requestId: randomUUID(),
           sessionId,
           mode,
-          content: [{ type: 'text', text }],
+          content,
         },
       })
       return { accepted: value?.accepted !== false }

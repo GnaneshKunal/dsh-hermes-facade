@@ -13,9 +13,9 @@
 
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
-import { readFile, realpath } from 'node:fs/promises'
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { homedir, networkInterfaces } from 'node:os'
-import { join, resolve, sep } from 'node:path'
+import { basename, extname, join, resolve, sep } from 'node:path'
 
 import { createBackend } from './backend.mjs'
 import { createFileRoutes } from './files.mjs'
@@ -23,6 +23,7 @@ import { createPathFence } from './fence.mjs'
 import { branches, fileDiff, findGitRoot, GitRefusal, repoStatus, revParse, reviewDiff, reviewList } from './git.mjs'
 import { createEventHub } from './events.mjs'
 import { createMethods } from './methods.mjs'
+import { decodeUpload, sanitizeUploadName } from './uploads.mjs'
 import {
   COOKIE_AT,
   COOKIE_PROVIDER,
@@ -98,12 +99,16 @@ function sendJson(res, status, body, headers = {}) {
  * @param {import('node:http').IncomingMessage} req request.
  * @returns {Promise<object>} parsed body or {}.
  */
-async function readJson(req) {
+async function readJson(req, maxBytes = MAX_BODY_BYTES) {
   const chunks = []
   let size = 0
   for await (const chunk of req) {
     size += chunk.length
-    if (size > MAX_BODY_BYTES) throw new Error('body too large')
+    if (size > maxBytes) {
+      const error = new Error('body too large')
+      error.statusCode = 413
+      throw error
+    }
     chunks.push(chunk)
   }
   if (chunks.length === 0) return {}
@@ -126,7 +131,9 @@ async function readJson(req) {
  * @param {object} [options.logger] logger.
  * @returns {object} gateway.
  */
-export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome: memoryHomeOverride, logger = console }) {
+export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome: memoryHomeOverride, uploadsDir, logger = console }) {
+  /** Absolute uploads root shared by image-upload and file.attach. */
+  const uploads = uploadsDir ?? join(homedir(), '.hermes-uploads')
   const installId = ensureInstallId(config.dir)
   const replayEpoch = randomUUID()
   const tickets = createTicketStore({ ttlSeconds: TICKET_TTL_SECONDS })
@@ -360,7 +367,7 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
     onSettled: id => bumpRevision(id),
     logger,
   })
-  const methods = createMethods({ backend, hub, runner, requests, sessions, bumpRevision, logger })
+  const methods = createMethods({ backend, hub, runner, requests, sessions, uploadsDir: uploads, bumpRevision, logger })
 
   /**
    * Directories the in-chat Files browser may read.
@@ -390,6 +397,8 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
       }
     } catch { /* the session folders are advisory */ }
     for (const cwd of sessions.cwds()) roots.add(cwd)
+    // Uploaded images/documents are readable by the app's preview and by the agent.
+    roots.add(uploads)
     return [...roots]
   }
 
@@ -400,6 +409,8 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
   // file fence denies to the in-chat Files browser, so Memory reads it here
   // through a path allowlist rather than through /api/fs/*.
   const memoryHome = memoryHomeOverride ?? dshHome
+  // App uploads live outside the facade state (which is fenced off) and outside
+  // $DSH_HOME, so the app's preview and the agent can read them by absolute path.
   const fence = createPathFence({
     deny: [
       config.dir,
@@ -857,6 +868,31 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
       sendJson(res, reply.status, reply.json ?? { detail: 'Skills cannot be disabled on this host.' })
       return
     }
+    // A composer image is staged under the uploads root; the app then names its
+    // path in the vision-reference block, and prompt.submit turns it into a
+    // native image part.
+    if (method === 'POST' && path === '/api/chat/image-upload') {
+      // A 20 MiB image is ~27 MiB of base64 before JSON; the route has its own
+      // bound rather than the 4 MiB general request cap.
+      const body = await readJson(req, 32 * 1024 * 1024)
+      const decoded = decodeUpload(body.data_url, 20 * 1024 * 1024)
+      if (decoded === null || !new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']).has(decoded.mime)) {
+        sendJson(res, 400, { detail: 'data_url must be a base64 PNG, JPEG, WebP or GIF' })
+        return
+      }
+      const extension = ({ 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif' })[decoded.mime]
+      // The leaf extension must follow the declared MIME, not the client name:
+      // DSH compares the native part's media type with the decoded bytes.
+      let leaf = sanitizeUploadName(body.filename, 'image')
+      const suppliedExtension = extname(leaf).toLowerCase()
+      if (new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']).has(suppliedExtension)) leaf = leaf.slice(0, -suppliedExtension.length)
+      leaf = (leaf.length > 0 ? leaf : 'image') + extension
+      await mkdir(uploads, { recursive: true, mode: 0o700 })
+      const target = join(uploads, randomUUID() + '-' + leaf)
+      await writeFile(target, decoded.bytes, { mode: 0o600 })
+      sendJson(res, 200, { ok: true, path: target, name: basename(target), bytes: decoded.bytes.length, mime_type: decoded.mime })
+      return
+    }
     // The Memory screen's managed file routes. Only the two paths its Profile
     // row turns into are served: MEMORY.md is the global AGENTS.md, USER.md is
     // absent. Nothing here opens the requested path, so no other file is reachable.
@@ -1131,7 +1167,8 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
     const instance = createServer((req, res) => {
       void handle(req, res).catch(error => {
         logger.warn?.('hermes-gateway: ' + String(error?.stack ?? error))
-        try { sendJson(res, 500, { detail: 'Internal error' }) } catch { /* answered */ }
+        const status = Number.isInteger(error?.statusCode) ? error.statusCode : 500
+        try { sendJson(res, status, { detail: status === 413 ? 'Body too large' : 'Internal error' }) } catch { /* answered */ }
       })
     })
     instance.on('upgrade', onUpgrade)

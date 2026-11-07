@@ -323,15 +323,17 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
    * @param {import('node:http').IncomingMessage} req request.
    * @returns {boolean} authenticated.
    */
-  function isAuthed(req) {
+  function isInternal(req) {
     const presented = req.headers['x-facade-internal']
-    if (typeof presented === 'string' && presented.length > 0 &&
-        typeof config.internalToken === 'string' && config.internalToken.length > 0 &&
-        safeEqual(presented, config.internalToken)) {
-      const address = req.socket?.remoteAddress ?? ''
-      if (address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1') return true
-    }
-    return authService.verifyCookie(authService.cookieFrom(req))
+    if (typeof presented !== 'string' || presented.length === 0 ||
+        typeof config.internalToken !== 'string' || config.internalToken.length === 0 ||
+        !safeEqual(presented, config.internalToken)) return false
+    const address = req.socket?.remoteAddress ?? ''
+    return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+  }
+
+  function isAuthed(req) {
+    return isInternal(req) || authService.verifyCookie(authService.cookieFrom(req))
   }
 
   /**
@@ -619,11 +621,11 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
    * @param {string} text user message.
    * @returns {Promise<void>} resolves when the stream is finished.
    */
-  async function runTurn(stream, text) {
+  async function runTurn(stream, text, images = []) {
     const controller = new AbortController()
     stream.controller = controller
     try {
-      await host.prompt({ sessionId: stream.sessionId, text })
+      await host.prompt({ sessionId: stream.sessionId, text, images })
       let ended = false
       for await (const frame of host.follow(stream.sessionId, { signal: controller.signal })) {
         if (stream.terminal !== null) break
@@ -1242,7 +1244,19 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
       if (method === 'POST' && path === '/api/chat/start') {
         const body = await readJson(req)
         const text = typeof body.message === 'string' ? body.message : ''
-        if (text.length === 0) { sendJson(res, 400, { detail: 'message required' }); return }
+        const images = Array.isArray(body.images)
+          ? body.images.filter(image => image !== null && typeof image === 'object'
+            && typeof image.mediaType === 'string'
+            && (typeof image.data === 'string' || typeof image.path === 'string'))
+          : []
+        // Staged paths are a host-file read. Only the loopback Hermes listener may
+        // name one; a cookie client keeps using inline data (or, in practice, the
+        // Legacy composer's attachments, which are not implemented).
+        if (images.length > 0 && !isInternal(req)) {
+          sendJson(res, 400, { detail: 'attachments are only accepted from the Hermes listener' })
+          return
+        }
+        if (text.length === 0 && images.length === 0) { sendJson(res, 400, { detail: 'message required' }); return }
         let sessionId = typeof body.session_id === 'string' && body.session_id.length > 0 ? body.session_id : undefined
         const requestedWorkspace = typeof body.workspace === 'string' && body.workspace.length > 0 ? body.workspace : undefined
         if (sessionId !== undefined && requestedWorkspace !== undefined && typeof host.adoptSession === 'function') {
@@ -1274,7 +1288,7 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
           session_id: sessionId,
           pending_started_at: pendingStartedAt,
         })
-        void runTurn(stream, text)
+        void runTurn(stream, text, images)
         return
       }
 

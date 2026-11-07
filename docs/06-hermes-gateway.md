@@ -9,11 +9,12 @@ Hermes host contract, so the same iOS app can be pointed at DeepSeek Harness as
 a native Hermes server. It is additive: port 9120 keeps serving the webui
 contract unchanged.
 
-Status: **v1.11** (2026-11-07). Chat (with context/token telemetry), sessions
-(including the write fence the session list needs and the list's search),
-approvals, clarifications, models, commands, export, Tasks/cron, Memory and
-Skills (both read-only), Usage/Insights (tokens, and cost from `dsh-cost-meter`
-where installed), the read-only in-chat Files browser and the read-only Git menu.
+Status: **v1.12** (2026-11-07). Chat (with context/token telemetry and image/
+document attachments), sessions (including the write fence the session list needs
+and the list's search), approvals, clarifications, models, commands, export,
+Tasks/cron, Memory and Skills (both read-only), Usage/Insights (tokens, and cost
+from `dsh-cost-meter` where installed), the read-only in-chat Files browser and
+the read-only Git menu.
 The 2026-11-07 audit's wire defects (turn status, stop vocabulary, title read,
 list rows, multi-field PATCH, collection 404s, source matching, `limit=0`,
 capability-gated reverse requests, forwarded-client rate limiting, prompt races,
@@ -129,7 +130,9 @@ refusing it withdraws approvals silently.
 | `session.steer` | queues a mid-run message |
 | `session.delete` | refused: DSH has no session-delete primitive |
 | `session.events.since` | `{latest_seq, epoch, truncated, events}`, contiguous per session |
-| `prompt.submit` | starts a turn and returns `{status: streaming|queued}`; a second submit while one runs is queued, not refused |
+| `prompt.submit` | starts a turn and returns `{status: streaming|queued}`; a second submit while one runs is queued, not refused. Each image-upload path inside the facade uploads root (realpath-checked) becomes a native image part; the app's two-line vision reference stays in the user text so Hermex rebuilds the chip after reload |
+| `images` on `/api/chat/start` | only the loopback Hermes listener may name a `path` (or send any image): a cookie request with an `images` array answers 400, so the Legacy listener remains attachment-free and no host file can be named from a browser session |
+| `file.attach` | stages one document under the facade uploads root and answers `{attached:true, path, ref_text}`; names are sanitized, the body is capped at 25 MiB, and `ref_text` quotes the path when it contains whitespace. An invalid data URL answers `-32602` |
 | `approval.respond` | `{session_id, request_id, choice: once|session|always|deny}` -> `{resolved}` |
 | `request.answer` / `clarify.lock` | answers a clarification |
 | `model.options` | providers/models from the DSH catalog |
@@ -202,11 +205,15 @@ with reason `resolved`, like the `approval.respond`/`request.answer` path.
 | `GET /api/fs/git-root?path=` | `{root}`: the repository holding the chat's folder, or `null` outside one |
 | `GET /api/git/status?path=`, `/api/git/branches?path=`, `/api/git/review/list?path=&scope=[&base=]`, `/api/git/review/diff?path=&file=&scope=[&base=][&staged=]`, `/api/git/file-diff?path=&file=`, `/api/git/review/rev-parse?path=[&ref=]` | read-only git for that root: status (branch/ahead/behind/flags/rows), changed files per scope, per-file patches, branch rows, sha. A credential file is filtered from the rows and its patch answers `403`. A non-repository answers the host's empty shapes |
 | `POST /api/git/*` (stage/unstage/revert/commit/push, branch switch, worktrees) and `review/commit-context` | `400 Git writes are not supported…`; `review/ship-info` → `{pr:null}`, `gh-auth` → `{available:false}`, `worktrees` → `{worktrees:[]}` |
+| `POST /api/chat/image-upload` | stages one base64 image (PNG/JPEG/WebP/GIF, ≤20 MiB) under the facade uploads root and answers `{ok:true, path, name, bytes, mime_type}`; the leaf extension follows the declared MIME, not the client filename. The route has its own 32 MiB request cap; the image itself reaches the model by path, so the 2 MiB `/api/chat/start` body is not involved. A malformed data URL answers 400 and an over-cap body 413 |
 | `GET /api/files/*` | **not implemented** (404) |
 
 The three `/api/fs/*` routes share one fence: the client's path (absolute, or
 relative to `session_id`'s folder) must realpath inside a chat folder (DSH
-workspaces, known session folders, and a draft's chosen folder). The facade
+workspaces, known session folders, and a draft's chosen folder). The facade's
+uploads root (default `~/.hermes-uploads`) is added as a chat root so an
+uploaded image or document can be previewed; its filenames are generated and
+sanitized, and it holds only uploads. The facade
 state directory, `$DSH_HOME`, `~/.ssh`, `~/.aws` and `~/.gnupg` are never
 served, even if a chat folder were opened inside one; a symlink resolves first,
 so it cannot point out. Credential material the host's own Files guard refuses
@@ -333,6 +340,15 @@ The full surface state and the plan for the missing screens are
    but `:9120`'s `/api/{list,file,file/raw,media}` accept any absolute path, as
    they always have. Any new file surface must use the fence; tightening `:9120`
    is separate.
-8. **Two ports, two servers on the phone.** Kind is fixed per URL, so the same
+8. **Attachments are staged, not native files.** Images become native image
+   parts but keep the app's `[The user attached an image: …]` two-line reference
+   in the user text (Hermex strips it into the chip; the model also gets the
+   bytes), while a document is a text `@file:<path>` reference and a shared
+   uploads root; DSH's native file part needs a `fileUploads/upload` receipt,
+   which the host adapter does not broker yet. Local delivery only; the app's
+   attachment chips read the same absolute path through `/api/fs/download`.
+   The uploads root is append-only for this version (no pruning job), so treat
+   it as local user data.
+9. **Two ports, two servers on the phone.** Kind is fixed per URL, so the same
    host:port cannot be both. Keep the webui entry as the fallback until the
    Hermes one covers what you use.

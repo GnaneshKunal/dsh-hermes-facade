@@ -122,6 +122,28 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   sessions is a real empty state. Tests cover the host aggregation, the
   subagent/window attribution, the cost merge (including cost-only rows) and
   the routes/RPC.
+- **Chat attachments (images and documents).** The Hermes listener now stages
+  what the phone attaches. `POST /api/chat/image-upload` validates a base64
+  PNG/JPEG/WebP/GIF (≤20 MiB) under its own 32 MiB route cap, derives the leaf
+  extension from the declared MIME (a JPEG named `photo.png` is stored `.jpg`),
+  writes it under the facade uploads root (default `~/.hermes-uploads`) and
+  returns the absolute path the app appends in its vision-reference block.
+  `prompt.submit` realpath-checks that path inside the uploads root, keeps the
+  app's two-line reference in the user text (Hermex rebuilds the attachment chip
+  after a reload), and sends the staged file's bytes as a native
+  `session/prompt` image part; only the path travels to `/api/chat/start`, so a
+  multi-megabyte image no longer hits the 2 MiB start body. A queued prompt
+  keeps its images. `file.attach` stages one document (≤25 MiB; the socket
+  frame cap was raised to 48 MiB) and answers `{attached, path, ref_text}`, with
+  the path quoted when it contains whitespace. Both previews read the same path
+  through `/api/fs/download`, whose fence admits the uploads root. Filenames are
+  sanitized and generated; the state dir and `$DSH_HOME` stay fenced off.
+  Documents remain path-based (DSH's native file part needs a
+  `fileUploads/upload` receipt the adapter does not broker), and the uploads
+  root is append-only. Tests cover both upload routes, the MIME/extension fix,
+  3 MiB of image bytes, a 6 MiB document, the native image part, the preserved
+  history row, multiple/no-image prompts, the symlink refusal, the facade's
+  internal-only path gate and the preview read.
 - **A shared path fence for file surfaces** (`src/hermes/fence.mjs`). Hermex
   sends absolute host paths and its own check is explicitly not a security
   boundary, so a path is served only when its realpath is inside a chat folder
