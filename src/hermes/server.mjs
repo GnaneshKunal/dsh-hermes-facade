@@ -31,6 +31,7 @@ import {
   TICKET_TTL_SECONDS,
   createTicketStore,
 } from './protocol.mjs'
+import { createSessionRegistry } from './sessions.mjs'
 import { commandsOf, modelOptionsOf, sessionRowOf, transcriptRowOf } from './shapes.mjs'
 import { createTurnRunner } from './turn.mjs'
 import { acceptUpgrade } from './ws.mjs'
@@ -235,13 +236,15 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
   const requests = createRequestManager()
   requests.call.cancelSession = (sessionId, reason) => requests.cancelSession(sessionId, reason)
 
+  const sessions = createSessionRegistry({ backend, dir: config.dir, logger })
   const runner = createTurnRunner({
     backend,
     hub,
     requestClient: requests.call,
+    resolveBackendSession: id => sessions.resolve(id),
     logger,
   })
-  const methods = createMethods({ backend, hub, runner, requests, logger })
+  const methods = createMethods({ backend, hub, runner, requests, sessions, logger })
 
   /** Password attempts per address, for the login rate limit. */
   const attempts = new Map()
@@ -355,11 +358,21 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
    * @returns {Promise<object|null>} body, or null when the session is unknown.
    */
   async function messagePage(sessionId, url) {
+    // A chat the user has not sent in yet has no DSH session; its transcript is
+    // empty rather than a 404, which the client would treat as a failed read.
+    if (sessions.isDraft(sessionId) && sessions.resolve(sessionId) === sessionId) {
+      return {
+        session_id: sessionId,
+        profile: 'default',
+        messages: [],
+        pagination: { limit: 0, offset: 0, order: 'latest', returned: 0 },
+      }
+    }
     const order = url.searchParams.get('order') === 'oldest' ? 'oldest' : 'latest'
     const limit = Math.min(Math.max(Number.parseInt(url.searchParams.get('limit') ?? '500', 10) || 500, 1), 500)
     const offset = Math.max(Number.parseInt(url.searchParams.get('offset') ?? '0', 10) || 0, 0)
     const reply = await backend.call('GET', '/api/session', {
-      query: { session_id: sessionId, msg_limit: config.historyWindow },
+      query: { session_id: sessions.resolve(sessionId), msg_limit: config.historyWindow },
     })
     if (reply.status === 404) return null
     if (reply.status !== 200) throw new Error('session read failed (HTTP ' + reply.status + ')')
@@ -383,12 +396,24 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
    * @returns {Promise<object|null>} row, or null.
    */
   async function sessionRow(sessionId) {
-    const reply = await backend.call('GET', '/api/session', { query: { session_id: sessionId, msg_limit: 1 } })
+    const draft = sessions.draft(sessionId)
+    if (draft !== undefined && sessions.resolve(sessionId) === sessionId) {
+      return sessionRowOf({
+        session_id: sessionId,
+        message_count: 0,
+        ...(typeof draft.cwd === 'string' ? { workspace: draft.cwd } : {}),
+        ...(typeof draft.title === 'string' ? { title: draft.title } : {}),
+        created_at: draft.createdAt,
+      })
+    }
+    const reply = await backend.call('GET', '/api/session', {
+      query: { session_id: sessions.resolve(sessionId), msg_limit: 1 },
+    })
     if (reply.status === 404) return null
     if (reply.status !== 200) throw new Error('session read failed (HTTP ' + reply.status + ')')
     const detail = reply.json?.session
     if (detail === null || typeof detail !== 'object') return null
-    return sessionRowOf(detail)
+    return { ...sessionRowOf(detail), id: String(sessionId) }
   }
 
   /**
@@ -398,7 +423,17 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
    * @returns {Promise<object>} reply body.
    */
   async function patchSession(sessionId, body) {
-    const base = { session_id: sessionId }
+    const draft = sessions.draft(sessionId)
+    // An unpromoted draft has no DSH row to write; keep what the rename says and
+    // apply it when the first prompt creates the session.
+    if (draft !== undefined && sessions.resolve(sessionId) === sessionId) {
+      if (typeof body.title === 'string' && body.title.length > 0) {
+        sessions.noteTitle(sessionId, body.title)
+        return { title: body.title }
+      }
+      return { ok: true }
+    }
+    const base = { session_id: sessions.resolve(sessionId) }
     if (typeof body.title === 'string' && body.title.length > 0) {
       const reply = await backend.call('POST', '/api/session/rename', { body: { ...base, title: body.title } })
       if (reply.json?.ok !== true) throw new Error(reply.json?.error ?? 'rename refused')
@@ -504,8 +539,12 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
     const exportMatch = /^\/api\/sessions\/([^/]+)\/export$/.exec(path)
     if (method === 'GET' && exportMatch !== null) {
       const sessionId = decodeURIComponent(exportMatch[1])
+      if (sessions.isDraft(sessionId) && sessions.resolve(sessionId) === sessionId) {
+        sendJson(res, 404, { detail: 'This chat has no transcript yet' })
+        return
+      }
       const reply = await backend.call('GET', '/api/session/export', {
-        query: { session_id: sessionId, format: url.searchParams.get('format') ?? 'json' },
+        query: { session_id: sessions.resolve(sessionId), format: url.searchParams.get('format') ?? 'json' },
         accept: '*/*',
       })
       if (reply.status !== 200) { sendJson(res, reply.status, { detail: 'Export failed' }); return }

@@ -625,3 +625,198 @@ test('session.steer answers the queued/rejected vocabulary', async () => {
   }
 })
 
+
+test('a new chat moves folder before its first message, and is created there', async () => {
+  const harness = await boot()
+  harness.host.setTurnDelay(5)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const created = await socket.call('session.create', { profile: 'default' })
+      const draftId = created.result.session_id
+      assert.match(draftId, /^dsh-draft-/)
+
+      // The attach a new chat performs has to answer for a session that does not exist yet,
+      // and the composer's chips start populated from the host's defaults.
+      const resumed = await socket.call('session.resume', { session_id: draftId, profile: 'default', omit_messages: true })
+      assert.equal(resumed.result.session_id, draftId)
+      assert.equal(resumed.result.info.running, false)
+      assert.equal(resumed.result.info.cwd, process.cwd(), 'a new chat starts in DSH current workspace')
+      assert.ok(resumed.result.info.model, 'the model chip has a value')
+      assert.ok(resumed.result.info.reasoning_effort, 'the effort chip has a value')
+
+      // Picks made before the first message are recorded on the draft, never sent
+      // to a session that does not exist.
+      const effort = await socket.call('config.set', {
+        session_id: draftId, profile: 'default', scope: 'session', key: 'reasoning', value: 'medium',
+      })
+      assert.equal(effort.result.value, 'medium')
+      const model = await socket.call('config.set', {
+        session_id: draftId, profile: 'default', scope: 'session', key: 'model',
+        value: 'deepseek-v4-pro --provider deepseek-official --session',
+      })
+      assert.equal(model.result.key, 'model')
+
+      const moved = await socket.call('session.workspace.move', {
+        profile: 'default', session_key: draftId, cwd: '/tmp',
+      })
+      assert.equal(moved.result.cwd, '/tmp')
+      await socket.call('session.title', { session_id: draftId, title: 'moved chat' })
+
+      const submitted = await socket.call('prompt.submit', { session_id: draftId, text: 'hello there' })
+      assert.equal(submitted.result.status, 'streaming')
+      // The DSH session is created at the chosen folder, and the frames the phone
+      // sees still carry the id it holds.
+      assert.equal(harness.host.lastEnsure.workspacePath, '/tmp')
+      const delta = await socket.waitFor(frame => frame.params?.type === 'message.delta')
+      assert.equal(delta.params.session_id, draftId)
+      await socket.waitFor(frame => frame.params?.type === 'message.complete')
+
+      // The draft's effort was applied to the real session before the turn.
+      const promoted = await socket.call('session.resume', { session_id: draftId, profile: 'default', omit_messages: true })
+      assert.equal(promoted.result.info.reasoning_effort, 'medium')
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('moving a chat that already ran is refused instead of silently reverting', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const moved = await socket.call('session.workspace.move', {
+        profile: 'default', session_key: 'sess-mock', cwd: '/tmp/some-project',
+      })
+      assert.equal(moved.error.code, -32000)
+      assert.match(String(moved.error.message), /cannot change a session's folder/i)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+
+test('session.title renames a real session through the facade', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const renamed = await socket.call('session.title', { session_id: 'sess-mock', title: 'Renamed by socket' })
+      assert.equal(renamed.result.title, 'Renamed by socket')
+      const resumed = await socket.call('session.resume', { session_id: 'sess-mock', profile: 'default', omit_messages: true })
+      assert.equal(resumed.result.info.title, 'Renamed by socket')
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('a promoted draft still takes model writes under its draft id', async () => {
+  const harness = await boot()
+  harness.host.setTurnDelay(5)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const created = await socket.call('session.create', { profile: 'default' })
+      const draftId = created.result.session_id
+      await socket.call('prompt.submit', { session_id: draftId, text: 'promote me' })
+      await socket.waitFor(frame => frame.params?.type === 'message.complete')
+
+      const changed = await socket.call('config.set', {
+        session_id: draftId, profile: 'default', scope: 'session', key: 'model',
+        value: 'deepseek-v4-pro --provider deepseek-official --session',
+      })
+      assert.equal(changed.result.key, 'model')
+
+      const refused = await socket.call('config.set', {
+        session_id: draftId, profile: 'default', scope: 'session', key: 'model',
+        value: 'no-such-model --provider deepseek-official --session',
+      })
+      assert.equal(refused.error.code, -32000, 'the write reaches the real session')
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('a draft mapping survives a gateway restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hermes-gateway-restart-'))
+  const host = createMockHost()
+  host.setTurnDelay(5)
+  const config = {
+    enabled: true,
+    port: 0,
+    bindHost: '127.0.0.1',
+    dir,
+    tokenTtlSeconds: 3600,
+    logRequests: false,
+    gatewayEnabled: true,
+    gatewayPort: 0,
+    gatewayBindHost: '127.0.0.1',
+    internalToken: 'restart-internal-token-0123456789abcdef',
+    historyWindow: 800,
+    historyPage: 200,
+  }
+  const facade = createFacadeServer({ config, host })
+  const address = await facade.listen()
+  const openGateway = async () => {
+    const gateway = createGatewayServer({
+      config,
+      facadeUrl: 'http://127.0.0.1:' + address.port,
+      facadeAuth: facade.auth,
+    })
+    const bound = await gateway.listen()
+    return { gateway, base: 'http://127.0.0.1:' + bound.port }
+  }
+  try {
+    const first = await openGateway()
+    const cookie = await signIn(first.base, facade.auth.generatedPassword)
+    const socket = await openSocket(first.base, cookie)
+    let draftId
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const created = await socket.call('session.create', { profile: 'default' })
+      draftId = created.result.session_id
+      await socket.call('prompt.submit', { session_id: draftId, text: 'persist me' })
+      await socket.waitFor(frame => frame.params?.type === 'message.complete')
+    } finally {
+      socket.ws.close()
+    }
+    await first.gateway.close()
+
+    const second = await openGateway()
+    const revived = await openSocket(second.base, cookie)
+    try {
+      const resumed = await revived.call('session.resume', { session_id: draftId, profile: 'default', omit_messages: true })
+      assert.equal(resumed.result.session_id, draftId, 'the draft id still resolves after a restart')
+      assert.equal(resumed.result.info.running, false)
+    } finally {
+      revived.ws.close()
+      await second.gateway.close()
+    }
+  } finally {
+    await facade.close()
+  }
+})
