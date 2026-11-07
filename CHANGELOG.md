@@ -40,8 +40,10 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 - **The model picker actually applies.** `POST /api/session/update` (the picker's call),
   `POST /api/session/new` and `POST /api/chat/start` used to drop `model`/`model_provider`; the
   chip showed a model the next turn did not use. They now resolve the client's id against the DSH
-  model catalog (including `@provider:` and `provider/model` spellings) and apply it through
-  `session/selectModel`, carrying the reasoning effort over when the new model offers it. An
+  model catalog — `@provider:`-prefixed ids are split into provider + catalog id; slash-bearing
+  ids such as `deepseek/deepseek-v4.1-flash-1017` are matched as the catalog id itself — and apply
+  it through `session/selectModel`, carrying the reasoning effort over when the new model offers
+  it and falling back to the model's declared default (then its first level) otherwise. An
   unavailable model answers 400 with the catalog error instead of silently keeping the old one.
   `/api/models` also sends each group's `provider_id`, so the picker reports the route it chose.
 - **Reasoning effort.** `projections.values.modelSelection` is `{lastUsed, next|pending}` in the

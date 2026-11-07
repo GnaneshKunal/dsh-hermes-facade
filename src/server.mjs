@@ -224,9 +224,15 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
     const current = typeof host.modelSelection === 'function'
       ? await host.modelSelection(sessionId).catch(() => undefined)
       : undefined
-    const bareModel = model.startsWith('@') && model.lastIndexOf(':') > 1 ? model.slice(model.lastIndexOf(':') + 1) : model
+    // A provider can travel inside the model id ("@provider:model"); compare it
+    // too, or a same-model request would skip selectModel and silently keep the
+    // old provider.
+    const at = model.startsWith('@') ? model.lastIndexOf(':') : -1
+    const providerFromId = at > 1 ? model.slice(1, at) : undefined
+    const bareModel = at > 1 ? model.slice(at + 1) : model
+    const requestedProvider = rawProvider ?? providerFromId
     const sameModel = current?.model === bareModel
-    const sameProvider = rawProvider === undefined || current?.provider === rawProvider
+    const sameProvider = requestedProvider === undefined || current?.provider === requestedProvider
     if (sameModel && sameProvider) return undefined
     return await host.selectModel({
       sessionId,

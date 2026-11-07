@@ -435,8 +435,18 @@ export function createDshHost({ ctx, logger = console }) {
       const offered = effortIdsOf(match.entry)
       let reasoningEffort
       if (offered.length > 0) {
-        const wanted = current?.reasoningEffort ?? match.entry?.reasoning?.defaultEffort ?? offered[0]
-        reasoningEffort = coerceEffort(String(wanted), offered) ?? offered[0]
+        // Carry the current effort over when the new model offers it (or an
+        // alias); otherwise use the new model's declared default, and only then
+        // its first level. Falling straight to offered[0] would quietly pick
+        // "off"/"low" when the new model declares a higher default.
+        const declaredDefault = typeof match.entry?.reasoning?.defaultEffort === 'string'
+          && offered.includes(match.entry.reasoning.defaultEffort)
+          ? match.entry.reasoning.defaultEffort
+          : undefined
+        const carried = current?.reasoningEffort === undefined
+          ? undefined
+          : coerceEffort(String(current.reasoningEffort), offered)
+        reasoningEffort = carried ?? declaredDefault ?? offered[0]
       }
       const value = await invoke('session', 'selectModel', {
         request: {
