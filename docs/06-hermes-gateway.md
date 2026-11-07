@@ -127,7 +127,7 @@ refusing it withdraws approvals silently.
 | `session.steer` | queues a mid-run message |
 | `session.delete` | refused: DSH has no session-delete primitive |
 | `session.events.since` | `{latest_seq, epoch, truncated, events}`, contiguous per session |
-| `prompt.submit` | starts a turn and returns `{status:"accepted"}` |
+| `prompt.submit` | starts a turn and returns `{status: streaming|queued}`; a second submit while one runs is queued, not refused |
 | `approval.respond` | `{session_id, request_id, choice: once|session|always|deny}` -> `{resolved}` |
 | `request.answer` / `clarify.lock` | answers a clarification |
 | `model.options` | providers/models from the DSH catalog |
@@ -160,9 +160,12 @@ Reverse requests: `approval` (`request_id, command, description, choices`) and
 multi_select`) — the client decodes that as well as the contract's
 `questions:[{qid,…}]` batch. The client answers with `approval.respond`,
 `request.answer` or `clarify.lock`; a turn that ends withdraws whatever is still
-open. The reverse request is only useful to a socket that sent
-`client.capabilities {server_requests:true}`; the stock client always does, but
-this listener does not yet gate on it.
+open. A socket is only sent a reverse request after it advertises
+`client.capabilities {server_requests:true}`; the stock client does that
+immediately after `gateway.ready`. A socket that never advertised receives no
+card, but can still see it in `open_requests` and answer by RPC. A raw JSON-RPC
+response to a request frame settles the request and publishes `request.cancel`
+with reason `resolved`, like the `approval.respond`/`request.answer` path.
 
 ---
 
@@ -276,6 +279,6 @@ The full surface state and the plan for the missing screens are
    any absolute path (`src/host.mjs resolvePath`), and the client says its own
    check is not a security boundary. Add one realpath fence before Files/Git/Memory
    ship on this listener.
-6. **Two ports, two servers on the phone.** Kind is fixed per URL, so the same
+8. **Two ports, two servers on the phone.** Kind is fixed per URL, so the same
    host:port cannot be both. Keep the webui entry as the fallback until the
    Hermes one covers what you use.

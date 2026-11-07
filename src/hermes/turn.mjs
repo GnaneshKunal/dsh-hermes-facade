@@ -38,17 +38,30 @@ function jsonOf(data) {
 async function infoPayload(backend, sessionId) {
   const info = { session_id: sessionId }
   try {
-    // Read the session itself, not its list row: a row without a model
-    // projection (new or imported chats) used to blank the composer's chip.
-    const detail = await backend.call('GET', '/api/session', { query: { session_id: sessionId, msg_limit: 1 } })
-    const session = detail.json?.session
-    if (detail.status === 200 && session !== null && typeof session === 'object') {
-      if (typeof session.model === 'string' && session.model.length > 0) info.model = session.model
-      if (typeof session.model_provider === 'string' && session.model_provider.length > 0) info.provider = session.model_provider
-      if (typeof session.title === 'string' && session.title.length > 0) info.title = session.title
-      if (typeof session.workspace === 'string' && session.workspace.length > 0) info.cwd = session.workspace
+    const list = await backend.call('GET', '/api/sessions', { query: { include_archived: 1 } })
+    const rows = Array.isArray(list.json?.sessions) ? list.json.sessions : []
+    const row = rows.find(entry => String(entry?.session_id ?? entry?.sessionId ?? '') === sessionId)
+    if (row !== undefined) {
+      if (typeof row.model === 'string' && row.model.length > 0) info.model = row.model
+      if (typeof row.model_provider === 'string' && row.model_provider.length > 0) info.provider = row.model_provider
+      if (typeof row.title === 'string' && row.title.length > 0) info.title = row.title
+      if (typeof row.workspace === 'string' && row.workspace.length > 0) info.cwd = row.workspace
     }
   } catch { /* the state is advisory; the turn still runs */ }
+  // A session that has never picked a model has no modelSelection projection,
+  // so its row names none and the composer's chip would be blank. It still runs
+  // on the catalog's default, which is what the picker already shows.
+  if (info.model === undefined || info.provider === undefined) {
+    try {
+      const models = await backend.call('GET', '/api/models')
+      if (info.model === undefined && typeof models.json?.default_model === 'string' && models.json.default_model.length > 0) {
+        info.model = models.json.default_model
+      }
+      if (info.provider === undefined && typeof models.json?.active_provider === 'string' && models.json.active_provider.length > 0) {
+        info.provider = models.json.active_provider
+      }
+    } catch { /* the catalog is advisory */ }
+  }
   try {
     const reasoning = await backend.call('GET', '/api/reasoning', { query: { session_id: sessionId } })
     const effort = reasoning.json?.effective_effort ?? reasoning.json?.effort

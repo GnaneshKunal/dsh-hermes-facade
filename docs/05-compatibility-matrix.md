@@ -123,7 +123,7 @@ through the durable parent address.
 | Sign in | `POST /auth/password-login`, `GET /api/auth/me` | **WORKS** | same password as `:9120`; `hermes_session_at/_rt/_provider` cookies; 401/429 as the host | — |
 | Socket ticket | `POST /api/auth/ws-ticket` | **WORKS** | 30 s, single use, presented in `Sec-WebSocket-Protocol` | — |
 | Socket handshake | `GET /api/ws` | **WORKS** | `gateway.ready` with a non-empty `replay_epoch`, `session_authority:false` (a `true` here is refused as a bare gateway listener) | — |
-| Capability advertisement | `client.capabilities` | **PARTIAL** | answered; but reverse requests are sent even to a socket that never advertised `server_requests` (a defect; the stock client always advertises) | fix: gate sends on the advertisement |
+| Capability advertisement | `client.capabilities` | **WORKS** | answered; approval/clarify go only to a socket that advertised `server_requests`, and one that did not can still read `open_requests` and answer by RPC | — |
 | Heartbeat | `gateway.ping` | **WORKS** | 15 s keepalive; `{ok:true}` | — |
 | Unknown method | `-32601` | **WORKS** | client records it and hides the matching control | — |
 | Sign out | `POST /auth/logout` | **—** | never sent on a Hermes host (sign-out drops the Keychain record) | — |
@@ -248,9 +248,9 @@ canonical `status:"complete"`, `session.title` has its read form, `session.inter
 vocabulary, `session.list` carries the full row, a PATCH applies every field it names, `/search` and `/stats`
 answer a plain 404 instead of "Session not found", `sources` is matched as a CSV, `limit=0` is honoured, reverse
 requests are gated on `client.capabilities` (and a raw JSON-RPC answer withdraws the frame), the login rate limit
-keys on the forwarded client rather than the shared proxy address, an empty prompt no longer promotes a draft, a
-double submit cannot start two streams, `session.info` reads the model from the session itself, and Fast/yolo are
-refused instead of echoed. What remains:
+keys on the forwarded client rather than the shared proxy address, an empty prompt no longer promotes a draft, two
+concurrent submits share one session and run in order, `session.info` falls back to the catalog default when the
+session names no model, and Fast/yolo are refused instead of echoed. What remains:
 
 1. **Files and Git never appear** because `session.info` does not report `terminal_backend`. One field, but it must
    ship with the routes or the tab half-renders.

@@ -22,8 +22,9 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   reports the canonical `message.complete.status:"complete"`; `session.interrupt`
   answers `interrupted`/`not_interrupted`; `session.title` has its read form
   (omit the title); `session.list` returns the same row shape as REST;
-  `session.info` reads the model/provider from the session detail instead of a
-  list row that may have no projection; a `PATCH` applies every field it names,
+  `session.info` falls back to the catalog's default model/provider when the
+  session has no selection, so the composer's chip is never blank; a `PATCH`
+  applies every field it names,
   not just the first; `/api/sessions/search` and `/stats` answer a plain 404
   instead of the row regex's "Session not found"; `sources` is matched as a CSV
   of names (`cron` no longer empties the list by substring) and `limit=0` is
@@ -33,7 +34,8 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   only from loopback) so one phone behind `tailscale serve` cannot lock out the
   rest; an empty prompt is refused before a draft is promoted and a double submit
   queues instead of racing; Fast and yolo are refused with a key-level error
-  rather than echoed as applied. 172 tests cover the listener.
+  rather than echoed as applied. The listener's 32 gateway tests (175 in the
+  whole suite) cover these.
 
 ### Changed
 

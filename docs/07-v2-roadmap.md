@@ -129,11 +129,11 @@ change, each with a test:
 | Login rate limit | keyed on the shared proxy address | keyed on the forwarded client (loopback-trusted only) |
 | Empty prompt | promoted the draft, then failed | refused before promotion |
 | Double submit | could start two streams | queued instead (`starting` guard) |
-| `session.info` model | read from the list row, often blank | read from the session detail |
+| `session.info` model | blank for a session that never picked one | falls back to the catalog default |
 | Fast / yolo | echoed as applied | key-level refusal, so the control reverts |
 | `unread` | 200 that changed nothing | refused with a detail |
 
-Verify: `npm run check && npm test` (172 tests), then rename a chat from the phone's list, pin it, archive it,
+Verify: `npm run check && npm test` (175 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, and stop a running turn.
 
 ---

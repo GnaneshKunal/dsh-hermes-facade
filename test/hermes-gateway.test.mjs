@@ -929,19 +929,19 @@ test('session.list carries the row fields the list decodes', async () => {
   }
 })
 
-test('session.info reports the model the session runs', async () => {
+test('session.info falls back to the catalog default when the session names no model', async () => {
   const harness = await boot()
   try {
     const cookie = await signIn(harness.base, harness.password)
     const socket = await openSocket(harness.base, cookie)
     try {
       await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
-      await socket.call('config.set', { session_id: 'sess-mock', key: 'reasoning', value: 'high' })
+      // sess-mock has never picked a model, so its row has no modelSelection
+      // projection. Before the fallback this emitted session.info with no model
+      // and the composer's chip went blank.
       await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'model please' })
       const info = await socket.waitFor(frame =>
         frame.params?.type === 'session.info' && frame.params.payload.running === true)
-      // Read from the session detail, not its list row: a row without a model
-      // projection used to blank the chip.
       assert.equal(info.params.payload.model, 'deepseek-v4-pro')
       assert.equal(info.params.payload.provider, 'deepseek-official')
     } finally {
@@ -1129,4 +1129,88 @@ test('a forwarded client is rate-limited on its own address', async () => {
     await harness.facade.close()
   }
 })
+
+test('two concurrent submits on a fresh draft share one session and run in order', async () => {
+  const harness = await boot()
+  harness.host.setTurnDelay(150)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const created = await socket.call('session.create', { profile: 'default' })
+      const draftId = created.result.session_id
+      // Two frames in flight before either promotion resolves: they must share
+      // one DSH session, not create two and orphan one message.
+      const first = socket.call('prompt.submit', { session_id: draftId, text: 'first' })
+      const second = socket.call('prompt.submit', { session_id: draftId, text: 'second' })
+      const [one, two] = await Promise.all([first, second])
+      assert.deepEqual([one.result.status, two.result.status].sort(), ['queued', 'streaming'])
+
+      await socket.waitFor(frame =>
+        frame.params?.type === 'message.complete' && String(frame.params.payload.text).includes('first'))
+      await socket.waitFor(frame =>
+        frame.params?.type === 'message.complete' && String(frame.params.payload.text).includes('second'))
+
+      // The second turn starts only after the first settles.
+      const sequence = socket.frames
+        .filter(frame => frame.params?.session_id === draftId)
+        .filter(frame => frame.params?.type === 'message.start' || frame.params?.type === 'message.complete')
+        .map(frame => frame.params.type)
+      assert.deepEqual(sequence, ['message.start', 'message.complete', 'message.start', 'message.complete'])
+
+      const listing = await api(harness.base, '/api/sessions?profile=default&limit=100', { cookie })
+      const promoted = listing.json.sessions.filter(row => row.id !== 'sess-mock')
+      assert.equal(promoted.length, 1, 'the draft promoted exactly one DSH session')
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('session.interrupt with no turn answers not_interrupted', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const idle = await socket.call('session.interrupt', { session_id: 'sess-mock' })
+      assert.equal(idle.result.status, 'not_interrupted')
+      assert.equal(idle.result.interrupted, false)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('a turn advances the write-fence revision', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const before = await api(harness.base, '/api/sessions/sess-mock/mutation-snapshot', { cookie })
+      await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'advance the fence' })
+      await socket.waitFor(frame =>
+        frame.params?.type === 'session.info' && frame.params.payload.running === false)
+      const after = await api(harness.base, '/api/sessions/sess-mock/mutation-snapshot', { cookie })
+      assert.ok(after.json.runtime_revision > before.json.runtime_revision,
+        'a turn must move the revision a write compares against')
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
 
