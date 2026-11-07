@@ -15,7 +15,9 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   layer, not a second integration: it calls the webui facade over loopback with
   an internal token, so sessions, transcripts, streaming, approvals,
   clarifications and export keep exactly one implementation. Config:
-  `gatewayEnabled` (default true), `gatewayPort` (9121), `gatewayBindHost`.
+  `gatewayEnabled` (default true), `gatewayPort` (9121), `gatewayBindHost`,
+  `gatewayLanHost` (`auto` also binds the Wi-Fi LAN and Tailscale IPv4 over
+  plain HTTP, like `lanHost` does for the webui listener).
   Full contract, method table, event vocabulary and gaps:
   [docs/06-hermes-gateway.md](docs/06-hermes-gateway.md).
 - **A dependency-free RFC 6455 server** (`src/hermes/ws.mjs`). The Hermex client

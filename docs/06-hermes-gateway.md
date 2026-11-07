@@ -47,13 +47,17 @@ accepted only from loopback; the user's plaintext password is never stored.
 ```yaml
 config:
   gatewayEnabled: true      # false leaves only the webui listener
-  gatewayPort: 9121         # loopback port for the Hermes contract
+  gatewayPort: 9121         # port for the Hermes contract
   gatewayBindHost: 127.0.0.1
+  gatewayLanHost: auto      # also bind Wi-Fi LAN + Tailscale IPv4 (plain HTTP)
 ```
 
-`gatewayBindHost` is separate from `bindHost` on purpose: `lanHost: auto` widens
-the webui listener to the LAN, but the Hermes listener stays loopback until it is
-published deliberately (see §7).
+`gatewayBindHost` is separate from `bindHost` on purpose: the Hermes listener
+starts loopback-only, and is widened deliberately. `gatewayLanHost: auto` gives
+it the same LAN/Tailscale addresses `lanHost: auto` gives the webui listener,
+over plain HTTP (Hermex permits insecure HTTP on a local network and on the
+`100.64.0.0/10` tailnet). With it unset, only 127.0.0.1 and the tailscale serve
+rule in §7 reach the listener.
 
 ---
 
@@ -192,8 +196,16 @@ tailscale serve --bg --https=9444 http://127.0.0.1:9121   # Hermes
 tailscale serve status
 ```
 
-Then in Hermex: **Add server** -> `https://<machine>.<tailnet>.ts.net:9444` ->
-the same password. It is filed as a Hermes server; the 9120 entry stays as the
+Or, with `gatewayLanHost: auto`, skip the proxy entirely and use the raw address
+the phone already uses for :9120:
+
+```
+http://<lan-ip>:9121          same Wi-Fi
+http://100.x.y.z:9121         tailnet, plain HTTP
+```
+
+Then in Hermex: **Add server** -> `https://<machine>.<tailnet>.ts.net:9444` (or
+the plain-HTTP address above) -> the same password. It is filed as a Hermes server; the 9120 entry stays as the
 Legacy webui one. Add the two as separate servers; do not point one URL at both.
 
 Removing the rule: `tailscale serve --https=9444 off` (never `serve reset`).

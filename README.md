@@ -129,6 +129,7 @@ config:
   gatewayEnabled: true      # false keeps only the webui listener
   gatewayPort: 9121
   gatewayBindHost: 127.0.0.1
+  gatewayLanHost: auto      # also bind Wi-Fi LAN + Tailscale IPv4 (plain HTTP)
 ```
 
 Both listeners share the password file, the cookie secret and the state directory.

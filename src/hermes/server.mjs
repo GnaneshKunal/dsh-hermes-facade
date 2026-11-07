@@ -13,6 +13,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
+import { networkInterfaces } from 'node:os'
 
 import { createBackend } from './backend.mjs'
 import { createEventHub } from './events.mjs'
@@ -488,14 +489,29 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
     sendJson(res, 404, { detail: 'Not Found' })
   }
 
-  const server = createServer((req, res) => {
-    void handle(req, res).catch(error => {
-      logger.warn?.('hermes-gateway: ' + String(error?.stack ?? error))
-      try { sendJson(res, 500, { detail: 'Internal error' }) } catch { /* answered */ }
+  /**
+   * Build one HTTP listener with the shared handlers.
+   * @returns {import('node:http').Server} server.
+   */
+  function makeServer() {
+    const instance = createServer((req, res) => {
+      void handle(req, res).catch(error => {
+        logger.warn?.('hermes-gateway: ' + String(error?.stack ?? error))
+        try { sendJson(res, 500, { detail: 'Internal error' }) } catch { /* answered */ }
+      })
     })
-  })
+    instance.on('upgrade', onUpgrade)
+    return instance
+  }
 
-  server.on('upgrade', (req, socket, head) => {
+  /**
+   * Handle one WebSocket upgrade.
+   * @param {import('node:http').IncomingMessage} req request.
+   * @param {import('node:net').Socket} socket raw socket.
+   * @param {Buffer} head bytes past the request head.
+   * @returns {void}
+   */
+  function onUpgrade(req, socket, head) {
     const connection = acceptUpgrade(req, socket, head, {
       authorize: ticket => tickets.redeem(ticket),
       rejectStatus: 401,
@@ -519,7 +535,9 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
       },
     })
     connection.on('message', text => { void onFrame(connection, text) })
-  })
+  }
+
+  const server = makeServer()
 
   /**
    * Handle one inbound socket frame.
@@ -569,15 +587,32 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
      * @returns {Promise<{host: string, port: number}>} bound address.
      */
     async listen() {
-      const port = await new Promise((resolve, reject) => {
-        server.once('error', reject)
-        server.listen(config.gatewayPort, config.gatewayBindHost, () => {
-          const bound = server.address()
-          resolve(bound !== null && typeof bound === 'object' ? bound.port : config.gatewayPort)
+      const hosts = [config.gatewayBindHost]
+      if (config.gatewayLanHost === 'auto') {
+        for (const entries of Object.values(networkInterfaces())) {
+          for (const entry of entries ?? []) {
+            if (entry.internal) continue
+            if (String(entry.family) !== 'IPv4' && String(entry.family) !== '4') continue
+            if (!hosts.includes(entry.address)) hosts.push(entry.address)
+          }
+        }
+      } else if (typeof config.gatewayLanHost === 'string' && !hosts.includes(config.gatewayLanHost)) {
+        hosts.push(config.gatewayLanHost)
+      }
+      let first
+      for (const host of hosts) {
+        const instance = host === config.gatewayBindHost ? server : makeServer()
+        const port = await new Promise((resolve, reject) => {
+          instance.once('error', reject)
+          instance.listen(config.gatewayPort, host, () => {
+            const bound = instance.address()
+            resolve(bound !== null && typeof bound === 'object' ? bound.port : config.gatewayPort)
+          })
         })
-      })
-      activeServers.push(server)
-      return { host: config.gatewayBindHost, port }
+        activeServers.push(instance)
+        if (first === undefined) first = { host, port }
+      }
+      return first
     },
     /**
      * Stop listening and drop every connection.

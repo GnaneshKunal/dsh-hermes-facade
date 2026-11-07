@@ -31,3 +31,6 @@
         gatewayEnabled: true
         gatewayPort: 9121
         gatewayBindHost: 127.0.0.1
+        # also bind the Wi-Fi LAN and Tailscale addresses (plain HTTP), so the
+        # phone can use http://<lan-ip>:9121 exactly as it does for :9120
+        gatewayLanHost: auto
