@@ -442,7 +442,7 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, host, conve
     onSettled: id => bumpRevision(id),
     logger,
   })
-  const methods = createMethods({ backend, hub, runner, requests, sessions, uploadsDir: uploads, bumpRevision, logger })
+  const methods = createMethods({ backend, hub, runner, requests, sessions, uploadsDir: uploads, host, bumpRevision, logger })
 
   /**
    * Directories the in-chat Files browser may read.

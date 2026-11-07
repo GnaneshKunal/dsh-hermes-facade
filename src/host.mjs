@@ -808,6 +808,25 @@ export function createDshHost({ ctx, logger = console }) {
     },
 
     /**
+     * The session's current goal, read from its durable goal projection.
+     *
+     * The projection is DSH's own fold of the persisted goal log (objective,
+     * phase, round counters); reading it does not resume an agent. There is no
+     * loop or heartbeat projection because DSH has no such domain — the caller
+     * must report them absent rather than invent them.
+     *
+     * @param {string} sessionId session id.
+     * @returns {Promise<{goal: object, roundsStarted: number, createdAt: number, updatedAt: number}|undefined>} goal projection, undefined when the session has no current goal.
+     */
+    async sessionGoal(sessionId) {
+      const value = await invoke('session', 'projections', { request: { sessionId } })
+      const goal = value?.values?.goal
+      if (goal === null || typeof goal !== 'object') return undefined
+      if (goal.goal === null || typeof goal.goal !== 'object') return undefined
+      return goal
+    },
+
+    /**
      * List the schedules the Tasks screen shows.
      * @returns {Promise<object[]>} schedule catalog entries.
      */
@@ -1360,6 +1379,40 @@ export function createDshHost({ ctx, logger = console }) {
      */
     async commands() {
       return []
+    },
+
+    /**
+     * Execute one host-registered slash command against a session's agent.
+     *
+     * DSH owns the command grammar and the domain state behind it: `/goal` is
+     * registered by its own plugin against the goal service, so a goal verb has
+     * to travel through this execution instead of being re-implemented here.
+     * The Remote takes its receiving agent as a lookup identity — the session id
+     * is resolved by the host's own agent lookup (which resumes a cold session),
+     * so the handler acts on exactly the agent that persists the result.
+     *
+     * @param {object} input input.
+     * @param {string} input.sessionId session whose agent receives the command.
+     * @param {string} input.line complete slash-command line, e.g. `/goal status`.
+     * @returns {Promise<{commandId: string, result: {kind: string, text?: string}}|undefined>} execution, undefined when the host resolves no such command.
+     */
+    async executeCommand({ sessionId, line }) {
+      const value = await invoke('commands', 'execute', {
+        agentId: sessionId,
+        line,
+        submittedAttachments: [],
+      })
+      // The host returns undefined for a syntax or name that does not resolve:
+      // that is an honest unknown command, not an empty success.
+      if (value === null || typeof value !== 'object') return undefined
+      const result = value.result
+      if (result === null || typeof result !== 'object' || typeof result.kind !== 'string') {
+        throw new Error('commands/execute returned no command result')
+      }
+      return {
+        commandId: typeof value.commandId === 'string' ? value.commandId : '',
+        result: { kind: result.kind, ...(typeof result.text === 'string' ? { text: result.text } : {}) },
+      }
     },
 
     /**

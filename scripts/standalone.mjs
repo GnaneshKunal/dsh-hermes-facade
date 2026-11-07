@@ -355,6 +355,23 @@ export function createMockHost({ cwd = process.cwd() } = {}) {
     lastPrompt() { return promptLog[promptLog.length - 1] },
     async commands() { return [] },
     /**
+     * Mock slash-command execution. The mock host has no command domain: it
+     * acknowledges a `/goal` line the way the real command answers back, and
+     * resolves nothing else, which the listener reports as an unknown command.
+     * @param {object} input input.
+     * @param {string} input.sessionId session whose agent receives the command.
+     * @param {string} input.line complete slash-command line.
+     * @returns {Promise<{commandId: string, result: {kind: string, text: string}}|undefined>} execution.
+     */
+    async executeCommand({ sessionId, line } = {}) {
+      if (typeof sessionId !== 'string' || sessionId.length === 0) throw new Error('executeCommand needs a sessionId')
+      const text = String(line ?? '').trim()
+      if (!/^\/goal(?:\s|$)/.test(text)) return undefined
+      return { commandId: 'mock-command', result: { kind: 'success', text: 'Mock goal command: ' + text } }
+    },
+    /** The mock host keeps no goal state, so no session has a current goal. */
+    async sessionGoal() { return undefined },
+    /**
      * Mock speech-to-text for the dictation route: a fixed transcript, so the
      * wire can be exercised without a microphone or a recognizer.
      * @param {object} request request.

@@ -14,7 +14,7 @@ import { statSync } from 'node:fs'
 import { mkdir, realpath, writeFile } from 'node:fs/promises'
 import { basename, join, sep } from 'node:path'
 
-import { commandsOf, modelOptionsOf, resumeReplyOf, sessionRowOf } from './shapes.mjs'
+import { commandsOf, controlOf, modelOptionsOf, resumeReplyOf, sessionRowOf } from './shapes.mjs'
 import { decodeUpload, imageMediaType, sanitizeUploadName } from './uploads.mjs'
 import { profilesListBody, profileRow, PROFILE_NAME, TERMINAL_BACKEND } from './protocol.mjs'
 
@@ -31,16 +31,46 @@ function rpcError(code, message) {
 }
 
 /**
+ * Translate one Hermex `/goal` argument onto DeepSeek Harness's own grammar.
+ *
+ * Hermex sends the webui's goal vocabulary — `status`, `show`, `pause`,
+ * `resume`, `clear`, `done`, `stop`, `wait`, `gate`, `unwait` — while DSH's
+ * `/goal` command understands `[<objective>|clear|edit <objective>|pause|resume]`.
+ * Forwarding a control verb blindly would make `/goal status` create a goal
+ * whose objective is "status", so the exact verbs are translated here and every
+ * translated verb still runs through the host's own command. A verb DSH's
+ * command does not have is refused instead of being executed as an objective.
+ *
+ * @param {string} argument exact text after `/goal`.
+ * @returns {{line: string}|{refusal: string}} translated line, or the honest refusal.
+ */
+function goalLineOf(argument) {
+  const text = String(argument ?? '').trim()
+  const verb = text.toLowerCase()
+  if (verb.length === 0 || verb === 'status' || verb === 'show') return { line: '/goal' }
+  if (verb === 'pause' || verb === 'resume' || verb === 'clear') return { line: '/goal ' + verb }
+  if (verb === 'done' || verb === 'stop' || verb === 'wait' || verb === 'gate' || verb === 'unwait') {
+    return {
+      refusal: 'DeepSeek Harness has no /goal ' + verb + ' verb; its goal command offers status, pause, resume, clear and edit.',
+    }
+  }
+  // Anything else is an objective, exactly as DSH's command parses it.
+  return { line: '/goal ' + text }
+}
+
+/**
  * Create the method table.
  * @param {object} options options.
  * @param {object} options.backend facade client.
  * @param {object} options.hub event hub.
  * @param {object} options.runner turn runner.
  * @param {object} options.requests reverse-request manager.
+ * @param {object} [options.host] DSH host adapter, for the surfaces only the
+ *   host can answer (slash-command execution and the durable goal projection).
  * @param {object} [options.logger] logger.
  * @returns {{dispatch: Function, unavailable: Set<string>}} methods.
  */
-export function createMethods({ backend, hub, runner, requests, sessions, uploadsDir, bumpRevision = () => {}, logger = console }) {
+export function createMethods({ backend, hub, runner, requests, sessions, uploadsDir, host, bumpRevision = () => {}, logger = console }) {
   const unavailable = new Set()
 
   /**
@@ -449,6 +479,39 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
         const reply = await backend.call('GET', '/api/commands')
         return commandsOf(reply.json ?? {})
       }
+      case 'command.dispatch': {
+        // Hermex drives its /goal controls (and skill dispatch) through this
+        // call. The host owns the command grammar and the domain state behind
+        // it; only the webui's goal vocabulary is translated below.
+        const name = typeof params.name === 'string' ? params.name.trim().replace(/^\/+/, '') : ''
+        if (name.length === 0 || /\s/.test(name)) throw rpcError(-32602, 'command.dispatch needs a command name')
+        const sessionId = typeof params.session_id === 'string' && params.session_id.length > 0 ? params.session_id : undefined
+        if (sessionId === undefined) throw rpcError(-32602, 'command.dispatch needs a session_id')
+        if (typeof host?.executeCommand !== 'function') {
+          // A host without the command service refuses every dispatch instead of
+          // pretending one ran; the phone shows this message.
+          throw rpcError(-32000, 'Command dispatch is not available on this host')
+        }
+        const argument = typeof params.arg === 'string' ? params.arg : ''
+        // The host's parser owns the grammar, so only the wire vocabulary is
+        // translated: an objective travels as written.
+        let line = '/' + name + (argument.length > 0 ? ' ' + argument : '')
+        if (name === 'goal') {
+          const translated = goalLineOf(argument)
+          if (translated.refusal !== undefined) throw rpcError(-32000, translated.refusal)
+          line = translated.line
+        }
+        const execution = await host.executeCommand({ sessionId, line })
+        if (execution === undefined) throw rpcError(-32000, 'Unknown command: /' + name)
+        const text = typeof execution.result?.text === 'string' ? execution.result.text : ''
+        // A command the host refused is a refusal. Answering "exec" would show
+        // the refusal in the transcript as if it had succeeded.
+        if (execution.result.kind === 'error') throw rpcError(-32000, text.length > 0 ? text : 'The command was refused.')
+        // DSH's command handlers and their domain own the next physical action:
+        // /goal creates the goal and the goal round driver continues it, so the
+        // phone must not also submit a kickoff prompt ("send").
+        return { type: 'exec', output: text }
+      }
       case 'projects.tree': {
         // Hermes projects are host folders: DSH workspaces are exactly that, and
         // their session membership is what the client draws its lanes from.
@@ -533,8 +596,16 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
         // effort and Fast controls on every chat of the connection.
         throw rpcError(-32000, 'config.set ' + key + ' is not supported by DeepSeek Harness')
       }
-      case 'session.control.read':
-        throw rpcError(-32601, 'method not found')
+      case 'session.control.read': {
+        const sessionId = typeof params.session_id === 'string' && params.session_id.length > 0 ? params.session_id : undefined
+        if (sessionId === undefined) throw rpcError(-32602, 'session.control.read needs a session_id')
+        // Without the host read there is nothing honest to report, so the method
+        // stays unavailable and the phone hides the control.
+        if (typeof host?.sessionGoal !== 'function') throw rpcError(-32601, 'session.control.read is not available on this host')
+        // The goal only: DSH has no loop or heartbeat domain, so their keys are
+        // absent (never empty objects) and the phone offers no Pause/Resume.
+        return controlOf(await host.sessionGoal(sessionId))
+      }
       default: {
         if (!unavailable.has(method)) {
           unavailable.add(method)

@@ -123,6 +123,11 @@ function build(existingWorkspaces = {}, options = {}) {
         if (options.speechCatalog === 'failed') throw new Error('speech catalog unavailable')
         return options.speechCatalog ?? { providers: [], selection: { providerId: 'fake-recognizer', language: 'auto' } }
       }
+      if (request.namespace === 'commands' && request.method === 'execute') {
+        if (options.command === 'unknown') return undefined
+        if (options.command === 'error') return { commandId: 'cmd-1', result: { kind: 'error', text: 'A goal is already active.' } }
+        return options.commandResult ?? { commandId: 'cmd-1', result: { kind: 'success', text: 'Goal created' } }
+      }
       if (request.namespace === 'session' && request.method === 'selectModel') {
         return { selected: request.args?.request ?? {} }
       }
@@ -1020,4 +1025,46 @@ test('transcribe omits the recognizer when the catalog cannot name it', async ()
   // The transcript already succeeded; a failed label read must not fail it or
   // invent a provider that did not run.
   assert.deepEqual(await host.transcribe({ audioBase64: 'UklGRg==' }), { text: 'plan the Nimbus migration' })
+})
+
+test('executeCommand runs the host command Remote for the session agent', async () => {
+  const { host, calls } = build()
+  const execution = await host.executeCommand({ sessionId: 's1', line: '/goal pause' })
+  assert.deepEqual(execution, { commandId: 'cmd-1', result: { kind: 'success', text: 'Goal created' } })
+  const call = calls.find(entry => entry.namespace === 'commands' && entry.method === 'execute')
+  // The Remote takes the receiving agent as a lookup identity: the session id
+  // travels as agentId, and the attachment list is always present on the wire.
+  assert.deepEqual(call.args, { agentId: 's1', line: '/goal pause', submittedAttachments: [] })
+})
+
+test('executeCommand keeps a host refusal instead of turning it into success', async () => {
+  const { host } = build({}, { command: 'error' })
+  assert.deepEqual(await host.executeCommand({ sessionId: 's1', line: '/goal pause' }), {
+    commandId: 'cmd-1',
+    result: { kind: 'error', text: 'A goal is already active.' },
+  })
+})
+
+test('executeCommand reports an unknown command as undefined', async () => {
+  const { host } = build({}, { command: 'unknown' })
+  assert.equal(await host.executeCommand({ sessionId: 's1', line: '/nope' }), undefined)
+})
+
+test('sessionGoal reads the durable goal projection', async () => {
+  const projection = {
+    goal: { id: 'g1', revision: 1, objective: 'Ship the facade', phase: 'active', maxGoalRounds: 8 },
+    roundsStarted: 2,
+    createdAt: 1,
+    updatedAt: 3,
+  }
+  const { host, calls } = build({}, { projections: { values: { goal: projection } } })
+  assert.deepEqual(await host.sessionGoal('s1'), projection)
+  const call = calls.find(entry => entry.namespace === 'session' && entry.method === 'projections')
+  assert.deepEqual(call.args, { request: { sessionId: 's1' } })
+})
+
+test('sessionGoal is absent for a session with no current goal', async () => {
+  assert.equal(await build().host.sessionGoal('s1'), undefined)
+  const cleared = build({}, { projections: { values: { goal: null } } })
+  assert.equal(await cleared.host.sessionGoal('s1'), undefined)
 })

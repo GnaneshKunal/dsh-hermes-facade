@@ -2666,3 +2666,179 @@ test('dictation refuses when the conversion itself fails', async () => {
     await harness.facade.close()
   }
 })
+
+test('command.dispatch runs the host goal command and answers exec', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const forwarded = []
+    harness.host.executeCommand = async input => {
+      forwarded.push(input)
+      return { commandId: 'cmd-1', result: { kind: 'success', text: 'Goal created\nStatus: active' } }
+    }
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      const reply = await socket.call('command.dispatch', { name: 'goal', arg: 'ship the facade', session_id: 'sess-mock' })
+      assert.equal(reply.error, undefined)
+      assert.deepEqual(reply.result, { type: 'exec', output: 'Goal created\nStatus: active' })
+      const bare = await socket.call('command.dispatch', { name: 'goal', arg: '', session_id: 'sess-mock' })
+      assert.equal(bare.error, undefined)
+      assert.deepEqual(forwarded, [
+        { sessionId: 'sess-mock', line: '/goal ship the facade' },
+        { sessionId: 'sess-mock', line: '/goal' },
+      ])
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('command.dispatch reports a refused goal command with the host wording', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    harness.host.executeCommand = async () => ({
+      commandId: 'cmd-1',
+      result: { kind: 'error', text: 'A goal is already active. Use /goal clear before replacing it.' },
+    })
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      const reply = await socket.call('command.dispatch', { name: 'goal', arg: 'new objective', session_id: 'sess-mock' })
+      assert.equal(reply.error.code, -32000)
+      assert.equal(reply.error.message, 'A goal is already active. Use /goal clear before replacing it.')
+      assert.equal(reply.result, undefined)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('command.dispatch refuses an unknown command and a host without the service', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      harness.host.executeCommand = async () => undefined
+      const unknown = await socket.call('command.dispatch', { name: 'goal', arg: 'x', session_id: 'sess-mock' })
+      assert.equal(unknown.error.code, -32000)
+      assert.match(unknown.error.message, /Unknown command: \/goal/)
+      harness.host.executeCommand = undefined
+      const missing = await socket.call('command.dispatch', { name: 'goal', arg: 'x', session_id: 'sess-mock' })
+      assert.equal(missing.error.code, -32000)
+      assert.match(missing.error.message, /not available on this host/)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('session.control.read reports the goal and no loop or heartbeat', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    harness.host.sessionGoal = async sessionId => {
+      assert.equal(sessionId, 'sess-mock')
+      return {
+        goal: { id: 'g1', revision: 3, objective: 'Ship the facade', phase: 'active', maxGoalRounds: 8 },
+        roundsStarted: 2,
+        createdAt: 1,
+        updatedAt: 3,
+      }
+    }
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      const reply = await socket.call('session.control.read', { session_id: 'sess-mock', profile: 'default' })
+      assert.equal(reply.error, undefined)
+      assert.deepEqual(reply.result, { control: { goal: { title: 'Ship the facade', status: 'active', turns_used: 2, max_turns: 8 } } })
+      // DSH has no loop or heartbeat domain: the keys stay absent, so the phone
+      // draws no rows and offers no Pause or Resume for them.
+      assert.equal('loop' in reply.result.control, false)
+      assert.equal('heartbeat' in reply.result.control, false)
+      harness.host.sessionGoal = async () => ({ goal: { objective: 'Ship', phase: 'complete', maxGoalRounds: 4 }, roundsStarted: 4 })
+      const done = await socket.call('session.control.read', { session_id: 'sess-mock' })
+      assert.deepEqual(done.result.control.goal, { title: 'Ship', status: 'done', turns_used: 4, max_turns: 4 })
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('session.control.read reports an empty control when no goal is current', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    harness.host.sessionGoal = async () => undefined
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      const reply = await socket.call('session.control.read', { session_id: 'sess-mock' })
+      assert.equal(reply.error, undefined)
+      assert.deepEqual(reply.result, { control: {} })
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('session.control stays unavailable so Pause and Resume hide', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      const reply = await socket.call('session.control', { session_id: 'sess-mock', profile: 'default', action: 'goal.pause' })
+      assert.equal(reply.error.code, -32601)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('command.dispatch translates the Hermes goal verbs onto the host grammar', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const forwarded = []
+    harness.host.executeCommand = async input => {
+      forwarded.push(input)
+      return { commandId: 'cmd-1', result: { kind: 'success', text: 'ok' } }
+    }
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.call('command.dispatch', { name: 'goal', arg: 'status', session_id: 'sess-mock' })
+      await socket.call('command.dispatch', { name: 'goal', arg: 'pause', session_id: 'sess-mock' })
+      // Anything that is not exactly a control verb is an objective, so a goal
+      // whose text starts with one still reaches the host as its own objective.
+      await socket.call('command.dispatch', { name: 'goal', arg: 'clear the backlog', session_id: 'sess-mock' })
+      assert.deepEqual(forwarded.map(entry => entry.line), ['/goal', '/goal pause', '/goal clear the backlog'])
+      // A webui-only verb must never silently become a new objective.
+      const unsupported = await socket.call('command.dispatch', { name: 'goal', arg: 'done', session_id: 'sess-mock' })
+      assert.equal(unsupported.error.code, -32000)
+      assert.match(unsupported.error.message, /no \/goal done verb/)
+      assert.equal(forwarded.length, 3, 'the refused verb never reaches the host command')
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
