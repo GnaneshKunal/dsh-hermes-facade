@@ -839,3 +839,188 @@ test('default-model answers once, with a decodable body', async t => {
   const after = await fetch(base + '/api/sessions', { headers: { cookie } })
   assert.equal(after.status, 200)
 })
+
+
+/**
+ * POST a JSON body with the session cookie.
+ * @param {string} base base URL.
+ * @param {string} cookie cookie header.
+ * @param {string} path route.
+ * @param {object} body payload.
+ * @returns {Promise<Response>} response.
+ */
+function postJson(base, cookie, path, body) {
+  return fetch(base + path, {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body),
+  })
+}
+
+test('sessions mark pinned and archived state and list archived only on opt-in', async t => {
+  const { facade, host, base, password } = await boot()
+  t.after(() => facade.close())
+  host.seed('sess-archived', transcriptEvents(2))
+  host.seed('sess-archived-2', transcriptEvents(2))
+  const cookie = await signIn(base, password)
+
+  assert.equal((await (await postJson(base, cookie, '/api/session/pin', { session_id: 'sess-mock', pinned: true })).json()).ok, true)
+  // Pinning then archiving drops the pin, as it does in DSH.
+  assert.equal((await (await postJson(base, cookie, '/api/session/pin', { session_id: 'sess-archived-2', pinned: true })).json()).ok, true)
+  assert.equal((await (await postJson(base, cookie, '/api/session/archive', { session_id: 'sess-archived', archived: true })).json()).ok, true)
+  assert.equal((await (await postJson(base, cookie, '/api/session/archive', { session_id: 'sess-archived-2', archived: true })).json()).ok, true)
+
+  const plain = await (await fetch(base + '/api/sessions', { headers: { cookie } })).json()
+  assert.equal(plain.sessions.some(row => row.session_id === 'sess-archived'), false, 'archived rows are hidden by default')
+  assert.equal(plain.sessions.some(row => row.session_id === 'sess-archived-2'), false)
+  const pinnedRow = plain.sessions.find(row => row.session_id === 'sess-mock')
+  assert.equal(pinnedRow.pinned, true)
+  assert.equal(pinnedRow.archived, false)
+  assert.equal(plain.archived_count, 2, 'the Archived entry still knows how many exist')
+  assert.equal(plain.include_archived, false)
+
+  const all = await (await fetch(base + '/api/sessions?include_archived=1', { headers: { cookie } })).json()
+  assert.equal(all.sessions.length, 3)
+  const archivedOne = all.sessions.find(row => row.session_id === 'sess-archived')
+  assert.equal(archivedOne.archived, true)
+  assert.equal(archivedOne.pinned, false)
+  const archivedTwo = all.sessions.find(row => row.session_id === 'sess-archived-2')
+  assert.equal(archivedTwo.archived, true)
+  assert.equal(archivedTwo.pinned, false, 'archiving dropped the pin')
+  assert.equal(all.archived_count, 2)
+  assert.equal(all.include_archived, true)
+
+  const capped = await (await fetch(base + '/api/sessions?include_archived=1&archived_limit=1', { headers: { cookie } })).json()
+  assert.equal(capped.sessions.length, 2)
+  assert.equal(capped.sessions.filter(row => row.archived).length, 1)
+  assert.equal(capped.archived_limit, 1)
+  assert.equal(capped.archived_count, 2, 'the limit caps rows, not the reported count')
+
+  const spelling = await (await fetch(base + '/api/sessions?include_archived=true', { headers: { cookie } })).json()
+  assert.equal(spelling.include_archived, true, 'the flag accepts true as well as 1')
+
+  const detail = await (await fetch(base + '/api/session?session_id=sess-archived&messages=1', { headers: { cookie } })).json()
+  assert.equal(detail.session.archived, true)
+  assert.equal(detail.session.pinned, false)
+
+  await postJson(base, cookie, '/api/session/archive', { session_id: 'sess-archived', archived: false })
+  const restored = await (await fetch(base + '/api/sessions', { headers: { cookie } })).json()
+  assert.equal(restored.sessions.some(row => row.session_id === 'sess-archived'), true)
+  assert.equal(restored.archived_count, 1)
+})
+
+test('GET /api/session/export downloads the transcript in the requested format', async t => {
+  const { facade, host, base, password } = await boot()
+  t.after(() => facade.close())
+  host.seed('sess-export', transcriptEvents(3))
+  const cookie = await signIn(base, password)
+
+  const jsonRes = await fetch(base + '/api/session/export?session_id=sess-export&format=json', { headers: { cookie } })
+  assert.equal(jsonRes.status, 200)
+  assert.match(jsonRes.headers.get('content-type') ?? '', /^application\/json/)
+  assert.equal(
+    jsonRes.headers.get('content-disposition'),
+    'attachment; filename="hermes-sess-export.json"',
+  )
+  const dump = await jsonRes.json()
+  assert.equal(dump.session_id, 'sess-export')
+  assert.equal(dump.messages.length, 3)
+  assert.deepEqual(dump.messages.map(message => message.content), ['u0', 'a1', 'u2'])
+
+  // Same mapping as the open chat, not a second rendering of the transcript.
+  const detail = await (await fetch(base + '/api/session?session_id=sess-export&messages=1', { headers: { cookie } })).json()
+  assert.deepEqual(dump.messages, detail.session.messages)
+
+  const htmlRes = await fetch(base + '/api/session/export?session_id=sess-export&format=html', { headers: { cookie } })
+  assert.equal(htmlRes.status, 200)
+  assert.match(htmlRes.headers.get('content-type') ?? '', /^text\/html/)
+  assert.match(htmlRes.headers.get('content-disposition') ?? '', /filename="hermes-sess-export\.html"/)
+  const html = await htmlRes.text()
+  assert.match(html, /^<!doctype html>/)
+  assert.match(html, /u0/)
+  assert.match(html, /a1/)
+
+  const markdownRes = await fetch(base + '/api/session/export?session_id=sess-export&format=markdown', { headers: { cookie } })
+  assert.equal(markdownRes.status, 200)
+  assert.match(markdownRes.headers.get('content-type') ?? '', /^text\/markdown/)
+  assert.match(await markdownRes.text(), /^## Me$/m)
+
+  const defaultRes = await fetch(base + '/api/session/export?session_id=sess-export', { headers: { cookie } })
+  assert.match(defaultRes.headers.get('content-type') ?? '', /^application\/json/, 'JSON is the default per the client contract')
+
+  const missing = await fetch(base + '/api/session/export', { headers: { cookie } })
+  assert.equal(missing.status, 400)
+  const badFormat = await fetch(base + '/api/session/export?session_id=sess-export&format=pdf', { headers: { cookie } })
+  assert.equal(badFormat.status, 400)
+  assert.match(JSON.stringify(await badFormat.json()), /unsupported format/)
+  const unknown = await fetch(base + '/api/session/export?session_id=no-such-session', { headers: { cookie } })
+  assert.equal(unknown.status, 404)
+})
+
+test('models/live overlays the catalog and providers derives from it', async t => {
+  const { facade, base, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+
+  const liveRes = await fetch(base + '/api/models/live', { headers: { cookie } })
+  assert.equal(liveRes.status, 200)
+  const live = await liveRes.json()
+  assert.equal(live.provider, 'deepseek-official', 'the app matches the live list against a catalog group by provider id')
+  assert.equal(live.count, 1)
+  assert.deepEqual(live.models, [{ id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' }])
+
+  const requested = await (await fetch(base + '/api/models/live?provider=deepseek-official', { headers: { cookie } })).json()
+  assert.equal(requested.provider, 'deepseek-official')
+  assert.equal(requested.count, 1)
+
+  const unknown = await (await fetch(base + '/api/models/live?provider=missing', { headers: { cookie } })).json()
+  assert.equal(unknown.provider, 'missing')
+  assert.deepEqual(unknown.models, [])
+  assert.equal(unknown.count, 0)
+
+  const providersRes = await fetch(base + '/api/providers', { headers: { cookie } })
+  assert.equal(providersRes.status, 200)
+  const providers = await providersRes.json()
+  assert.equal(providers.active_provider, 'deepseek-official')
+  const deepseek = providers.providers.find(provider => provider.id === 'deepseek-official')
+  assert.equal(deepseek.display_name, 'DeepSeek')
+  assert.equal(deepseek.has_key, true)
+  assert.equal(deepseek.key_source, 'config')
+  assert.equal(deepseek.models_total, 1)
+  assert.deepEqual(deepseek.models, [{ id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' }])
+  // A provider the catalog could not list is reported with its own error.
+  const failed = providers.providers.find(provider => provider.id === 'unconfigured-provider')
+  assert.equal(failed.has_key, false)
+  assert.equal(failed.auth_error, 'no API key configured')
+  assert.deepEqual(failed.models, [])
+})
+
+test('finished stream journals are pruned as the next turn finishes', async t => {
+  const { facade, base, password } = await boot({ config: { streamRetainMs: 60_000 } })
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+
+  /**
+   * Run one turn to completion and return its stream id.
+   * @param {string} message user text.
+   * @returns {Promise<string>} stream id.
+   */
+  const turn = async message => {
+    const start = await postJson(base, cookie, '/api/chat/start', { session_id: 'sess-mock', message })
+    assert.equal(start.status, 200)
+    const started = await start.json()
+    const stream = await fetch(base + '/api/chat/stream?stream_id=' + started.stream_id, { headers: { cookie } })
+    assert.match(await stream.text(), /event: stream_end/)
+    return started.stream_id
+  }
+
+  const firstId = await turn('first')
+  const first = facade.registry.get(firstId)
+  assert.ok(first, 'a just-finished stream stays replayable for the client reconnect')
+  assert.equal(first.terminal, 'completed')
+  assert.equal(typeof first.finishedAt, 'number')
+  // Age it past the configured replay window without waiting.
+  first.finishedAt = Date.now() - 120_000
+
+  const secondId = await turn('second')
+  assert.equal(facade.registry.get(firstId), undefined, 'the stale journal was pruned when the next stream finished')
+  assert.ok(facade.registry.get(secondId), 'the new journal is retained')
+})

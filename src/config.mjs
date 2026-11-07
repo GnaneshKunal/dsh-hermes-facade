@@ -58,6 +58,12 @@ export function resolveConfig(raw = {}) {
     historyPage: Number.isSafeInteger(raw.historyPage) && raw.historyPage > 0
       ? raw.historyPage
       : 200,
+    // How long a finished chat stream stays replayable. The journal is pruned
+    // when the next stream finishes; leaving this unset keeps the 30-minute
+    // default. 0 drops a finished journal as soon as its turn ends.
+    streamRetainMs: Number.isSafeInteger(raw.streamRetainMs) && raw.streamRetainMs >= 0
+      ? raw.streamRetainMs
+      : undefined,
     lanHost: raw.lanHost === 'auto'
       ? 'auto'
       : (typeof raw.lanHost === 'string' && raw.lanHost.length > 0 ? raw.lanHost : undefined),

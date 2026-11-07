@@ -112,12 +112,14 @@ curl.
 | clarifications / agent questions | partial: live works; a re-attached pending renders as an approval |
 | reasoning effort | full: levels come from the model catalog |
 | model picker | full: applied through `session/selectModel`; the catalog id/provider is resolved and the reasoning effort carried over |
+| live model overlay / providers | full (derived): both read the DSH model catalog; providers is read-only |
 | workspaces | partial: list only; add/remove/rename/reorder refused or 404 |
 | workspace file browser (`/api/list`, `/api/file`) | full: read-only |
 | profiles (DSH has agent presets, not profiles) | partial: one static profile |
 | session rename / branch (fork) | full |
-| session pin / archive | partial: writes land, the list never shows them |
-| session delete / duplicate / export / compress / clear / undo / retry / truncate / move / update | not implemented (refusals; export is a 404 because the app GETs it) |
+| session pin / archive | full: rows report the real flags; `include_archived`/`archived_limit` list archived chats |
+| session export | full (bounded): JSON, HTML or markdown download with the filename in `Content-Disposition` |
+| session delete / duplicate / compress / clear / undo / retry / truncate / move / update | not implemented (refusals) |
 | projects (one per DSH workspace) | partial: read-only list |
 | tasks/cron, skills, memory, insights, kanban, git panel | stubbed: screens open empty or unavailable |
 | bots, push, Move to Hermes | different transport (Hermes gateway); not served |
@@ -139,7 +141,8 @@ GET /api/approval/pending, GET /api/approval/stream, POST /api/approval/respond,
 GET /api/clarify/pending, GET /api/clarify/stream, POST /api/clarify/respond,
 GET /api/models, GET /api/commands, GET /api/workspaces, GET /api/profiles,
 GET /api/reasoning, POST /api/reasoning, POST /api/default-model,
-GET /api/list, GET /api/file, GET /api/media, GET /api/file/raw, GET /api/projects.
+GET /api/list, GET /api/file, GET /api/media, GET /api/file/raw, GET /api/projects,
+GET /api/session/export, GET /api/models/live, GET /api/providers.
 
 ## Diagnostics
 

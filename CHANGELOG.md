@@ -7,6 +7,33 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **Session export.** `GET /api/session/export` now answers (it was a 404; only
+  `POST` was stubbed). `format=json` (the default when the param is absent) returns the
+  machine-readable dump the app's Move-to-Hermes import reads (`session_id`, `messages`,
+  `archived`, timestamps, model and token totals); `format=html` returns a self-contained
+  transcript for sharing; `format=markdown` (also `md`) is accepted for human-readable
+  copies. The transcript is the same `timelineOf()` mapping `GET /api/session` serves, and
+  the response carries the file's `Content-Type` plus
+  `Content-Disposition: attachment; filename="hermes-<session_id>.<ext>"`, which is where the
+  app reads the share-sheet filename from. An unsupported format is a 400, an unknown session
+  a 404.
+- **Pinned and archived sessions are visible.** The session list used to report
+  `pinned:false, archived:false` for every row and never listed an archived chat, even though
+  the pin/archive writes already landed in DSH. `host.workspaces()` now captures the
+  registry-global `pinnedSessionIds`/`archivedSessionIds` from the workspace baseline, and each
+  list/detail row carries the real flags. The default response still hides archived rows and
+  reports the full `archived_count`, so the app's Archived entry appears; `include_archived=1`
+  (or `true`/`yes`) appends them, and `archived_limit` caps how many archived rows are sent.
+  Pin and archive writes now drop the cached workspace baseline too, so the next list read
+  shows the change instead of waiting out the cache.
+- **Live model overlay.** `GET /api/models/live` returns the cached catalog in the shape the
+  picker's overlay expects — `{provider, models:[{id,label}], count}` — using the same group
+  and provider-id spelling as `/api/models`. It echoes the active provider (or the requested
+  `provider`) so the app can replace the matching group instead of blanking the picker.
+- **Providers list.** `GET /api/providers` now derives its entries from the model catalog's
+  provider groups rather than answering an empty stub: `id`, `display_name`, `has_key`, the
+  provider's models and `models_total`, plus `active_provider`. A provider the catalog could
+  not list appears with the host's message in `auth_error`.
 - **Diagnostics.** `~/.dsh/hermes-facade/access.log` records one JSON line per request
   (method, path, query, status, duration, user-agent) with `unknown`/`stub`/`effort`/`error`
   annotations, and `unknown-endpoints.log` records — always, with no flag to turn on — every call
@@ -55,6 +82,11 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   event synthesized without one) still completes, so a host that reports nothing keeps the old
   behaviour. `scripts/standalone.mjs --turn-outcome failed|cancelled` — and the mock host's
   `setTurnOutcome` — emit these turns for a hand probe or an integration test.
+- **Finished stream journals are pruned.** `streams.mjs` had a `prune()` no one called, so
+  every finished turn's replay journal stayed in memory for the process lifetime. `finish()`
+  now stamps `finishedAt` and prunes: finished streams older than the replay window (30 min by
+  default, `streamRetainMs` to tune it) go, and at most 64 finished streams are kept for
+  reconnect, oldest first. Live streams are never pruned.
 - **The model picker actually applies.** `POST /api/session/update` (the picker's call),
   `POST /api/session/new` and `POST /api/chat/start` used to drop `model`/`model_provider`; the
   chip showed a model the next turn did not use. They now resolve the client's id against the DSH

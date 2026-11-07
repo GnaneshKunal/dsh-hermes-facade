@@ -101,7 +101,14 @@ function build(existingWorkspaces = {}, options = {}) {
           sessionIds: [],
         }))
         return Promise.resolve((async function* frames() {
-          yield { type: 'baseline', value: { items, archivedSessionIds: [], pinnedSessionIds: [] } }
+          yield {
+            type: 'baseline',
+            value: {
+              items,
+              archivedSessionIds: options.archivedSessionIds ?? [],
+              pinnedSessionIds: options.pinnedSessionIds ?? [],
+            },
+          }
         })())
       }
       return Promise.resolve((async function* frames() {
@@ -422,4 +429,30 @@ test('selectModel reports an unknown model with the catalog error', async () => 
     /model "nope" for provider "q" is not available in the model catalog/,
   )
   assert.ok(!calls.some(entry => entry.method === 'selectModel'))
+})
+
+test('workspaces() exposes the registry-global pin and archive sets', async () => {
+  const { host } = build({}, { pinnedSessionIds: ['s1'], archivedSessionIds: ['s1', 's2'] })
+  const value = await host.workspaces()
+  assert.deepEqual(value.pinnedSessionIds, ['s1'])
+  assert.deepEqual(value.archivedSessionIds, ['s1', 's2'])
+})
+
+test('workspaces() defaults both sets when the baseline omits them', async () => {
+  const { host } = build()
+  const value = await host.workspaces()
+  assert.deepEqual(value.pinnedSessionIds, [])
+  assert.deepEqual(value.archivedSessionIds, [])
+})
+
+test('pinSession drops the cached baseline so a new pin shows up immediately', async () => {
+  const { host, calls } = build()
+  await host.workspaces()
+  await host.workspaces()
+  const follows = () => calls.filter(entry => entry.namespace === 'workspace' && entry.method === 'follow').length
+  assert.equal(follows(), 1, 'the second read is served from the cache')
+
+  await host.pinSession({ sessionId: 's1', pinned: true })
+  await host.workspaces()
+  assert.equal(follows(), 2, 'the pin invalidated the baseline cache')
 })

@@ -1,7 +1,8 @@
 # 05 — Hermex 2.0 compatibility matrix
 
 Last verified: **2026-11-07** · client: Hermex **2.0.1** source (`ec066d9`) · facade: **main** (history
-paging, tool results, model switching, honest turn outcomes; see CHANGELOG) ·
+paging, tool results, model switching, honest turn outcomes, pin/archive visibility, export, live
+model overlay; see CHANGELOG) ·
 DSH `0.2.2-rc.1` · protocol: hermes-webui HTTP + SSE.
 
 This is the honest accounting of what the stock Hermex iOS app can do against this facade, what it
@@ -34,15 +35,15 @@ points to your configured server." Only the 408/502/503/504 statuses fall back t
 |---|---|---|---|---|
 | Add server / sign in | `/health`, `/api/auth/{status,login,logout}` | **WORKS** | normal sign-in, signed cookie | — |
 | Session list, grouping by project | `GET /api/sessions` | **WORKS** | rows grouped into project lanes; DSH subagent sessions are hidden for now (runner-owned, parent-addressed only) | enabling Hermex's Subagent Sessions toggle needs row tagging + parent-address reads |
-| Pinned / archived state | same | **PARTIAL** | every row reports `pinned:false, archived:false`; pin/archive writes land in DSH but the list never shows them, and Archived is always empty | yes: read `pinnedSessionIds`/`archivedSessionIds` from the workspace baseline, honour `include_archived` |
+| Pinned / archived state | same | **WORKS** | every row carries the real `pinned`/`archived` flags, read from the workspace baseline; the default response hides archived rows and reports `archived_count`, and `include_archived=1` (+ optional `archived_limit`) fills the app's Archived screen | — |
 | Session search | `GET /api/sessions/search` | **404** | "endpoint not found"; only the local title filter still works | yes: `session/search` |
 | Open chat / history | `GET /api/session` | **WORKS** (bounded) | newest **200** messages, then 50-message scroll-back pages, within the newest **800**; tool results, error verdicts and durations ride along as persisted tool calls | unbounded history still needs a `session/page` walk |
 | Rename | `POST /api/session/rename` | **WORKS** | title updates | — |
 | Branch / fork | `POST /api/session/branch` | **WORKS** | child session; needs a completed turn | — |
-| Pin / archive (action) | `POST /api/session/pin`, `POST /api/session/archive` | **PARTIAL** | accepted, then invisible (see above) | yes |
+| Pin / archive (action) | `POST /api/session/pin`, `POST /api/session/archive` | **WORKS** | accepted and visible on the next list read (the workspace cache is dropped) | — |
 | Delete | `POST /api/session/delete` | **STUB** | "Not supported by DeepSeek Harness"; the row stays | needs DSH: no session-delete RPC |
 | Duplicate | `POST /api/session/duplicate` | **STUB** | same refusal | needs DSH: no session import/copy RPC |
-| Export / share | `GET /api/session/export` | **404** | "endpoint not found" (only POST is stubbed) | yes: render JSON/HTML from the transcript |
+| Export / share | `GET /api/session/export` | **WORKS** (bounded) | JSON (default), HTML or markdown transcript with the share-sheet filename from `Content-Disposition`; the JSON form is the one Move to Hermes imports. Bounded by the host's transcript snapshot | — |
 | Compress / clear / undo / retry / truncate / move / update | `POST /api/session/*` | **STUB** | "Not supported"; edit, regenerate, undo, clear and project-move are unavailable | mostly needs DSH; `update` (model/workspace) is bridgeable |
 | Model picker / switch | `POST /api/session/update`, `model` on `chat/start` and `session/new` | **WORKS** | applied through `session/selectModel`; catalog id and provider are resolved, reasoning effort carried over | — |
 | Chat workspace switch | `POST /api/session/update` with `workspace` | **PARTIAL** | the session is filed under the chosen project (grouping), but DSH cannot change a started session's cwd | needs a DSH cwd-change primitive |
@@ -54,10 +55,10 @@ points to your configured server." Only the 408/502/503/504 statuses fall back t
 | File browser (list/read/raw/media) | `GET /api/{list,file,file/raw,media}` | **WORKS** (read-only) | directory listing, text preview, images | writes not offered by this app build |
 | Attachments (camera, picker, paste, share sheet) | `POST /api/upload` | **STUB** | upload refused; Send stays blocked while it tries | yes: store the file, return `{filename,path,size,mime,is_image}` |
 | Composer catalogs | `/api/{profiles,models,reasoning,workspaces,commands}` | **PARTIAL** | models and reasoning work; profiles is one static profile; commands is empty | partly: commands catalog |
-| Models live overlay | `GET /api/models/live` | **404** | silently keeps the cached catalog | yes (return the cached catalog) |
+| Models live overlay | `GET /api/models/live` | **WORKS** | the picker's overlay replaces the active provider's group with the cached catalog's models; provider ids match `/api/models` | — (DSH has no cheaper "live" list than the catalog) |
 | Reasoning effort | `GET/POST /api/reasoning` | **WORKS** | levels come from the model catalog | — |
 | Personalities | `GET /api/personalities`, `POST /api/personality/set` | **STUB** | empty list; setting refused | maybe: map to agent presets |
-| Providers | `GET /api/providers` | **STUB** | empty list | yes: derive from the model catalog |
+| Providers | `GET /api/providers` | **WORKS** (derived) | each routable provider with its models and active badge, read-only as the screen expects; credential provenance is approximated from the catalog because DSH exposes no key inventory here | — |
 | Provider quota | `GET /api/provider/quota` | **404** | quota cards silently absent | needs a quota source; DSH has none |
 | Settings (server page) | `GET/POST /api/settings`, `/api/updates/*`, `/api/default-model` | **PARTIAL / STUB** | version "Unknown", update check 404, settings save refused, default model acknowledged but not persisted | partly: settings/default-model via DSH config |
 | Chat start / stream / stop / status / reconnect | `POST /api/chat/start`, `GET /api/chat/{stream,stream/status,cancel}` | **WORKS** | tokens, thinking, live tool cards, stop, replay after reconnect; a failed or cancelled turn ends the run with `error`/`cancel`, not as a success | — |
@@ -123,16 +124,18 @@ gateway we do not implement.
    timed-out resolution never reaches the phone, and there is no `409 {"stale":true}`.
 3. **Silent profile/attachment loss** on `chat/start` and `session/new` (the model is applied now).
 4. **History is bounded at 800 messages** by the recent-window read; paging works inside it.
-5. **Stream registry never pruned.** `streams.mjs` has `prune()` but nothing calls it, so finished
-   stream journals stay in memory for the process lifetime.
-6. **Export is a method mismatch.** The app GETs `/api/session/export`; only POST was stubbed.
+   Session export uses the same host snapshot (with a wider cap of 5000 messages), so a very long
+   chat exports what the host can still return.
+5. **Stream journals are kept for a bounded time.** A finished stream stays replayable for 30
+   minutes (config `streamRetainMs`) and the newest 64 finished journals are kept; older ones are
+   pruned as the next turn finishes, never held for the process lifetime.
 
 ## Verifying a build
 
 ```bash
 curl -s http://127.0.0.1:9120/health
 # {"status":"ok","active_streams":0,
-#  "features":["history-paging","tool-results","model-switch"],
+#  "features":["history-paging","tool-results","model-switch","session-export","pin-archive","providers"],
 #  "history":{"page":200,"window":800}}
 
 cd ~/self/dsh-hermes-facade && npm run check && npm test

@@ -16,13 +16,50 @@ export function newStreamId() {
   return 's' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4)
 }
 
+/** How long a finished stream stays replayable after its turn ended. */
+const DEFAULT_RETAIN_MS = 30 * 60 * 1000
+
+/** How many finished streams are kept for replay; the oldest go first. */
+const DEFAULT_MAX_FINISHED = 64
+
 /**
  * Create an empty stream registry.
+ * @param {object} [options] options.
+ * @param {number} [options.retainMs] replay window for a finished stream.
+ * @param {number} [options.maxFinished] cap on finished streams kept for replay.
  * @returns {object} registry.
  */
-export function createStreamRegistry() {
+export function createStreamRegistry({ retainMs = DEFAULT_RETAIN_MS, maxFinished = DEFAULT_MAX_FINISHED } = {}) {
   /** @type {Map<string, object>} */
   const streams = new Map()
+
+  /**
+   * Drop finished streams that outlived their replay window, then the oldest
+   * finished streams beyond the retention cap. Live streams are never touched:
+   * pruning them would break a running turn's replay.
+   * @param {number} maxAgeMs replay window.
+   * @param {number} keepFinished finished-stream cap.
+   * @returns {number} number removed.
+   */
+  function pruneStreams(maxAgeMs, keepFinished) {
+    const cutoff = Date.now() - maxAgeMs
+    let removed = 0
+    for (const [id, record] of streams) {
+      if (record.terminal !== null && (record.finishedAt ?? record.createdAt) < cutoff) {
+        streams.delete(id)
+        removed += 1
+      }
+    }
+    const finished = [...streams.values()]
+      .filter(record => record.terminal !== null)
+      .sort((left, right) => (left.finishedAt ?? left.createdAt) - (right.finishedAt ?? right.createdAt))
+    const excess = finished.length - Math.max(0, keepFinished)
+    for (const record of finished.slice(0, Math.max(0, excess))) {
+      streams.delete(record.streamId)
+      removed += 1
+    }
+    return removed
+  }
 
   return {
     /**
@@ -39,6 +76,7 @@ export function createStreamRegistry() {
         journal: [],
         channels: new Set(),
         terminal: null,
+        finishedAt: null,
         createdAt: Date.now(),
       }
       streams.set(record.streamId, record)
@@ -106,27 +144,26 @@ export function createStreamRegistry() {
     finish(record, state) {
       if (record.terminal !== null) return
       record.terminal = state
+      record.finishedAt = Date.now()
       for (const channel of record.channels) {
         if (!channel.closed) channel.close()
       }
       record.channels.clear()
+      // This is the lifecycle point that used to leak: without a prune every
+      // finished journal stayed in memory until the process exited. Replay only
+      // matters right after the turn ends, so old finished streams go now.
+      pruneStreams(retainMs, maxFinished)
     },
 
     /**
-     * Drop finished streams older than a cutoff.
-     * @param {number} maxAgeMs maximum age.
+     * Drop finished streams older than a cutoff, plus the oldest beyond the
+     * finished-stream cap.
+     * @param {number} [maxAgeMs] replay window.
+     * @param {number} [keepFinished] finished-stream cap.
      * @returns {number} number removed.
      */
-    prune(maxAgeMs = 30 * 60 * 1000) {
-      const cutoff = Date.now() - maxAgeMs
-      let removed = 0
-      for (const [id, record] of streams) {
-        if (record.terminal !== null && record.createdAt < cutoff) {
-          streams.delete(id)
-          removed += 1
-        }
-      }
-      return removed
+    prune(maxAgeMs = retainMs, keepFinished = maxFinished) {
+      return pruneStreams(maxAgeMs, keepFinished)
     },
   }
 }
