@@ -329,6 +329,18 @@ test('image upload stages bytes and prompt.submit sends them as a native image',
 
       const preview = await api(harness.base, '/api/fs/download?path=' + encodeURIComponent(uploaded.json.path), { cookie })
       assert.equal(preview.status, 200)
+
+      // A cookie client must not name a host path; only the loopback Hermes
+      // listener's internal request may use the staged-path form.
+      const facadeLogin = await api(harness.facadeBase, '/api/auth/login', { method: 'POST', body: { password: harness.password } })
+      assert.equal(facadeLogin.status, 200)
+      const facadeCookie = facadeLogin.headers.getSetCookie().map(cookie => cookie.split(';')[0]).join('; ')
+      const refused = await api(harness.facadeBase, '/api/chat/start', {
+        method: 'POST',
+        cookie: facadeCookie,
+        body: { message: 'look', images: [{ mediaType: 'image/png', path: uploaded.json.path }] },
+      })
+      assert.equal(refused.status, 400)
     } finally {
       socket.ws.close()
     }
@@ -338,7 +350,7 @@ test('image upload stages bytes and prompt.submit sends them as a native image',
   }
 })
 
-test('image upload follows the declared MIME and carries a multi-megabyte image', async () => {
+test('image upload follows the declared MIME and carries multi-megabyte image bytes', async () => {
   const harness = await boot()
   const bytes = Buffer.alloc(3 * 1024 * 1024, 3)
   try {

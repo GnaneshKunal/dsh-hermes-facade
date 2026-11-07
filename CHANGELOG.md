@@ -140,9 +140,10 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   sanitized and generated; the state dir and `$DSH_HOME` stay fenced off.
   Documents remain path-based (DSH's native file part needs a
   `fileUploads/upload` receipt the adapter does not broker), and the uploads
-  root is append-only. Tests cover both upload routes, the MIME/extension fix, a
-  3 MiB image, a 6 MiB document, the native image part, the preserved history
-  row, multiple/no-image prompts, the symlink refusal and the preview read.
+  root is append-only. Tests cover both upload routes, the MIME/extension fix,
+  3 MiB of image bytes, a 6 MiB document, the native image part, the preserved
+  history row, multiple/no-image prompts, the symlink refusal, the facade's
+  internal-only path gate and the preview read.
 - **A shared path fence for file surfaces** (`src/hermes/fence.mjs`). Hermex
   sends absolute host paths and its own check is explicitly not a security
   boundary, so a path is served only when its realpath is inside a chat folder

@@ -1196,8 +1196,11 @@ export function createDshHost({ ctx, logger = console }) {
           // The Hermes listener passes the staged path, not bytes, so the
           // gateway's and facade's JSON body caps never gate a full image.
           try {
-            const bytes = await readFile(image.path)
-            if (bytes.length > 0 && bytes.length <= 25 * 1024 * 1024) data = bytes.toString('base64')
+            const info = await stat(image.path)
+            if (!info.isFile() || info.size === 0 || info.size > 25 * 1024 * 1024) {
+              throw new Error('staged image is not a readable file within the size limit')
+            }
+            data = (await readFile(image.path)).toString('base64')
           } catch { /* an unreadable staged file is a failed prompt */ }
         }
         if (data === null) throw new Error('image bytes unavailable')

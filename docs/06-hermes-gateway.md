@@ -131,6 +131,7 @@ refusing it withdraws approvals silently.
 | `session.delete` | refused: DSH has no session-delete primitive |
 | `session.events.since` | `{latest_seq, epoch, truncated, events}`, contiguous per session |
 | `prompt.submit` | starts a turn and returns `{status: streaming|queued}`; a second submit while one runs is queued, not refused. Each image-upload path inside the facade uploads root (realpath-checked) becomes a native image part; the app's two-line vision reference stays in the user text so Hermex rebuilds the chip after reload |
+| `images` on `/api/chat/start` | only the loopback Hermes listener may name a `path` (or send any image): a cookie request with an `images` array answers 400, so the Legacy listener remains attachment-free and no host file can be named from a browser session |
 | `file.attach` | stages one document under the facade uploads root and answers `{attached:true, path, ref_text}`; names are sanitized, the body is capped at 25 MiB, and `ref_text` quotes the path when it contains whitespace. An invalid data URL answers `-32602` |
 | `approval.respond` | `{session_id, request_id, choice: once|session|always|deny}` -> `{resolved}` |
 | `request.answer` / `clarify.lock` | answers a clarification |

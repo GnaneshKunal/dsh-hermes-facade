@@ -351,8 +351,9 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
         await mkdir(uploadsDir, { recursive: true, mode: 0o700 })
         const target = join(uploadsDir, randomUUID() + '-' + sanitizeUploadName(p.name, 'upload'))
         await writeFile(target, decoded.bytes, { mode: 0o600 })
-        // Hermex's @file parser stops at whitespace, so quote a path that needs it.
-        const ref = /[\s"'`]/.test(target) ? '@file:`' + target + '`' : '@file:' + target
+        // Hermex's @file parser stops at whitespace; pick a quote absent from the path.
+        const quote = /\s/.test(target) ? ['`', '"', "'"].find(char => !target.includes(char)) : undefined
+        const ref = quote === undefined ? '@file:' + target : '@file:' + quote + target + quote
         return { attached: true, path: target, ref_text: ref }
       }
       case 'session.events.since': {
