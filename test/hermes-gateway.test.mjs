@@ -294,3 +294,125 @@ test('an approval arrives as a reverse request and is answered', async () => {
     await harness.facade.close()
   }
 })
+
+test('an open approval survives a reconnect and is listed in open_requests', async () => {
+  const harness = await boot()
+  harness.host.setTurnDelay(2500)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const first = await openSocket(harness.base, cookie)
+    let pending
+    try {
+      await first.waitFor(frame => frame.params?.type === 'gateway.ready')
+      await first.call('prompt.submit', { session_id: 'sess-mock', text: 'hold the turn' })
+      await first.waitFor(frame => frame.params?.type === 'message.start')
+      pending = harness.host.simulateApproval('sess-mock', { command: 'bash', description: 'waiting' })
+      await first.waitFor(frame => frame.method === 'approval')
+    } finally {
+      first.ws.close()
+    }
+    await new Promise(resolve => setTimeout(resolve, 80))
+
+    const second = await openSocket(harness.base, cookie)
+    try {
+      await second.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const resumed = await second.call('session.resume', {
+        session_id: 'sess-mock', profile: 'default', omit_messages: true,
+      })
+      const open = resumed.result.open_requests
+      assert.equal(open.length, 1)
+      assert.equal(open[0].method, 'approval')
+      assert.equal(open[0].params.request_id, pending.approval_id)
+
+      const replay = await second.call('session.events.since', { session_id: 'sess-mock', last_seen: 0 })
+      assert.deepEqual(replay.result.open_requests.map(row => row.id), open.map(row => row.id))
+
+      const answered = await second.call('approval.respond', {
+        session_id: 'sess-mock', request_id: pending.approval_id, choice: 'once',
+      })
+      assert.equal(answered.result.resolved, 1)
+      // The answer settles our pending request; the runner then posts it to the
+      // facade, so give that round trip a moment.
+      const deadline = Date.now() + 3000
+      while (harness.host.lastApprovalOutcome !== 'allowed-once' && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+      assert.equal(harness.host.lastApprovalOutcome, 'allowed-once')
+    } finally {
+      second.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('a request raised with no socket is registered and replayed on attach', async () => {
+  const harness = await boot()
+  harness.host.setTurnDelay(2500)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'away' })
+      await socket.waitFor(frame => frame.params?.type === 'message.start')
+    } finally {
+      socket.ws.close()
+    }
+    // No socket is connected here; the host asks anyway.
+    harness.host.simulateApproval('sess-mock', { command: 'bash', description: 'no phone' })
+    await new Promise(resolve => setTimeout(resolve, 80))
+
+    const again = await openSocket(harness.base, cookie)
+    try {
+      const resumed = await again.call('session.resume', { session_id: 'sess-mock', profile: 'default', omit_messages: true })
+      assert.equal(resumed.result.open_requests.length, 1)
+      assert.equal(resumed.result.open_requests[0].method, 'approval')
+    } finally {
+      again.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('interrupt withdraws an open request with the host frame shape', async () => {
+  const harness = await boot()
+  harness.host.setTurnDelay(4000)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'stop me' })
+      await socket.waitFor(frame => frame.params?.type === 'message.start')
+      const pending = harness.host.simulateApproval('sess-mock', { command: 'bash', description: 'stop me' })
+      const card = await socket.waitFor(frame => frame.method === 'approval')
+
+      const interrupted = await socket.call('session.interrupt', { session_id: 'sess-mock' })
+      assert.equal(interrupted.result.interrupted, true)
+
+      const cancel = await socket.waitFor(frame => frame.params?.type === 'request.cancel')
+      assert.equal(cancel.params.payload.id, card.id)
+      assert.equal(cancel.params.payload.method, 'approval')
+      assert.equal(cancel.params.payload.reason, 'interrupted')
+
+      const settled = await socket.waitFor(frame =>
+        frame.params?.type === 'session.info' && frame.params.payload.running === false)
+      assert.equal(settled.params.payload.running, false)
+
+      const late = await socket.call('approval.respond', {
+        session_id: 'sess-mock', request_id: pending.approval_id, choice: 'once',
+      })
+      assert.equal(late.result.resolved, 0)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+

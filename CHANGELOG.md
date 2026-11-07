@@ -72,6 +72,25 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   a DSH concept), which also blocks Move to Hermes from reading this server as a
   source; tracked in docs/06 §9 as the next gap.
 
+### Fixed
+
+- **Reverse requests survive a reconnect and a stop.** The withdrawal frame is
+  the host's `{id, method, reason}` (it was `{request_id}`, which the client
+  ignores, so a timed-out or withdrawn card stayed up); `session.resume` and
+  `session.events.since` now carry `open_requests`, so a phone that reattaches
+  gets its pending approval or clarification back instead of an empty list that
+  clears the card; a request raised while no socket was connected is registered
+  and replayed rather than dropped; and `session.interrupt` withdraws the
+  session's open requests (reason `interrupted`) and settles the turn, instead of
+  leaving the pump parked until the request's TTL.
+- **The Hermes listener never inherits a widened `bindHost`.** `gatewayBindHost`
+  defaults to loopback; widening is explicit via `gatewayBindHost` or
+  `gatewayLanHost` (which inherits `lanHost`, so `lanHost: auto` covers both
+  listeners over plain HTTP).
+- **The websocket ticket is accepted only from the subprotocol offer**; the
+  query-parameter fallback is gone, so a credential never lands in proxy logs
+  and the docs' claim about the handshake holds.
+
 ### Known gaps
 
 - No session import, files, git, tasks, skills, memory, kanban, usage, bots or

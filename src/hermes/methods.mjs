@@ -112,7 +112,9 @@ export function createMethods({ backend, hub, runner, requests, logger = console
         const sessionId = String(p.session_id ?? '')
         if (sessionId.length === 0) throw rpcError(-32602, 'session_id required')
         const detail = await detailOf(sessionId)
-        return resumeReplyOf(detail)
+        // Every attach reads this; an empty list is a clear, so a request that
+        // survived a reconnect must be replayed here as well as in the replay.
+        return { ...resumeReplyOf(detail), open_requests: requests.openFor(sessionId) }
       }
       case 'session.title': {
         const sessionId = String(p.session_id ?? '')
@@ -153,22 +155,27 @@ export function createMethods({ backend, hub, runner, requests, logger = console
         return runner.start({ sessionId: String(p.session_id ?? ''), text: String(p.text ?? '') })
       case 'session.events.since': {
         const sessionId = String(p.session_id ?? '')
-        return hub.since(sessionId, Number.isSafeInteger(p.last_seen) ? p.last_seen : 0)
+        // The replay always carries open_requests, and a missing key clears the
+        // client's list, so the unanswered cards must travel with it.
+        return {
+          ...hub.since(sessionId, Number.isSafeInteger(p.last_seen) ? p.last_seen : 0),
+          open_requests: requests.openFor(sessionId),
+        }
       }
       case 'approval.respond': {
         const requestId = String(p.request_id ?? '')
-        const resolved = requests.resolve(requestId, { choice: String(p.choice ?? 'deny') })
+        const resolved = requests.resolve(requestId, { choice: String(p.choice ?? 'deny') }, 'resolved')
         return { resolved: resolved ? 1 : 0 }
       }
       case 'request.answer': {
         const id = String(p.id ?? '')
         const result = p.result !== null && typeof p.result === 'object' ? p.result : {}
-        const resolved = requests.resolve(id, { answer: result.answer ?? result.value ?? '' })
+        const resolved = requests.resolve(id, { answer: result.answer ?? result.value ?? '' }, 'resolved')
         return { status: resolved ? 'ok' : 'expired' }
       }
       case 'clarify.lock': {
         const requestId = String(p.request_id ?? '')
-        const resolved = requests.resolve(requestId, { answer: String(p.answer ?? '') })
+        const resolved = requests.resolve(requestId, { answer: String(p.answer ?? '') }, 'resolved')
         return { status: resolved ? 'ok' : 'expired' }
       }
       case 'model.options': {

@@ -100,11 +100,48 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
 
   /**
    * Reverse requests: one JSON-RPC request to every socket, first answer wins.
+   *
+   * A request is registered whether or not a socket is connected. A phone that
+   * left mid-turn reattaches and restores the card from session.resume /
+   * session.events.since (open_requests) instead of leaving the turn blocked
+   * until the request times out. The withdrawal frame is the host's
+   * {id, method, reason} -- not {request_id} -- because that is what the client
+   * matches on.
+   *
    * @returns {object} manager.
    */
   function createRequestManager() {
+    /** id and answer id -> entry. */
     const pending = new Map()
+    /** envelope id -> entry, for open_requests and replay. */
+    const open = new Map()
     let counter = 0
+
+    /**
+     * Publish the host's withdrawal frame.
+     * @param {object} entry request entry.
+     * @param {string} reason interrupted|resolved|timeout.
+     * @returns {void}
+     */
+    function emitCancel(entry, reason) {
+      hub.publish('request.cancel', { id: entry.id, method: entry.method, reason }, entry.sessionId)
+    }
+
+    /**
+     * Settle one entry exactly once.
+     * @param {object} entry request entry.
+     * @param {object|null} value answer.
+     * @returns {boolean} whether this call settled it.
+     */
+    function settle(entry, value) {
+      if (entry.settled === true) return false
+      entry.settled = true
+      clearTimeout(entry.timer)
+      for (const key of entry.keys) pending.delete(key)
+      open.delete(entry.id)
+      entry.resolve(value)
+      return true
+    }
 
     /**
      * Ask the clients one question.
@@ -114,73 +151,89 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
      * @returns {Promise<object|null>} the answer, or null when withdrawn.
      */
     function call(method, params, options = {}) {
-      if (connections.size === 0) return Promise.resolve(null)
       const id = 'srv-' + (++counter) + '-' + randomUUID().slice(0, 8)
       const frame = { jsonrpc: '2.0', id, method, params }
+      let release
+      const answer = new Promise(resolve => { release = resolve })
+      const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 10 * 60 * 1000
+      const entry = {
+        id,
+        method,
+        params,
+        sessionId: options.sessionId,
+        keys: [id],
+        settled: false,
+        resolve: release,
+      }
+      entry.timer = setTimeout(() => {
+        if (settle(entry, null)) emitCancel(entry, 'timeout')
+      }, timeoutMs)
+      entry.timer.unref?.()
+      pending.set(id, entry)
+      open.set(id, entry)
+      // The client answers an approval or a clarification by the id in its
+      // params (the queue id), not by the envelope id, so both must address
+      // the same pending entry.
+      const answerId = params !== null && typeof params === 'object' ? params.request_id : undefined
+      if (typeof answerId === 'string' && answerId.length > 0 && answerId !== id) {
+        entry.keys.push(answerId)
+        pending.set(answerId, entry)
+      }
       for (const connection of connections) {
         try { connection.sendJson(frame) } catch { connections.delete(connection) }
       }
-      return new Promise(resolve => {
-        const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 10 * 60 * 1000
-        const entry = { sessionId: options.sessionId, keys: [id] }
-        const settle = value => {
-          clearTimeout(timer)
-          for (const key of entry.keys) pending.delete(key)
-          resolve(value)
-        }
-        const timer = setTimeout(() => {
-          for (const key of entry.keys) pending.delete(key)
-          hub.publish('request.cancel', { request_id: id, reason: 'timeout' }, options.sessionId)
-          resolve(null)
-        }, timeoutMs)
-        timer.unref?.()
-        entry.resolve = settle
-        pending.set(id, entry)
-        // The client answers an approval or a clarification by the id in its
-        // params (the queue id), not by the envelope id, so both must address
-        // the same pending entry.
-        const answerId = params !== null && typeof params === 'object' ? params.request_id : undefined
-        if (typeof answerId === 'string' && answerId.length > 0 && answerId !== id) {
-          entry.keys.push(answerId)
-          pending.set(answerId, entry)
-        }
-      })
+      return answer
     }
 
     /**
      * Settle one pending request.
-     * @param {string} id request id.
+     * @param {string} id envelope or answer id.
      * @param {object} value answer.
+     * @param {string} [reason] withdrawal reason to emit.
      * @returns {boolean} whether it was pending.
      */
-    function resolve(id, value) {
+    function resolve(id, value, reason) {
       const entry = pending.get(String(id))
       if (entry === undefined) return false
-      entry.resolve(value)
+      if (!settle(entry, value)) return false
+      if (typeof reason === 'string') emitCancel(entry, reason)
       return true
     }
 
     /**
-     * Withdraw every request for one session (its turn ended or the prompt was
-     * retracted by the facade).
+     * Withdraw every request of one session (its turn ended, was stopped, or the
+     * facade retracted the prompt).
      * @param {string} sessionId session id.
-     * @returns {void}
+     * @param {string} [reason] interrupted|resolved.
+     * @returns {number} how many were open.
      */
-    function cancelSession(sessionId) {
-      const seen = new Set()
-      for (const [id, entry] of [...pending]) {
-        if (entry.sessionId !== sessionId || seen.has(entry)) continue
-        seen.add(entry)
-        entry.resolve(null)
-        hub.publish('request.cancel', { request_id: id, reason: 'cancelled' }, sessionId)
+    function cancelSession(sessionId, reason = 'interrupted') {
+      let count = 0
+      for (const entry of [...open.values()]) {
+        if (entry.sessionId !== sessionId) continue
+        if (!settle(entry, null)) continue
+        emitCancel(entry, reason)
+        count += 1
       }
+      return count
     }
 
-    return { call, resolve, cancelSession, pending }
+    /**
+     * The session's unanswered requests, in the host's open_requests shape.
+     * @param {string} sessionId session id.
+     * @returns {object[]} rows.
+     */
+    function openFor(sessionId) {
+      return [...open.values()]
+        .filter(entry => entry.sessionId === sessionId)
+        .map(entry => ({ id: entry.id, method: entry.method, params: entry.params }))
+    }
+
+    return { call, resolve, cancelSession, openFor, pending, open }
   }
 
   const requests = createRequestManager()
-  requests.call.cancelSession = sessionId => requests.cancelSession(sessionId)
+  requests.call.cancelSession = (sessionId, reason) => requests.cancelSession(sessionId, reason)
 
   const runner = createTurnRunner({
     backend,

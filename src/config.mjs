@@ -38,9 +38,12 @@ export function resolveConfig(raw = {}) {
   const port = Number.isSafeInteger(raw.port) && raw.port > 0 && raw.port < 65536 ? raw.port : DEFAULT_PORT
   const bindHost = typeof raw.bindHost === 'string' && raw.bindHost.length > 0 ? raw.bindHost : DEFAULT_BIND
   const dir = stateDir(raw.dir)
+  // Never inherit a widened bindHost here: setting bindHost to 0.0.0.0 (or a LAN
+  // address) for the webui listener must not also publish the Hermes listener.
+  // It takes an explicit gatewayBindHost to widen it.
   const gatewayBindHost = typeof raw.gatewayBindHost === 'string' && raw.gatewayBindHost.length > 0
     ? raw.gatewayBindHost
-    : bindHost
+    : DEFAULT_BIND
   const lanHost = raw.lanHost === 'auto'
     ? 'auto'
     : (typeof raw.lanHost === 'string' && raw.lanHost.length > 0 ? raw.lanHost : undefined)

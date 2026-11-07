@@ -123,10 +123,10 @@ export function createTurnRunner({ backend, hub, requestClient, logger = console
             hub.publish('session.title', { session_id: sessionId, title: data.title }, sessionId)
           }
         } else if (frame.event === 'approval') {
-          if (data.pending === null || data.pending === undefined) requestClient.cancelSession?.(sessionId)
+          if (data.pending === null || data.pending === undefined) requestClient.cancelSession?.(sessionId, 'resolved')
           else await handleApproval(sessionId, data.pending)
         } else if (frame.event === 'clarify') {
-          if (data.pending === null || data.pending === undefined) requestClient.cancelSession?.(sessionId)
+          if (data.pending === null || data.pending === undefined) requestClient.cancelSession?.(sessionId, 'resolved')
           else await handleClarify(sessionId, data.pending)
         } else if (frame.event === 'done') {
           finished = true
@@ -157,7 +157,7 @@ export function createTurnRunner({ backend, hub, requestClient, logger = console
       }
     } finally {
       active.delete(sessionId)
-      requestClient.cancelSession?.(sessionId)
+      requestClient.cancelSession?.(sessionId, 'resolved')
       if (!finished) {
         hub.publish('session.info', { session_id: sessionId, running: false }, sessionId)
       }
@@ -237,6 +237,10 @@ export function createTurnRunner({ backend, hub, requestClient, logger = console
    * @returns {Promise<object>} reply.
    */
   async function interrupt(sessionId) {
+    // Withdraw the cards before the abort: the pump may be parked inside an
+    // awaited reverse request, so aborting the stream alone would never reach
+    // its finally and the card would sit until the request's own TTL.
+    requestClient.cancelSession?.(sessionId, 'interrupted')
     const entry = active.get(sessionId)
     if (entry === undefined) return { status: 'idle', interrupted: false }
     entry.controller.abort()

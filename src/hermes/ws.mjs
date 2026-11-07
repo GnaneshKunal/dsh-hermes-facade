@@ -309,9 +309,9 @@ export function acceptUpgrade(req, socket, head, options = {}) {
     return undefined
   }
   const offered = splitProtocols(req.headers['sec-websocket-protocol'])
-  let queryTicket
-  try { queryTicket = new URL(req.url ?? '/', 'http://localhost').searchParams.get('ticket') ?? undefined } catch { queryTicket = undefined }
-  const ticket = ticketFromProtocols(offered) ?? queryTicket
+  // The ticket is only accepted from the subprotocol offer. A query parameter
+  // would put a credential into proxy logs, and the client never sends one.
+  const ticket = ticketFromProtocols(offered)
   if (typeof options.authorize === 'function' && options.authorize(ticket, req) !== true) {
     reject(socket, options.rejectStatus ?? 401, 'Unauthorized')
     return undefined
