@@ -175,6 +175,49 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
   }
 
   /**
+   * The session keys one live chat answers to.
+   *
+   * The client-facing id is what every frame for the chat already speaks. Once
+   * a draft has been promoted, the DSH session id is also what the chat's row
+   * carries in session.list, and the list maps a live state onto a row by
+   * exactly that key, so both name the same conversation and both are listed.
+   * The client keeps one state per key and lets Input win, so an alias can
+   * never weaken the state.
+   *
+   * @param {string} sessionId client-facing id.
+   * @returns {string[]} keys.
+   */
+  function activeKeysOf(sessionId) {
+    const backendId = sessions.resolve(sessionId)
+    return backendId === sessionId ? [sessionId] : [sessionId, backendId]
+  }
+
+  /**
+   * The live sessions for session.active_list.
+   *
+   * Idle sessions are omitted: the client draws only Working (a turn runs) and
+   * Input/Needs you (an approval or question is unanswered).
+   *
+   * @returns {Array<{session_key: string, status: string}>} rows.
+   */
+  function activeRows() {
+    /** Client ids with an unanswered approval/clarify. */
+    const asked = new Set()
+    for (const entry of requests.open.values()) {
+      if (typeof entry.sessionId === 'string' && entry.sessionId.length > 0) asked.add(entry.sessionId)
+    }
+    /** key -> status; waiting is the more urgent state of one conversation. */
+    const states = new Map()
+    for (const sessionId of new Set([...runner.active.keys(), ...asked])) {
+      const status = asked.has(sessionId) ? 'waiting' : 'streaming'
+      for (const key of activeKeysOf(sessionId)) {
+        if (status === 'waiting' || states.get(key) === undefined) states.set(key, status)
+      }
+    }
+    return [...states].map(([session_key, status]) => ({ session_key, status }))
+  }
+
+  /**
    * Dispatch one method.
    * @param {string} method method name.
    * @param {object} params params.
@@ -205,6 +248,10 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
         // needs resolved_id, and a row without its title/timestamps sorts badly.
         return { sessions: list.map(row => ({ ...sessionRowOf(row), resolved_id: null })) }
       }
+      case 'session.active_list':
+        // The list's live-state read; the contract maps streaming to Working
+        // and waiting to Input, and the rest to no state at all.
+        return { sessions: activeRows() }
       case 'session.create': {
         // A draft: DSH bakes a session's cwd at creation and validates workspace
         // membership against it, so creating it now would lock the folder before

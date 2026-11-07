@@ -24,7 +24,7 @@ import {
   branches, commitContext, commitRepo, fileDiff, findGitRoot, GitRefusal, pushRepo,
   repoStatus, revertFile, revParse, reviewDiff, reviewList, stageFile, switchBranch, unstageFile,
 } from './git.mjs'
-import { createEventHub } from './events.mjs'
+import { createEventHub, publishSessionsChanged } from './events.mjs'
 import { createMethods } from './methods.mjs'
 import { decodeUpload, sanitizeUploadName } from './uploads.mjs'
 import {
@@ -197,6 +197,8 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
       clearTimeout(entry.timer)
       for (const key of entry.keys) pending.delete(key)
       open.delete(entry.id)
+      // An answered approval/clarify is no longer a reason to show Input.
+      publishSessionsChanged(hub)
       entry.resolve(value)
       return true
     }
@@ -237,6 +239,9 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
         entry.keys.push(answerId)
         pending.set(answerId, entry)
       }
+      // The list turns a session's row into Input (Needs you) on an open
+      // approval or question, so raise the refresh with the request.
+      publishSessionsChanged(hub)
       for (const connection of connections) {
         if (!serverRequests.has(connection)) continue
         try { connection.sendJson(frame) } catch { connections.delete(connection) }

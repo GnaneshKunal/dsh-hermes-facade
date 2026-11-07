@@ -13,6 +13,15 @@
 const DEFAULT_RETAIN = 1000
 
 /**
+ * The live-session list refresh event.
+ *
+ * The session list and the Bot inbox re-read session.active_list when this
+ * arrives, and the client dispatches it on params.type alone (no payload).
+ * @type {string}
+ */
+export const SESSIONS_CHANGED = 'sessions.changed'
+
+/**
  * Build the params of one event notification.
  * @param {string} type event type.
  * @param {number} seq sequence.
@@ -39,6 +48,20 @@ export function eventParams(type, seq, payload, sessionId) {
  */
 export function eventFrame(type, seq, payload, sessionId) {
   return { jsonrpc: '2.0', method: 'event', params: eventParams(type, seq, payload, sessionId) }
+}
+
+/**
+ * Announce that the set of live sessions changed.
+ *
+ * The list is process-wide, not one session's story, so the frame carries no
+ * session id and takes no sequence number: a reattaching screen reads the
+ * current list anyway, so there is nothing to replay.
+ *
+ * @param {object} hub event hub.
+ * @returns {void}
+ */
+export function publishSessionsChanged(hub) {
+  hub.publish(SESSIONS_CHANGED, {})
 }
 
 /**

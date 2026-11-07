@@ -10,6 +10,7 @@
  * @module dsh-hermes-facade/src/hermes/turn
  */
 
+import { publishSessionsChanged } from './events.mjs'
 import { TERMINAL_BACKEND } from './protocol.mjs'
 import { usageOf } from './shapes.mjs'
 
@@ -151,6 +152,9 @@ export function createTurnRunner({
       const wasRunning = active.has(sessionId)
       active.set(sessionId, { streamId, controller, startedAt: now(), info })
       hub.publish('session.info', { ...info, running: true, turn_started_at: now() }, sessionId)
+      // The session list watches the live set, not this chat: tell it a turn
+      // started so its row shows Working without waiting for its poll.
+      publishSessionsChanged(hub)
       hub.publish('message.start', { role: 'assistant' }, sessionId)
       void pump(sessionId, streamId, controller, info)
       // The client turns the reply's status into the send's outcome: only
@@ -266,6 +270,9 @@ export function createTurnRunner({
       }
     } finally {
       active.delete(sessionId)
+      // The list must stop showing this session as busy the moment its turn
+      // ends; a status read after this sees it idle and omits it.
+      publishSessionsChanged(hub)
       // One turn changes the transcript, so a write-fence revision read before
       // it must no longer match.
       onSettled?.(sessionId)
