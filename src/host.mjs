@@ -480,16 +480,18 @@ export function createDshHost({ ctx, logger = console }) {
 
     /**
      * List sessions.
+     * @param {object} [options] options.
+     * @param {boolean} [options.includeSubagent] keep runner-owned subagent rows
+     *   (their tokens are real usage; they are hidden from the chat list only).
      * @returns {Promise<Array<object>>} rows.
      */
-    async listSessions() {
+    async listSessions({ includeSubagent = false } = {}) {
       const value = await invoke('session', 'list', { _request: {} })
       // DSH subagent sessions are runner-owned and only addressable through
       // their durable parent; a plain chat row would fail when opened. Hide
-      // them for now (Hermex's own toggle needs row tagging + parent-address
-      // reads, which are future work).
+      // them from the chat list; usage analytics reads them explicitly.
       return (Array.isArray(value?.items) ? value.items : [])
-        .filter(item => item?.origin !== 'subagent')
+        .filter(item => includeSubagent || item?.origin !== 'subagent')
     },
     /**
      * List the user-invocable skills for the newest session. DSH's catalog is
@@ -537,7 +539,7 @@ export function createDshHost({ ctx, logger = console }) {
     async usageReport(days) {
       const span = Math.min(Math.max(Number.parseInt(String(days ?? 30), 10) || 30, 1), 365)
       const cutoff = Date.now() - span * 86400000
-      const rows = (await this.listSessions()).filter(row => Number(row?.updatedAt) >= cutoff)
+      const rows = (await this.listSessions({ includeSubagent: true })).filter(row => Number(row?.updatedAt) >= cutoff)
       const models = new Map()
       const daily = new Map()
       let input = 0
@@ -563,13 +565,17 @@ export function createDshHost({ ctx, logger = console }) {
         const selected = values.modelSelection?.lastUsed ?? values.modelSelection?.next ?? null
         const model = typeof selected?.model === 'string' ? selected.model : ''
         const provider = typeof selected?.provider === 'string' ? selected.provider : ''
-        const key = model + '\u0000' + provider
-        const modelRow = models.get(key) ?? { model, provider, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, sessions: 0 }
-        modelRow.input_tokens += rowInput
-        modelRow.output_tokens += rowOutput
-        modelRow.cache_read_tokens += rowCache
-        modelRow.sessions += 1
-        models.set(key, modelRow)
+        // A blank chat has no model to name; its tokens are still in the totals
+        // and daily chart, but an "Unknown Model" row with zero tokens is noise.
+        if (model.length > 0) {
+          const key = model + '\u0000' + provider
+          const modelRow = models.get(key) ?? { model, provider, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, sessions: 0 }
+          modelRow.input_tokens += rowInput
+          modelRow.output_tokens += rowOutput
+          modelRow.cache_read_tokens += rowCache
+          modelRow.sessions += 1
+          models.set(key, modelRow)
+        }
       }
       const dailyRows = [...daily.values()].sort((left, right) => left.day.localeCompare(right.day))
       const modelRows = [...models.values()].sort((left, right) =>

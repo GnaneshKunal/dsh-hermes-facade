@@ -766,6 +766,47 @@ test('skills come from the newest session catalog and read only its SKILL.md', a
   assert.deepEqual(call.args, { request: { sessionId: 's1' } })
 })
 
+test('usage includes subagent sessions, excludes the window and attributes last-prompt days', async () => {
+  const now = Date.now()
+  const old = now - 40 * 86400000
+  const promptAt = Date.parse('2026-11-01T12:00:00Z')
+  const { host } = build({}, {
+    updatedAt: now,
+    extraRows: [
+      {
+        sessionId: 'sub', updatedAt: now, running: false, origin: 'subagent',
+        projections: { values: {
+          tokenUsage: { uncachedInputTokens: 200, outputTokens: 100, cacheReadTokens: 20, cacheWriteTokens: 0 },
+          modelSelection: { lastUsed: { model: 'sub-model', provider: 'p2' } },
+          sessionListMetadata: { lastPromptAt: promptAt },
+        } },
+      },
+      {
+        sessionId: 'old', updatedAt: old, running: false,
+        projections: { values: { tokenUsage: { uncachedInputTokens: 999, outputTokens: 999, cacheReadTokens: 0 } } },
+      },
+      {
+        sessionId: 'blank', updatedAt: now, running: false,
+        projections: { values: { tokenUsage: { uncachedInputTokens: 10, outputTokens: 1, cacheReadTokens: 0 } } },
+      },
+    ],
+  })
+  const report = await host.usageReport(30)
+  assert.deepEqual(report.usage.totals, {
+    total_input: 310, total_output: 151, total_cache_read: 30, total_sessions: 3,
+  })
+  assert.deepEqual(report.usage.daily.map(row => row.day), ['2026-11-01', new Date(now).toISOString().slice(0, 10)])
+  assert.deepEqual(report.models.models.map(row => row.model).sort(), ['deepseek-v4-pro', 'sub-model'])
+})
+
+test('usage in a window with no sessions is an honest empty state', async () => {
+  const { host } = build({}, { noSessions: true })
+  const report = await host.usageReport(7)
+  assert.deepEqual(report.usage.totals, { total_input: 0, total_output: 0, total_cache_read: 0, total_sessions: 0 })
+  assert.deepEqual(report.usage.daily, [])
+  assert.deepEqual(report.models.models, [])
+})
+
 test('usage reports tokens by day and model from session projections', async () => {
   const { host } = build({}, { updatedAt: Date.now() })
   const report = await host.usageReport(30)
