@@ -653,17 +653,27 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
         hosts.push(config.gatewayLanHost)
       }
       let first
-      for (const host of hosts) {
-        const instance = host === config.gatewayBindHost ? server : makeServer()
-        const port = await new Promise((resolve, reject) => {
-          instance.once('error', reject)
-          instance.listen(config.gatewayPort, host, () => {
-            const bound = instance.address()
-            resolve(bound !== null && typeof bound === 'object' ? bound.port : config.gatewayPort)
+      try {
+        for (const host of hosts) {
+          const instance = host === config.gatewayBindHost ? server : makeServer()
+          const port = await new Promise((resolve, reject) => {
+            instance.once('error', reject)
+            instance.listen(config.gatewayPort, host, () => {
+              const bound = instance.address()
+              resolve(bound !== null && typeof bound === 'object' ? bound.port : config.gatewayPort)
+            })
           })
-        })
-        activeServers.push(instance)
-        if (first === undefined) first = { host, port }
+          activeServers.push(instance)
+          if (first === undefined) first = { host, port }
+        }
+      } catch (error) {
+        // One host in gatewayLanHost can be stale or unroutable (EADDRNOTAVAIL).
+        // A half-bound gateway would keep serving on the addresses that worked
+        // while apply() reports the mount failed, so release every one.
+        for (const instance of activeServers.splice(0)) {
+          try { instance.close() } catch { /* already closed */ }
+        }
+        throw error
       }
       return first
     },

@@ -416,3 +416,51 @@ test('interrupt withdraws an open request with the host frame shape', async () =
   }
 })
 
+
+test('a failed bind releases the listeners already bound', async () => {
+  const { createServer } = await import('node:http')
+  const probe = createServer()
+  const freePort = await new Promise((resolve, reject) => {
+    probe.once('error', reject)
+    probe.listen(0, '127.0.0.1', () => resolve(probe.address().port))
+  })
+  await new Promise(resolve => probe.close(resolve))
+
+  const dir = mkdtempSync(join(tmpdir(), 'hermes-gateway-bind-'))
+  const config = {
+    enabled: true,
+    port: 0,
+    bindHost: '127.0.0.1',
+    dir,
+    tokenTtlSeconds: 3600,
+    logRequests: false,
+    gatewayEnabled: true,
+    gatewayPort: freePort,
+    gatewayBindHost: '127.0.0.1',
+    // TEST-NET-1 is not an address of this machine, so the second bind fails.
+    gatewayLanHost: '192.0.2.1',
+    internalToken: 'test-internal-token-0123456789abcdef',
+    historyWindow: 800,
+    historyPage: 200,
+  }
+  const gateway = createGatewayServer({
+    config,
+    facadeUrl: 'http://127.0.0.1:1',
+    facadeAuth: {
+      verifyCookie: () => false,
+      verifyPassword: () => false,
+      issueCookie: () => 'test-cookie',
+    },
+    logger: { info: () => {}, warn: () => {} },
+  })
+  await assert.rejects(gateway.listen(), /EADDRNOTAVAIL|EADDRINUSE|ENOTFOUND|EINVAL/)
+  // The loopback listener from the successful first bind must be gone.
+  const rebind = createServer()
+  await new Promise((resolve, reject) => {
+    rebind.once('error', reject)
+    rebind.listen(freePort, '127.0.0.1', resolve)
+  })
+  await new Promise(resolve => rebind.close(resolve))
+  await gateway.close()
+})
+
