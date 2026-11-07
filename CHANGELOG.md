@@ -37,6 +37,13 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 
 ### Fixed
 
+- **Subagent sessions are hidden for now.** DSH child-agent sessions (`origin: "subagent"`) are
+  runner-owned and only addressable through their durable parent; listing them made Hermex show
+  them as ordinary chats, and a plain open returned a 500 ("subagent Sessions require their
+  durable parent address"). `GET /api/sessions` now filters them out and a direct open answers 400
+  with a readable detail. Hermex's own Settings → Sessions → Subagent Sessions toggle can show
+  them only when rows are tagged `session_source: "subagent"` and reads use the parent address;
+  that is future work (see docs/05).
 - **The model picker actually applies.** `POST /api/session/update` (the picker's call),
   `POST /api/session/new` and `POST /api/chat/start` used to drop `model`/`model_provider`; the
   chip showed a model the next turn did not use. They now resolve the client's id against the DSH

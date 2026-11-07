@@ -692,6 +692,26 @@ test('a reloaded transcript carries tool results as persisted tool calls', async
   assert.equal(body.session.messages.some(message => message.role === 'tool'), false)
 })
 
+test('subagent sessions are hidden and a direct open answers 400', async t => {
+  const { facade, host, base, password } = await boot()
+  t.after(() => facade.close())
+  const record = host.seed('subagent-mock', [])
+  record.origin = 'subagent'
+  const cookie = await signIn(base, password)
+
+  const list = await (await fetch(base + '/api/sessions', { headers: { cookie } })).json()
+  assert.equal(list.sessions.some(row => row.session_id === 'subagent-mock'), false)
+
+  host.readSession = async () => {
+    const error = new Error('This is a subagent session; open the parent chat instead.')
+    error.code = 'subagent-session'
+    throw error
+  }
+  const direct = await fetch(base + '/api/session?session_id=subagent-mock&messages=1&msg_limit=50', { headers: { cookie } })
+  assert.equal(direct.status, 400)
+  assert.match(JSON.stringify(await direct.json()), /subagent/)
+})
+
 test('the workspace file browser lists a directory and reads a text file', async t => {
   const { facade, base, password } = await boot()
   t.after(() => facade.close())
