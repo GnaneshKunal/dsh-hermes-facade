@@ -464,3 +464,73 @@ test('a failed bind releases the listeners already bound', async () => {
   await gateway.close()
 })
 
+
+test('projects.tree lists the DSH workspaces with their sessions', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const tree = await socket.call('projects.tree', { profile: 'default' })
+      assert.equal(tree.result.projects.length, 1)
+      assert.equal(tree.result.projects[0].id, 'ws-mock')
+      assert.equal(tree.result.projects[0].label, 'mock workspace')
+      assert.deepEqual(tree.result.projects[0].sessionIds, ['sess-mock'])
+      assert.equal(tree.result.projects[0].isAuto, false)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('config.set applies a model and an effort and echoes the host fields', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+
+      const model = await socket.call('config.set', {
+        session_id: 'sess-mock',
+        profile: 'default',
+        scope: 'session',
+        key: 'model',
+        value: 'deepseek-v4-pro --provider deepseek-official --session',
+        confirm_expensive_model: false,
+      })
+      assert.equal(model.result.ok, true)
+      assert.equal(model.result.key, 'model')
+      assert.equal(model.result.scope, 'session')
+      assert.equal(model.result.value, 'deepseek-v4-pro --provider deepseek-official --session')
+      assert.equal(model.result.confirm_required, false)
+
+      const effort = await socket.call('config.set', {
+        session_id: 'sess-mock',
+        profile: 'default',
+        scope: 'session',
+        key: 'reasoning',
+        value: 'high',
+      })
+      assert.equal(effort.result.key, 'reasoning')
+      assert.equal(effort.result.value, 'high')
+
+      // The picker's state is restored from the resume snapshot.
+      const resumed = await socket.call('session.resume', { session_id: 'sess-mock', profile: 'default', omit_messages: true })
+      assert.equal(resumed.result.info.reasoning_effort, 'high')
+
+      const refused = await socket.call('config.set', { session_id: 'sess-mock', key: 'personality', value: 'x' })
+      assert.equal(refused.error.code, -32601)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+

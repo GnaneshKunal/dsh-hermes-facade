@@ -28,6 +28,33 @@ function jsonOf(data) {
 }
 
 /**
+ * The live state a session.info frame must carry: the composer restores its
+ * model and effort chips from it, and a missing field clears them.
+ *
+ * @param {object} backend facade client.
+ * @param {string} sessionId session id.
+ * @returns {Promise<object>} info fields without `running`.
+ */
+async function infoPayload(backend, sessionId) {
+  const info = { session_id: sessionId }
+  try {
+    const list = await backend.call('GET', '/api/sessions', { query: { include_archived: 1 } })
+    const rows = Array.isArray(list.json?.sessions) ? list.json.sessions : []
+    const row = rows.find(entry => String(entry?.session_id ?? entry?.sessionId ?? '') === sessionId)
+    if (row !== undefined) {
+      if (typeof row.model === 'string' && row.model.length > 0) info.model = row.model
+      if (typeof row.model_provider === 'string' && row.model_provider.length > 0) info.provider = row.model_provider
+      if (typeof row.title === 'string' && row.title.length > 0) info.title = row.title
+      if (typeof row.workspace === 'string' && row.workspace.length > 0) info.cwd = row.workspace
+    }
+    const reasoning = await backend.call('GET', '/api/reasoning', { query: { session_id: sessionId } })
+    const effort = reasoning.json?.effective_effort ?? reasoning.json?.effort
+    if (typeof effort === 'string' && effort.length > 0) info.reasoning_effort = effort
+  } catch { /* the state is advisory; the turn still runs */ }
+  return info
+}
+
+/**
  * Create the turn runner.
  * @param {object} options options.
  * @param {object} options.backend facade client.
@@ -67,10 +94,11 @@ export function createTurnRunner({ backend, hub, requestClient, logger = console
       throw new Error(String(detail))
     }
     const controller = new AbortController()
-    active.set(sessionId, { streamId, controller, startedAt: now() })
-    hub.publish('session.info', { session_id: sessionId, running: true, turn_started_at: now() }, sessionId)
+    const info = await infoPayload(backend, sessionId)
+    active.set(sessionId, { streamId, controller, startedAt: now(), info })
+    hub.publish('session.info', { ...info, running: true, turn_started_at: now() }, sessionId)
     hub.publish('message.start', { role: 'assistant' }, sessionId)
-    void pump(sessionId, streamId, controller)
+    void pump(sessionId, streamId, controller, info)
     return { status: 'accepted', session_id: sessionId, turn_isolation: null }
   }
 
@@ -81,7 +109,7 @@ export function createTurnRunner({ backend, hub, requestClient, logger = console
    * @param {AbortController} controller abort handle.
    * @returns {Promise<void>} resolves when the turn ends.
    */
-  async function pump(sessionId, streamId, controller) {
+  async function pump(sessionId, streamId, controller, info = { session_id: sessionId }) {
     const toolNames = new Map()
     let text = ''
     let finished = false
@@ -131,18 +159,18 @@ export function createTurnRunner({ backend, hub, requestClient, logger = console
         } else if (frame.event === 'done') {
           finished = true
           hub.publish('message.complete', { status: 'completed', text }, sessionId)
-          hub.publish('session.info', { session_id: sessionId, running: false }, sessionId)
+          hub.publish('session.info', { ...info, running: false }, sessionId)
           break
         } else if (frame.event === 'error') {
           finished = true
           const message = typeof data.message === 'string' && data.message.length > 0 ? data.message : 'The turn failed.'
           hub.publish('message.complete', { status: 'error', text: message }, sessionId)
-          hub.publish('session.info', { session_id: sessionId, running: false }, sessionId)
+          hub.publish('session.info', { ...info, running: false }, sessionId)
           break
         } else if (frame.event === 'cancel') {
           finished = true
           hub.publish('message.complete', { status: 'interrupted', text }, sessionId)
-          hub.publish('session.info', { session_id: sessionId, running: false }, sessionId)
+          hub.publish('session.info', { ...info, running: false }, sessionId)
           break
         } else if (frame.event === 'stream_end') {
           break
@@ -152,14 +180,14 @@ export function createTurnRunner({ backend, hub, requestClient, logger = console
       if (controller.signal.aborted !== true) {
         logger.warn?.('hermes-gateway: turn stream failed: ' + String(error?.message ?? error))
         hub.publish('message.complete', { status: 'error', text: String(error?.message ?? error) }, sessionId)
-        hub.publish('session.info', { session_id: sessionId, running: false }, sessionId)
+        hub.publish('session.info', { ...info, running: false }, sessionId)
         finished = true
       }
     } finally {
       active.delete(sessionId)
       requestClient.cancelSession?.(sessionId, 'resolved')
       if (!finished) {
-        hub.publish('session.info', { session_id: sessionId, running: false }, sessionId)
+        hub.publish('session.info', { ...info, running: false }, sessionId)
       }
     }
   }

@@ -73,6 +73,8 @@ export function sessionInfoOf(detail, extra = {}) {
     stored_session_id: id,
     session_key: id,
     yolo: false,
+    ...(typeof detail?.reasoning_effort === 'string' && detail.reasoning_effort.length > 0
+      ? { reasoning_effort: detail.reasoning_effort } : {}),
     ...(detail?.is_streaming === true && Number.isFinite(detail?.turn_started_at)
       ? { turn_started_at: detail.turn_started_at } : {}),
     ...extra,
