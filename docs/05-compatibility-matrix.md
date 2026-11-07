@@ -191,7 +191,7 @@ capability probes, so an absent backend shows the screen's own error. Kanban is 
 | Surface | Endpoint(s) / method(s) | State | What the phone shows | Bridgeable? |
 |---|---|---|---|---|
 | Files (in-chat workspace) | `GET /api/fs/list`, `/api/fs/read-text`, `/api/fs/download` + `session.info.terminal_backend:"local"` | **WORKS** (read-only) | the Files link opens a browser for the chat's folder: listing (host caches and credential stores hidden), text previews (first 512 KiB), binary/image downloads. A path outside the chat's folders answers `403`; credential material answers `403` wherever it sits; sources over 64 MiB answer `413`; the facade state and secret directories are never served. Git still has no `fs/git-root`, so its menu stays hidden | — (the shared fence is in place; Git and Memory will reuse it) |
-| Git (in-chat) | `GET /api/fs/git-root`, `/api/git/status`, `/api/git/review/{list,diff}`, `/api/git/file-diff`, `/api/git/review/{stage,unstage,revert,commit,push,rev-parse,commit-context}`, `/api/git/branches`, `POST /api/git/branch/switch` | **404** | the Git menu is hidden (it appears only when `fs/git-root` finds a repo) | yes: M — exec `git` in the session folder; writes need an idle guard |
+| Git (in-chat, read-only) | `GET /api/fs/git-root`, `/api/git/status`, `/api/git/review/{list,diff}`, `/api/git/file-diff`, `/api/git/review/rev-parse`, `/api/git/branches` | **WORKS** (read) | the Git menu opens in a repository: branch/ahead/behind, changed files and counts, staged/unstaged/untracked flags, per-file patches, branch list. Writes and branch switch answer `400` with a reason, and no pull request is reported. A credential file is filtered from the rows and its diff answers `403`; reads are limited to the repository holding the chat's folder | writes next: stage/commit/push behind the idle guard |
 | Tasks / cron | `GET /api/cron/jobs`, `/runs`, `POST …/{pause,resume,trigger}`, `DELETE`, `/api/cron/delivery-targets`, `GET /api/sessions?scheduled=1&sources=cron` | **404** | the Tasks screen opens and shows its error; the agenda section is empty | yes: M — DSH `schedule/*` is a near-exact match; delivery targets are sessions only |
 | Skills | `GET /api/skills`, `/api/skills/content`, `PUT /api/skills/toggle` + `/api/fs/*` for linked files | **404** | the Skills screen errors | list/content: S/M (`skills/list`); toggle: L (no write RPC) |
 | Memory | `GET /api/config` `.memory`, `/api/profiles/{name}/soul`, `GET /api/files/read`, `POST /api/files/upload`, `profiles.list[].path` | **404 / PARTIAL** | the Memory screen errors (no profile `path`, no memory block) | possible: M — map to `$DSH_HOME/AGENTS.md` (a real memory the agent reads), with an atomic save; no soul |
@@ -220,7 +220,8 @@ capability probes, so an absent backend shows the screen's own error. Kanban is 
 | Files browser | **works** (read-only) | **works** (read-only, fenced to the chat folder) |
 | Session search | 404 | 404 (DSH RPC exists) |
 | Tasks / Skills / Memory / Usage | stub screens | error screens (the real backend is missing) |
-| Git / Kanban | stubs | 404, controls hidden or "unavailable" |
+| Git | panel unavailable | read-only: status, changes, diffs, branches; writes refused |
+| Kanban | stub | 404, "unavailable" |
 | Attachments | refused | RPC missing; a send with an attachment fails |
 | YOLO | POST reports false | refused with a key-level error (honest) |
 | `@path` completion | n/a | `complete.path` -32601 |
@@ -252,8 +253,9 @@ keys on the forwarded client rather than the shared proxy address, an empty prom
 concurrent submits share one session and run in order, `session.info` falls back to the catalog default when the
 session names no model, and Fast/yolo are refused instead of echoed. What remains:
 
-1. **Git never appears.** `session.info` now reports `terminal_backend:"local"`, so the Files link opens, but
-   `GET /api/fs/git-root` is still 404 and the Git menu stays hidden (planned: Git read, then writes).
+1. **Git is read-only.** The menu shows status, changes, diffs and branches, but stage/unstage/revert/commit/push
+   and branch switch answer `400 {"detail":"Git writes are not supported by this DeepSeek Harness host yet"}`.
+   The commit-message helper is unavailable too (it is a write-path read), and no pull request is reported.
 2. **No usage anywhere.** `message.complete` carries no `usage`/`partial`/`persisted_turn` and there is no
    `session.usage` ticker, so the context ring is frozen.
 3. **Edit / regenerate / retry append instead of rewinding** (`truncate_before_row_id` ignored).
@@ -272,7 +274,8 @@ The `:9121` Files routes are fenced: a path is served only when its realpath is 
 workspaces, known session folders, and a draft's chosen folder), and never when it is inside the facade's state
 directory, `$DSH_HOME` or the usual secret directories; symlinks resolve first, so a link cannot point out. The
 Legacy `:9120` browser still accepts any absolute path, as it always has (same boundary as DSH's own GUI), and the
-client's own path check is explicitly not a security boundary.
+client's own path check is explicitly not a security boundary. The read-only Git routes admit the repository root
+that holds a chat folder (normally above it) and refuse a diff of a credential file.
 
 ---
 

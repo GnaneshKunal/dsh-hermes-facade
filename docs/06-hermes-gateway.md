@@ -9,9 +9,9 @@ Hermes host contract, so the same iOS app can be pointed at DeepSeek Harness as
 a native Hermes server. It is additive: port 9120 keeps serving the webui
 contract unchanged.
 
-Status: **v1.3** (2026-11-07). Chat, sessions (including the write fence the
-session list needs), approvals, clarifications, models, commands, export and the
-read-only in-chat Files browser.
+Status: **v1.4** (2026-11-07). Chat, sessions (including the write fence the
+session list needs), approvals, clarifications, models, commands, export, the
+read-only in-chat Files browser and the read-only Git menu.
 The 2026-11-07 audit's wire defects (turn status, stop vocabulary, title read,
 list rows, multi-field PATCH, collection 404s, source matching, `limit=0`,
 capability-gated reverse requests, forwarded-client rate limiting, prompt races,
@@ -188,7 +188,10 @@ with reason `resolved`, like the `approval.respond`/`request.answer` path.
 | `GET /api/fs/list?path=` | one chat folder: `{entries:[{name, path, isDirectory}]}`. An unreadable folder is a well-formed 200 `{entries:[],error:...}`. The host's hidden caches (`.git`, `node_modules`, `dist`, …) and credential stores (`.env`, `.git-credentials`, `mcp-tokens/`, …) are not listed |
 | `GET /api/fs/read-text?path=` | `{binary, byteSize, language, path, text, truncated}`; only the first 512 KiB is read (the facade's `max_bytes`), a source over 64 MiB answers `413 File too large`, and a binary file answers `binary:true` |
 | `GET /api/fs/download?path=[&session_id=]` | the file's bytes and content type. A relative `path` resolves against `session_id`'s folder and is then fenced; `attachment:` refs answer 400; a directory answers 400 `Path points to a directory`; a source over 64 MiB answers 413 |
-| `GET /api/files/*`, `/api/fs/git-root` | **not implemented** (404); the Git menu stays hidden |
+| `GET /api/fs/git-root?path=` | `{root}`: the repository holding the chat's folder, or `null` outside one |
+| `GET /api/git/status?path=`, `/api/git/branches?path=`, `/api/git/review/list?path=&scope=[&base=]`, `/api/git/review/diff?path=&file=&scope=[&base=][&staged=]`, `/api/git/file-diff?path=&file=`, `/api/git/review/rev-parse?path=[&ref=]` | read-only git for that root: status (branch/ahead/behind/flags/rows), changed files per scope, per-file patches, branch rows, sha. A credential file is filtered from the rows and its patch answers `403`. A non-repository answers the host's empty shapes |
+| `POST /api/git/*` (stage/unstage/revert/commit/push, branch switch, worktrees) and `review/commit-context` | `400 Git writes are not supported…`; `review/ship-info` → `{pr:null}`, `gh-auth` → `{available:false}`, `worktrees` → `{worktrees:[]}` |
+| `GET /api/files/*` | **not implemented** (404) |
 
 The three `/api/fs/*` routes share one fence: the client's path (absolute, or
 relative to `session_id`'s folder) must realpath inside a chat folder (DSH
@@ -198,10 +201,18 @@ served, even if a chat folder were opened inside one; a symlink resolves first,
 so it cannot point out. Credential material the host's own Files guard refuses
 (`.env`, `.env.*`, `.envrc`, `.git-credentials`, `auth.json`, `credentials`,
 `config.yaml`, the four secret-cache stores, and any `mcp-tokens`/`pairing`
-component) is refused wherever it sits, and the same names plus the host's
-build/VCS caches are hidden from a listing. A denied path answers `403 {"detail":"Path is outside the session
-workspace"}`; credential material answers `403 {"detail":"Access to sensitive
-files is not allowed"}`.
+component, or `.ssh`/`.aws`/`.gnupg`/`.dsh`) is refused wherever it sits, and the
+same names plus the host's build/VCS caches are hidden from a listing. A denied path answers
+`403 {"detail":"Path is outside the session workspace"}`; credential material
+answers `403 {"detail":"Access to sensitive files is not allowed"}`.
+
+The read-only Git routes share the same instinct at a different boundary: the
+client names the repository root, which normally sits *above* the chat folder, so
+the Git scope admits that top-level only when it really is the git root of an
+allowed folder. A `file` is realpath-checked inside that root, a symlink is
+refused, `base`/`ref` must be revisions (a query cannot inject a git option), a
+deny-root or `.ssh`/`.aws`/`.gnupg`/`.dsh` component is hidden and its patch
+answers `403`, and the all-add fallback runs only for an untracked file.
 
 ---
 
@@ -210,13 +221,14 @@ files is not allowed"}`.
 - **Works:** chat with tokens, thinking, live tool cards, stop, approvals
   (once/session/always/deny), clarifications, session list, open, rename, pin,
   archive (the write-fence route above is what lets those three work), branch,
-  export, model picker, slash commands, and the in-chat Files browser
-  (`session.info.terminal_backend:"local"` plus the fenced `/api/fs/*` routes).
+  export, model picker, slash commands, the in-chat Files browser
+  (`session.info.terminal_backend:"local"` plus the fenced `/api/fs/*` routes)
+  and the read-only Git menu (status, changes, diffs, branches).
 - **Partial:** the context ring stays empty (no `usage` on turn events); the
   session rows carry no `preview`; Fast and yolo are refused, so their controls
-  revert instead of showing a false state; the Git entry never appears because
-  there is no `fs/git-root`.
-- **Empty/absent:** Tasks, Kanban, Skills, Memory, Usage, Git, Bots, Bot
+  revert instead of showing a false state; Git is read-only (stage/commit/push
+  and branch switch answer 400 with a reason).
+- **Empty/absent:** Tasks, Kanban, Skills, Memory, Usage, Bots, Bot
   screen. Those screens exist on a Hermes host; here they have no backend, and
   unimplemented methods make their controls hide rather than error (the sidebar
   toggles for Tasks/Skills/Memory/Usage are local, so those screens show their
@@ -280,9 +292,9 @@ The full surface state and the plan for the missing screens are
 1. **No session import.** Move to Hermes cannot use this host as a destination
    until DSH can accept a transcript. The webui side also refuses
    `/api/profile/switch`, so a move cannot even read its source yet.
-2. **No git/tasks/skills/memory/kanban/bots.** Each is a separate backend (and
-   DSH has no memory or kanban store at all). Files is read-only: the app never
-   writes through `/api/fs/*`, and this listener refuses to invent writes.
+2. **No tasks/skills/memory/kanban/bots.** Each is a separate backend (and DSH
+   has no memory or kanban store at all). Files is read-only, and Git is
+   read-only: writes answer a refusal rather than touching the user's tree.
 3. **One Profile.** Everything is filed under `default`; DSH has agent presets,
    not Profiles.
 4. **Version claim.** We report 0.22.5 to clear the gate, but only implement the
