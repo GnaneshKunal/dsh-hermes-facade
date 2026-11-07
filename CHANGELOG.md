@@ -113,8 +113,8 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   UTC daily chart, for the requested 1-365 day window. DSH has no per-day
   ledger, so a session's cumulative tokens land on its last prompt day (falling
   back to last activity), archived and subagent sessions are included, and its
-  last-used model names its row (a session with no model counts only in the
-  totals). There is **no cost**: DSH has no pricing, so
+  last-used model names its row (a session with no model counts in
+  totals/daily but adds no model row). There is **no cost**: DSH has no pricing, so
   the cost cells read 0 rather than a fabricated estimate. `insights.get`
   answers `{messages:0}` because DSH exposes no message count; the screen
   already marks its Messages total approximate. No sessions in the window is a

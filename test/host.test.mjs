@@ -796,6 +796,14 @@ test('usage includes subagent sessions, excludes the window and attributes last-
     total_input: 310, total_output: 151, total_cache_read: 30, total_sessions: 3,
   })
   assert.deepEqual(report.usage.daily.map(row => row.day), ['2026-11-01', new Date(now).toISOString().slice(0, 10)])
+  const promptDay = report.usage.daily.find(row => row.day === '2026-11-01')
+  assert.equal(promptDay.input_tokens, 200)
+  assert.equal(promptDay.output_tokens, 100)
+  assert.equal(promptDay.cache_read_tokens, 20)
+  const subModel = report.models.models.find(row => row.model === 'sub-model')
+  assert.equal(subModel.input_tokens, 200)
+  assert.equal(subModel.output_tokens, 100)
+  assert.equal(report.models.models.length, 2)
   assert.deepEqual(report.models.models.map(row => row.model).sort(), ['deepseek-v4-pro', 'sub-model'])
 })
 
