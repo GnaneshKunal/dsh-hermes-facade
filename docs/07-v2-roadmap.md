@@ -75,7 +75,7 @@ Effort: **S** = one route/method over an existing facade primitive; **M** = new 
 | 6 | Memory | edit what the agent remembers | `/api/memory`, `files/read`, `files/upload`, `profiles/{n}/soul`, `profiles.list[].path` | `$DSH_HOME/AGENTS.md` + the project AGENTS.md chain (a real memory) | M | done (read-only, global) |
 | 7 | Git read | see what changed, diffs | `/api/fs/git-root`, `/api/git/status`, `review/list`, `review/diff`, `file-diff`, `rev-parse`, `branches` | exec `git` in the session folder | M | done |
 | 8 | Git write | stage / commit / push | `review/{stage,unstage,revert,commit,push}`, `branch/switch` | exec `git`, with the idle guard the client already expects | M | later |
-| 9 | Skills | browse skills and their files | `/api/skills`, `/api/skills/content` | `skills/list` (read-only) + `workspaceFiles/read` | S/M | done (read-only) |
+| 9 | Skills | browse skills and their files | `/api/skills`, `/api/skills/content` | `skills/list` (read-only) + the catalog SKILL.md path | S/M | done (read-only) |
 | 10 | Usage / Insights | token and session usage | `/api/analytics/{usage,models}`, `insights.get` | a facade ledger over `assistant/message.usage`; **no cost data** | M/L | later |
 | 11 | Attachments | send a photo or a file | `POST /api/chat/image-upload`, `file.attach` | `fileUploads/upload` returns a receipt, not a path — needs a staging convention | M | later |
 | 12 | Goal / loop / heartbeat | the goal menu | `session.control.read`, `session.control` | `goal` projection only; no loop/heartbeat | M/L | later |
@@ -215,13 +215,13 @@ Tests cover the loaded document, the empty state, the 404s and both refused writ
 **Skills (read-only).** `GET /api/skills` maps DSH's per-session catalogue to the bare array the screen decodes
 (`enabled: true`, because every skill DSH lists is invocable), and `GET /api/skills/content` returns the named
 skill's SKILL.md plus its catalog path; an unknown name is a 404, so a missing skill is an honest error. DSH's
-catalogue is scoped to a session composition, so the newest chat supplies the cwd/preset; no sessions means an empty
-catalogue. `PUT /api/skills/toggle` answers 400 with the reason: DSH has no skill-disable primitive. Linked files
+catalogue is scoped to a session composition, so the newest session (archived included) supplies the cwd/preset;
+no sessions means an empty catalogue. `PUT /api/skills/toggle` answers 400 with the reason: DSH has no skill-disable primitive. Linked files
 are the client's `/api/fs/*` reads from the SKILL.md folder; they appear only when that folder sits inside a chat's
 fenced roots, so a skill under `$DSH_HOME` opens without them. Tests cover the list, the content, the 404 and the
 refused toggle.
 
-Verify: `npm run check && npm test` (196 tests), then rename a chat from the phone's list, pin it, archive it,
+Verify: `npm run check && npm test` (198 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---
