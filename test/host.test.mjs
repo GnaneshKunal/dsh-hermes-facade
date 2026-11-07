@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -86,7 +86,7 @@ function build(existingWorkspaces = {}, options = {}) {
       if (request.method === 'cancel') return { accepted: true }
       if (request.namespace === 'costMeter' && request.method === 'getBillingStatistics') return options.costStats
       if (request.namespace === 'skills' && request.method === 'list') {
-        return { skills: [{ name: 'demo', description: 'D', path: options.skillPath ?? '/nonexistent/SKILL.md' }] }
+        return { skills: options.skills ?? [{ name: 'demo', description: 'D', path: options.skillPath ?? '/nonexistent/SKILL.md' }] }
       }
       if (request.namespace === 'schedule') {
         if (request.method === 'list') return { items: [{ id: 's1' }], shown: 1, total: 1, limit: 100, offset: 0 }
@@ -796,6 +796,33 @@ test('skills come from the newest session catalog and read only its SKILL.md', a
   assert.equal(await host.readSkill('missing'), null)
   const call = calls.find(entry => entry.namespace === 'skills' && entry.method === 'list')
   assert.deepEqual(call.args, { request: { sessionId: 's1' } })
+})
+
+test('a package-provided skill reads its assets markdown instead of 404ing', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-skills-'))
+  mkdirSync(join(home, 'profiles', 'web', 'node_modules', 'demo-package', 'assets'), { recursive: true })
+  writeFileSync(join(home, 'profiles', 'web', 'node_modules', 'demo-package', 'assets', 'demo-package.md'), 'package body')
+  const previous = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  try {
+    const { host } = build({}, { skills: [{ name: 'demo-package', description: 'package skill' }] })
+    assert.deepEqual(await host.readSkill('demo-package'), {
+      name: 'demo-package',
+      content: 'package body',
+      path: join(home, 'profiles', 'web', 'node_modules', 'demo-package', 'assets', 'demo-package.md'),
+    })
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previous
+  }
+})
+
+test('a pathless skill with no asset falls back to its description', async () => {
+  const { host } = build({}, { skills: [{ name: 'no-asset-skill', description: 'what it does' }] })
+  assert.deepEqual(await host.readSkill('no-asset-skill'), {
+    name: 'no-asset-skill',
+    content: 'what it does',
+    path: '',
+  })
 })
 
 test('usage merges dsh-cost-meter billing statistics, including cost-only rows', async () => {

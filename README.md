@@ -165,7 +165,7 @@ and add it in Hermex as its own server.
 | projects (one per DSH workspace) | partial: read-only list |
 | Tasks/cron on the Hermes listener (`/api/cron/*`) | full: list/create/edit/pause/resume/trigger/delete, run history; local delivery only, no cost |
 | Memory on the Hermes listener | read-only: the global `$DSH_HOME/AGENTS.md` as MEMORY.md; no USER.md, no soul, saves refused |
-| Skills on the Hermes listener | read-only: DSH's catalogue (newest session) and each SKILL.md; the disable toggle is refused |
+| Skills on the Hermes listener | read-only: DSH's catalogue (newest session) and each skill's body; package-provided skills resolve their `assets/*.md`, pathless ones fall back to the description; the disable toggle is refused |
 | Usage/Insights on the Hermes listener | sessions (archived + subagent), input/output/cache tokens, per-model rows, daily chart; cost from `dsh-cost-meter` (ledger USD), messages ≈0 |
 | Chat attachments on the Hermes listener | images: staged, then sent as a native DSH image part; the app's vision reference stays in the transcript so the chip survives a reload; documents: staged and referenced as `@file:<path>`; both preview through the uploads root |
 | insights (Legacy), kanban | stubbed: screens open empty or unavailable |

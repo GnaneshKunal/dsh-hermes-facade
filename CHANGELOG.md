@@ -122,6 +122,15 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   sessions is a real empty state. Tests cover the host aggregation, the
   subagent/window attribution, the cost merge (including cost-only rows) and
   the routes/RPC.
+- **Package-provided skills open instead of 404ing.** DSH's `skills/list`
+  omits `path` for skills a plugin or bundle contributes (`dsh-badge`,
+  `dsh-interconnect`, `visualize` on this host), so selecting one asked for
+  content with no file to read and the facade answered 404. The host now
+  indexes the package `assets/*.md` from every profile and the global DSH
+  install, so those three skills show their real body; a pathless skill with
+  no asset falls back to its catalogue description instead of an error.
+  Unknown names still 404. Tests cover the asset lookup and the description
+  fallback.
 - **Long tool-heavy turns no longer look like an empty chat.** Hermex's first
   history read takes one newest page and, with no rows held, treats that page as
   the start. A page of assistant rows carrying only reasoning/tool calls has no
