@@ -1765,8 +1765,9 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
       }
 
       // Usage/Insights: token and session aggregates from DSH's cached session
-      // projections. DSH has no per-day ledger or price table, so a session's
-      // cumulative tokens land on its last active day and cost stays absent.
+      // projections, plus cost from dsh-cost-meter when it is installed. DSH has
+      // no per-day ledger, so a session's cumulative tokens land on its last
+      // prompt day.
       if (method === 'GET' && (path === '/api/analytics/usage' || path === '/api/analytics/models')) {
         const parsed = Number.parseInt(url.searchParams.get('days') ?? '', 10)
         const days = Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 365) : 30

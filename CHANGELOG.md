@@ -107,47 +107,21 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   the SKILL.md folder and appear only when that folder is inside a chat's fenced
   roots. The Skills route is also served on the Legacy listener. Tests cover the
   list, the content, the 404 and the refused toggle.
-- **Usage/Insights (token-only).** The Usage screen now reads
+- **Usage/Insights (tokens + cost).** The Usage screen reads
   `/api/analytics/usage` and `/api/analytics/models` from DSH's cached session
   projections: sessions, input/output/cache-read tokens, per-model rows and a
-  UTC daily chart, for the requested 1-365 day window. DSH has no per-day
-  ledger, so a session's cumulative tokens land on its last prompt day (falling
-  back to the row's updatedAt), archived and subagent sessions are included, and its
-  last-used model names its row (a session with no model counts in
-  totals/daily but adds no model row). There is **no cost**: DSH has no pricing, so
-  the cost cells read 0 rather than a fabricated estimate. `insights.get`
-  answers `{messages:0}` because DSH exposes no message count; the screen
-  already marks its Messages total approximate. No sessions in the window is a
-  real empty state. Tests cover the host aggregation, both routes and the RPC.
-- **Usage/Insights (tokens + cost from `dsh-cost-meter`).** The Usage screen now reads
-  `/api/analytics/usage` and `/api/analytics/models` from DSH's cached session
-  projections: sessions, input/output/cache-read tokens, per-model rows and a
-  UTC daily chart, for the requested 1-365 day window. DSH has no per-day
-  ledger, so a session's cumulative tokens land on its last prompt day (falling
-  back to the row's updatedAt), archived and subagent sessions are included, and
-  its last-used model names its row (a session with no model counts in
-  totals/daily but adds no model row). When `dsh-cost-meter` is installed on the
-  same host, its ledger supplies total, daily and per-model cost, converted from
-  the plugin's display currency to USD; without it the report stays token-only.
-  `insights.get` answers `{messages:0}` because DSH exposes no message count; the
-  screen already marks its Messages total approximate. No sessions in the window
-  is a real empty state. Tests cover the host aggregation, the subagent/window
-  attribution, the cost conversion, both routes and the RPC.
-- **Usage/Insights (tokens + cost from `dsh-cost-meter`).** The Usage screen now reads
-  `/api/analytics/usage` and `/api/analytics/models` from DSH's cached session
-  projections: sessions, input/output/cache-read tokens, per-model rows and a
-  UTC daily chart, for the requested 1-365 day window. DSH has no per-day
-  ledger, so a session's cumulative tokens land on its last prompt day (falling
-  back to the row's updatedAt), archived and subagent sessions are included, and
-  its last-used model names its row (a session with no model counts in
-  totals/daily but adds no model row). When `dsh-cost-meter` is installed on the
-  same host, its ledger supplies total, daily and per-model cost; the ledger
-  stores USD, so the plugin's display currency does not change the amounts.
-  Without the plugin the report stays token-only. `insights.get` answers
-  `{messages:0}` because DSH exposes no message count; the screen already marks
-  its Messages total approximate. No sessions in the window is a real empty
-  state. Tests cover the host aggregation, the subagent/window attribution, the
-  cost merge, both routes and the RPC.
+  UTC daily chart, for the requested 1-365 day window. A session's cumulative
+  tokens land on its last prompt day (falling back to the row's updatedAt),
+  archived and subagent sessions are included, and its last-used model names
+  its row (a session with no model counts in totals/daily but adds no model
+  row). When `dsh-cost-meter` is installed, `costMeter.getBillingStatistics`
+  supplies total, daily and per-model cost over the retained ledger (USD; the
+  plugin's display currency does not change it); without it the report stays
+  token-only. `insights.get` answers `{messages:0}` because DSH exposes no
+  message count; the screen marks that total approximate. A window with no
+  sessions is a real empty state. Tests cover the host aggregation, the
+  subagent/window attribution, the cost merge (including cost-only rows) and
+  the routes/RPC.
 - **A shared path fence for file surfaces** (`src/hermes/fence.mjs`). Hermex
   sends absolute host paths and its own check is explicitly not a security
   boundary, so a path is served only when its realpath is inside a chat folder

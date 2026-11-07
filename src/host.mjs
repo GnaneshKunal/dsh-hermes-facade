@@ -530,22 +530,26 @@ export function createDshHost({ ctx, logger = console }) {
     },
     /**
      * One usage window as the Usage screen reads it: tokens and sessions from
-     * DSH's cached session projections, grouped by the session's last activity
-     * day and last-used model. DSH has no per-day ledger or price table, so a
-     * session's cumulative tokens land on its last active day and cost is absent.
+     * DSH's cached session projections, grouped by the session's last prompt day
+     * and last-used model, plus dsh-cost-meter's cost for the same window when
+     * that plugin is installed.
      * @param {number} days window size, clamped to 1-365.
      * @returns {Promise<{usage: object, models: object}>} analytics payloads.
      */
     /**
-     * dsh-cost-meter's ledger snapshot, or null when the plugin is absent or
-     * its service refuses. The Usage screen uses it for cost; the token report
-     * works without it.
-     * @returns {Promise<object|null>} CostState.
+     * dsh-cost-meter's billing statistics for the same window, or null when the
+     * plugin is absent or refuses. `getBillingStatistics` walks the retained
+     * ledger (not the 90-record state history), and the ledger's amounts are USD.
+     * @param {number} days window size, clamped to 1-365.
+     * @returns {Promise<object|null>} billing statistics.
      */
-    async costState() {
+    async costReport(days) {
+      const span = Math.min(Math.max(Number.parseInt(String(days ?? 30), 10) || 30, 1), 365)
+      const from = new Date(Date.now() - span * 86400000).toISOString().slice(0, 10)
+      const to = new Date().toISOString().slice(0, 10)
       try {
-        const value = await invoke('costMeter', 'getState', {})
-        return value !== null && typeof value === 'object' ? value : null
+        const value = await invoke('costMeter', 'getBillingStatistics', { query: { from, to, basis: 'total' } })
+        return value !== null && typeof value === 'object' && Array.isArray(value.days) ? value : null
       } catch {
         return null
       }
@@ -554,7 +558,7 @@ export function createDshHost({ ctx, logger = console }) {
       const span = Math.min(Math.max(Number.parseInt(String(days ?? 30), 10) || 30, 1), 365)
       const cutoff = Date.now() - span * 86400000
       const rows = (await this.listSessions({ includeSubagent: true })).filter(row => Number(row?.updatedAt) >= cutoff)
-      const costState = await this.costState()
+      const ledger = await this.costReport(span)
       const models = new Map()
       const daily = new Map()
       let input = 0
@@ -596,52 +600,29 @@ export function createDshHost({ ctx, logger = console }) {
       let modelRows = [...models.values()].sort((left, right) =>
         (right.input_tokens + right.output_tokens) - (left.input_tokens + left.output_tokens))
 
-      // dsh-cost-meter, when installed, is the host's real cost ledger. Its
-      // amounts are in the plugin's display currency, so convert to USD for the
-      // phone; without the plugin the report stays token-only.
-      let costDays = null
+      // dsh-cost-meter, when installed, owns the cost ledger. Its
+      // getBillingStatistics walks the retained ledger for the same window and
+      // reports USD, so no display-currency conversion is needed.
       let totalCost = 0
       const costDaily = new Map()
-      const costDayTokens = new Map()
       const costModels = new Map()
-      if (costState !== null && Array.isArray(costState.history)) {
-        costDays = costState.history
-        // dsh-cost-meter always stores ledger amounts in USD; its display
-        // currency and FX rate do not change the ledger, so no conversion here.
-        const toUsd = value => Number(value) || 0
-        const startDay = new Date(cutoff).toISOString().slice(0, 10)
-        for (const day of costDays) {
-          if (typeof day?.date !== 'string' || day.date < startDay) continue
-          const amount = toUsd(day.cost)
-          totalCost += amount
-          costDaily.set(day.date, amount)
-          costDayTokens.set(day.date, {
-            input: Math.max(0, Number(day.input) || 0),
-            output: Math.max(0, Number(day.output) || 0),
-            cacheRead: Math.max(0, Number(day.cacheRead) || 0),
-          })
-          for (const [key, bucket] of Object.entries(day.byProviderModel ?? {})) {
-            const separator = key.indexOf(':')
-            if (separator <= 0) continue
-            const provider = key.slice(0, separator)
-            const model = key.slice(separator + 1)
-            const entry = costModels.get(key) ?? { model, provider, input: 0, output: 0, cacheRead: 0, cost: 0 }
-            entry.input += Math.max(0, Number(bucket?.input) || 0)
-            entry.output += Math.max(0, Number(bucket?.output) || 0)
-            entry.cacheRead += Math.max(0, Number(bucket?.cacheRead) || 0)
-            entry.cost += toUsd(bucket?.cost)
-            costModels.set(key, entry)
-          }
+      if (ledger !== null) {
+        totalCost = Number(ledger.totals?.cost) || 0
+        for (const day of ledger.days ?? []) {
+          if (typeof day?.date === 'string') costDaily.set(day.date, Number(day.cost) || 0)
         }
-      }
-
-      if (costDays !== null) {
+        for (const row of ledger.models ?? []) {
+          const provider = typeof row?.provider === 'string' ? row.provider : ''
+          const model = typeof row?.model === 'string' ? row.model : ''
+          if (model.length === 0) continue
+          costModels.set(provider + ':' + model, { provider, model, cost: Number(row.cost) || 0 })
+        }
         for (const row of dailyRows) row.estimated_cost = costDaily.get(row.day) ?? 0
-        for (const [date, entry] of costDayTokens) {
+        for (const [date, amount] of costDaily) {
           if (daily.has(date)) continue
           dailyRows.push({
-            day: date, input_tokens: entry.input, output_tokens: entry.output,
-            cache_read_tokens: entry.cacheRead, sessions: 0, estimated_cost: costDaily.get(date) ?? 0,
+            day: date, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0,
+            sessions: 0, estimated_cost: amount,
           })
         }
         dailyRows.sort((left, right) => left.day.localeCompare(right.day))
@@ -653,8 +634,8 @@ export function createDshHost({ ctx, logger = console }) {
         for (const [key, entry] of costModels) {
           if (modelRows.some(row => row.provider + ':' + row.model === key)) continue
           modelRows.push({
-            model: entry.model, provider: entry.provider, input_tokens: entry.input,
-            output_tokens: entry.output, cache_read_tokens: entry.cacheRead, sessions: 0,
+            model: entry.model, provider: entry.provider, input_tokens: 0,
+            output_tokens: 0, cache_read_tokens: 0, sessions: 0,
             estimated_cost: entry.cost,
           })
         }
@@ -669,7 +650,7 @@ export function createDshHost({ ctx, logger = console }) {
             total_output: output,
             total_cache_read: cacheRead,
             total_sessions: rows.length,
-            ...(costDays !== null ? { total_estimated_cost: totalCost } : {}),
+            ...(ledger !== null ? { total_estimated_cost: totalCost } : {}),
           },
           daily: dailyRows,
           period_days: span,

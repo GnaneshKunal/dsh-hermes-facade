@@ -84,7 +84,7 @@ function build(existingWorkspaces = {}, options = {}) {
       if (request.namespace === 'session' && request.method === 'create') return { sessionId: 'created-1' }
       if (request.method === 'prompt') return { accepted: true }
       if (request.method === 'cancel') return { accepted: true }
-      if (request.namespace === 'costMeter' && request.method === 'getState') return options.costState
+      if (request.namespace === 'costMeter' && request.method === 'getBillingStatistics') return options.costStats
       if (request.namespace === 'skills' && request.method === 'list') {
         return { skills: [{ name: 'demo', description: 'D', path: options.skillPath ?? '/nonexistent/SKILL.md' }] }
       }
@@ -767,24 +767,33 @@ test('skills come from the newest session catalog and read only its SKILL.md', a
   assert.deepEqual(call.args, { request: { sessionId: 's1' } })
 })
 
-test('usage merges dsh-cost-meter cost in USD, day and model', async () => {
+test('usage merges dsh-cost-meter billing statistics, including cost-only rows', async () => {
   const now = Date.now()
   const day = new Date(now).toISOString().slice(0, 10)
-  const state = {
-    // The ledger stores USD even when the plugin displays CNY; the cost must not be divided.
-    config: { currency: 'CNY', fxRates: { USD: 1, CNY: 7.2, EUR: 0.92 }, exchangeRate: 7.2 },
-    history: [{
-      date: day, cost: 1.5, input: 100, output: 50, cacheRead: 10,
-      byProviderModel: {
-        'deepseek-official:deepseek-v4-pro': { cost: 1.5, input: 100, output: 50, cacheRead: 10 },
-      },
-    }],
+  const older = new Date(now - 100 * 86400000).toISOString().slice(0, 10)
+  const costStats = {
+    totals: { cost: 3.5 },
+    days: [{ date: day, cost: 1.5 }, { date: older, cost: 2 }],
+    models: [
+      { provider: 'deepseek-official', model: 'deepseek-v4-pro', cost: 1.5 },
+      { provider: 'openrouter', model: 'vendor:variant', cost: 2 },
+    ],
   }
-  const { host } = build({}, { updatedAt: now, costState: state })
-  const report = await host.usageReport(30)
-  assert.equal(report.usage.totals.total_estimated_cost, 1.5)
-  assert.equal(report.usage.daily[0].estimated_cost, 1.5)
+  const { host, calls } = build({}, { updatedAt: now, costStats })
+  const report = await host.usageReport(120)
+  assert.equal(report.usage.totals.total_estimated_cost, 3.5)
+  assert.equal(report.usage.daily.find(row => row.day === day).estimated_cost, 1.5)
+  const extraDay = report.usage.daily.find(row => row.day === older)
+  assert.equal(extraDay.estimated_cost, 2)
+  assert.equal(extraDay.input_tokens, 0)
   assert.equal(report.models.models[0].estimated_cost, 1.5)
+  const extraModel = report.models.models.find(row => row.model === 'vendor:variant')
+  assert.equal(extraModel.estimated_cost, 2)
+  assert.equal(extraModel.input_tokens, 0)
+  const call = calls.find(entry => entry.namespace === 'costMeter' && entry.method === 'getBillingStatistics')
+  assert.equal(call.args.query.basis, 'total')
+  assert.equal(call.args.query.to, day)
+  assert.equal(call.args.query.from, new Date(now - 120 * 86400000).toISOString().slice(0, 10))
 })
 
 test('usage stays token-only when dsh-cost-meter is absent', async () => {
