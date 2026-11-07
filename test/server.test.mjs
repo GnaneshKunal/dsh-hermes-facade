@@ -88,6 +88,72 @@ function transcriptEvents(count) {
   })
 }
 
+
+/**
+ * Open an SSE endpoint and read one parsed frame at a time.
+ *
+ * The prompt streams never end by themselves, so a test reads the frames it
+ * needs and then closes the response; comment heartbeats are skipped.
+ * @param {string} url url to open.
+ * @param {string} cookie session cookie header.
+ * @returns {Promise<{nextEvent: Function, close: Function}>} frame reader.
+ */
+async function openSse(url, cookie) {
+  const controller = new AbortController()
+  const res = await fetch(url, { headers: { cookie }, signal: controller.signal })
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let done = false
+
+  /**
+   * Read the next named event, or null when none arrives inside the budget.
+   * @param {number} [timeoutMs] budget.
+   * @returns {Promise<{event: string, data: string}|null>} frame.
+   */
+  async function nextEvent(timeoutMs = 3000) {
+    const deadline = Date.now() + timeoutMs
+    while (!done) {
+      const split = buffer.indexOf('\n\n')
+      if (split >= 0) {
+        const frame = buffer.slice(0, split)
+        buffer = buffer.slice(split + 2)
+        if (frame.startsWith(':')) continue
+        let event = ''
+        let data = ''
+        for (const line of frame.split('\n')) {
+          if (line.startsWith('event: ')) event = line.slice(7).trim()
+          else if (line.startsWith('data: ')) data += line.slice(6)
+        }
+        if (event.length > 0) return { event, data }
+        continue
+      }
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) return null
+      let timer
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise(resolve => { timer = setTimeout(() => resolve({ timedOut: true }), remaining) }),
+      ])
+      clearTimeout(timer)
+      if (chunk.timedOut === true) return null
+      if (chunk.done) {
+        done = true
+        return null
+      }
+      buffer += decoder.decode(chunk.value, { stream: true })
+    }
+    return null
+  }
+
+  return {
+    nextEvent,
+    close() {
+      try { controller.abort() } catch { /* already closed */ }
+    },
+  }
+}
+
 test('a long transcript pages backwards instead of stopping at the newest window', async t => {
   const { facade, host, base, password } = await boot({ config: { historyPage: 5, historyWindow: 20 } })
   t.after(() => facade.close())
@@ -160,6 +226,9 @@ test('health and auth gating', async t => {
   assert.equal(healthBody.active_streams, 0)
   assert.equal(healthBody.history.page, 200)
   assert.equal(healthBody.history.window, 800)
+  // Build markers: these say the reconnect payloads/retraction are in this build.
+  assert.ok(healthBody.features.includes('approval-retract'))
+  assert.ok(healthBody.features.includes('clarify-markers'))
 
   const status = await fetch(base + '/api/auth/status')
   const statusBody = await status.json()
@@ -386,13 +455,10 @@ test('session actions answer instead of 404ing', async t => {
   assert.match(body.error, /not supported/i)
 })
 
-test('approval pending, SSE and respond', async t => {
+test('approval pending carries the command and description the phone needs', async t => {
   const { facade, base, host, password } = await boot()
   t.after(() => facade.close())
-  const login = await fetch(base + '/api/auth/login', {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }),
-  })
-  const cookie = cookieOf(login)
+  const cookie = await signIn(base, password)
 
   const empty = await fetch(base + '/api/approval/pending?session_id=sess-mock', { headers: { cookie } })
   assert.equal(empty.status, 200)
@@ -403,6 +469,8 @@ test('approval pending, SSE and respond', async t => {
   const listed = await fetch(base + '/api/approval/pending?session_id=sess-mock', { headers: { cookie } })
   const listedBody = await listed.json()
   assert.equal(listedBody.pending.approval_id, pending.approval_id)
+  assert.equal(listedBody.pending.command, 'bash', 'a re-attached card keeps the command')
+  assert.equal(listedBody.pending.description, 'Run npm test', 'and the description')
   assert.equal(listedBody.pending_count, 1)
 
   const respond = await fetch(base + '/api/approval/respond', {
@@ -411,10 +479,235 @@ test('approval pending, SSE and respond', async t => {
     body: JSON.stringify({ session_id: 'sess-mock', choice: 'once', approval_id: pending.approval_id }),
   })
   assert.equal(respond.status, 200)
-  assert.deepEqual(await respond.json(), { ok: true })
+  assert.deepEqual(await respond.json(), { ok: true, choice: 'once' })
 
   const gone = await fetch(base + '/api/approval/pending?session_id=sess-mock', { headers: { cookie } })
   assert.deepEqual(await gone.json(), { pending: null, pending_count: 0 })
+})
+
+test('the approval stream re-sends the full pending payload on reattach', async t => {
+  const { facade, base, host, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+  const pending = host.simulateApproval('sess-mock')
+
+  const sse = await openSse(base + '/api/approval/stream?session_id=sess-mock', cookie)
+  t.after(() => sse.close())
+  const initial = await sse.nextEvent()
+  assert.equal(initial.event, 'initial')
+  const payload = JSON.parse(initial.data).pending
+  assert.equal(payload.approval_id, pending.approval_id)
+  assert.equal(payload.command, 'bash', 'without this the card cannot describe the ask')
+  assert.equal(payload.description, 'Run npm test')
+})
+
+test('a live approval is pushed, then retracted when the phone answers', async t => {
+  const { facade, base, host, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+
+  const sse = await openSse(base + '/api/approval/stream?session_id=sess-mock', cookie)
+  t.after(() => sse.close())
+  // Nothing pending: the stream starts with an explicit clear, so a card left
+  // over from a previous connection cannot linger.
+  const cleared = await sse.nextEvent()
+  assert.equal(cleared.event, 'approval')
+  assert.deepEqual(JSON.parse(cleared.data), { pending: null, pending_count: 0 })
+
+  const pending = host.simulateApproval('sess-mock')
+  const live = await sse.nextEvent()
+  assert.equal(live.event, 'approval')
+  assert.equal(JSON.parse(live.data).pending.approval_id, pending.approval_id)
+
+  const respond = await fetch(base + '/api/approval/respond', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ session_id: 'sess-mock', choice: 'once', approval_id: pending.approval_id }),
+  })
+  assert.equal(respond.status, 200)
+
+  const retracted = await sse.nextEvent()
+  assert.equal(retracted.event, 'approval')
+  assert.deepEqual(JSON.parse(retracted.data), { pending: null, pending_count: 0 })
+})
+
+test('a prompt resolved without the phone is retracted over the stream', async t => {
+  const { facade, base, host, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+
+  const sse = await openSse(base + '/api/approval/stream?session_id=sess-mock', cookie)
+  t.after(() => sse.close())
+  await sse.nextEvent() // the opening clear
+
+  host.simulateApproval('sess-mock')
+  assert.equal((await sse.nextEvent()).event, 'approval')
+
+  // A GUI-side answer, a timeout, or a cancelled turn all surface as a resolve.
+  host.simulatePromptResolved('sess-mock')
+  const retracted = await sse.nextEvent()
+  assert.equal(retracted.event, 'approval')
+  assert.deepEqual(JSON.parse(retracted.data), { pending: null, pending_count: 0 })
+  assert.equal((await fetch(base + '/api/approval/pending?session_id=sess-mock', { headers: { cookie } })).status, 200)
+})
+
+test('an already-resolved approval answers 409 stale', async t => {
+  const { facade, base, host, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+  const pending = host.simulateApproval('sess-mock')
+
+  const send = () => fetch(base + '/api/approval/respond', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ session_id: 'sess-mock', choice: 'once', approval_id: pending.approval_id }),
+  })
+
+  assert.equal((await send()).status, 200)
+  const again = await send()
+  assert.equal(again.status, 409, 'the app dismisses the card only on 409 {stale:true}')
+  assert.deepEqual(await again.json(), { stale: true })
+
+  const unknown = await fetch(base + '/api/approval/respond', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ session_id: 'sess-mock', choice: 'once', approval_id: 'never-existed' }),
+  })
+  assert.equal(unknown.status, 409)
+})
+
+test('session and always approvals are remembered, not collapsed into once', async t => {
+  const { facade, base, host, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+  const respond = (approvalId, choice) => fetch(base + '/api/approval/respond', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ session_id: 'sess-mock', choice, approval_id: approvalId }),
+  })
+  const pendingOf = async sessionId => {
+    const res = await fetch(base + '/api/approval/pending?session_id=' + sessionId, { headers: { cookie } })
+    return (await res.json()).pending
+  }
+
+  // "Allow session": the same tool stops asking in this session only.
+  const first = host.simulateApproval('sess-mock', { command: 'bash' })
+  const session = await respond(first.approval_id, 'session')
+  assert.deepEqual(await session.json(), { ok: true, choice: 'session' })
+  host.simulateApproval('sess-mock', { command: 'bash' })
+  assert.equal(await pendingOf('sess-mock'), null, 'session grants the tool')
+  const write = host.simulateApproval('sess-mock', { command: 'write' })
+  assert.equal((await pendingOf('sess-mock')).approval_id, write.approval_id, 'another tool still asks')
+  await respond(write.approval_id, 'deny')
+  assert.equal(await pendingOf('sess-mock'), null)
+
+  // The grant is per session: another session asks for the same tool again.
+  const other = host.simulateApproval('sess-other', { command: 'bash' })
+  assert.equal((await pendingOf('sess-other')).approval_id, other.approval_id, 'the session grant does not cross sessions')
+  const always = await respond(other.approval_id, 'always')
+  assert.deepEqual(await always.json(), { ok: true, choice: 'always' })
+  host.simulateApproval('sess-third', { command: 'bash' })
+  assert.equal(await pendingOf('sess-third'), null, 'always grants the tool across sessions')
+})
+
+test('an unknown approval choice is refused and keeps the card up', async t => {
+  const { facade, base, host, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+  const pending = host.simulateApproval('sess-mock')
+
+  // No default choice: an unrecognised value must never become a grant.
+  const res = await fetch(base + '/api/approval/respond', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ session_id: 'sess-mock', choice: 'sometimes', approval_id: pending.approval_id }),
+  })
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  assert.equal(body.ok, false)
+  assert.match(body.error, /unknown approval choice/)
+  const still = await fetch(base + '/api/approval/pending?session_id=sess-mock', { headers: { cookie } })
+  assert.equal((await still.json()).pending.approval_id, pending.approval_id)
+})
+
+test('clarify pending and initial carry question and choices_offered', async t => {
+  const { facade, base, host, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+  const pending = host.simulateClarification('sess-mock')
+
+  const listed = await fetch(base + '/api/clarify/pending?session_id=sess-mock', { headers: { cookie } })
+  const body = await listed.json()
+  assert.equal(listed.status, 200)
+  assert.equal(body.pending.clarify_id, pending.clarify_id)
+  assert.equal(body.pending.question, 'Which database should I use?')
+  assert.deepEqual(body.pending.choices_offered, ['SQLite', 'Postgres'])
+  assert.equal(body.pending_count, 1)
+
+  const sse = await openSse(base + '/api/clarify/stream?session_id=sess-mock', cookie)
+  t.after(() => sse.close())
+  const initial = await sse.nextEvent()
+  assert.equal(initial.event, 'initial')
+  // The client sniffs these keys to tell a clarification from an approval.
+  const payload = JSON.parse(initial.data).pending
+  assert.equal(payload.clarify_id, pending.clarify_id)
+  assert.equal(payload.question, 'Which database should I use?')
+  assert.deepEqual(payload.choices_offered, ['SQLite', 'Postgres'])
+})
+
+test('a clarification answer succeeds and retracts the card', async t => {
+  const { facade, base, host, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+
+  const sse = await openSse(base + '/api/clarify/stream?session_id=sess-mock', cookie)
+  t.after(() => sse.close())
+  const cleared = await sse.nextEvent()
+  assert.equal(cleared.event, 'clarify')
+  assert.deepEqual(JSON.parse(cleared.data), { pending: null, pending_count: 0 })
+
+  const pending = host.simulateClarification('sess-mock')
+  const live = await sse.nextEvent()
+  assert.equal(live.event, 'clarify')
+  assert.equal(JSON.parse(live.data).pending.question, 'Which database should I use?')
+
+  const respond = await fetch(base + '/api/clarify/respond', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ session_id: 'sess-mock', response: 'Postgres', clarify_id: pending.clarify_id }),
+  })
+  assert.equal(respond.status, 200)
+  assert.deepEqual(await respond.json(), { ok: true })
+  assert.deepEqual(host.lastClarificationResponse, { clarifyId: pending.clarify_id, response: 'Postgres' })
+
+  const retracted = await sse.nextEvent()
+  assert.equal(retracted.event, 'clarify')
+  assert.deepEqual(JSON.parse(retracted.data), { pending: null, pending_count: 0 })
+
+  const gone = await fetch(base + '/api/clarify/pending?session_id=sess-mock', { headers: { cookie } })
+  assert.deepEqual(await gone.json(), { pending: null, pending_count: 0 })
+})
+
+test('the chat stream hands a re-attached turn the full pending prompts', async t => {
+  const { facade, base, host, password } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+
+  host.simulateApproval('sess-mock')
+  host.simulateClarification('sess-mock')
+  const start = await fetch(base + '/api/chat/start', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ session_id: 'sess-mock', message: 'hello' }),
+  })
+  const started = await start.json()
+  const text = await (await fetch(base + '/api/chat/stream?stream_id=' + started.stream_id, { headers: { cookie } })).text()
+
+  assert.match(text, /event: approval/)
+  assert.match(text, /"command":"bash"/, 'the chat stream carries the command too')
+  assert.match(text, /"description":"Run npm test"/)
+  assert.match(text, /event: clarify/)
+  assert.match(text, /"choices_offered":\["SQLite","Postgres"\]/)
 })
 
 test('/api/media serves a referenced file', async t => {
@@ -1023,4 +1316,41 @@ test('finished stream journals are pruned as the next turn finishes', async t =>
   const secondId = await turn('second')
   assert.equal(facade.registry.get(firstId), undefined, 'the stale journal was pruned when the next stream finished')
   assert.ok(facade.registry.get(secondId), 'the new journal is retained')
+})
+
+test('a resolved approval also clears the card on the live chat stream', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'hermes-facade-chat-approval-'))
+  const host = createMockHost()
+  // Hold the turn open: an approval happens mid-turn, so the chat stream is
+  // still attached when it resolves and the clear must reach it too.
+  host.prompt = async () => ({ accepted: true })
+  host.follow = () => (async function* hold() {
+    // No timer: the pending promise holds the stream open without keeping the
+    // test process alive.
+    await new Promise(() => {})
+  })()
+  const config = { enabled: true, port: 0, bindHost: '127.0.0.1', dir, tokenTtlSeconds: 3600, logRequests: false }
+  const facade = createFacadeServer({ config, host })
+  const address = await facade.listen()
+  const base = 'http://127.0.0.1:' + address.port
+  t.after(() => facade.close())
+  const cookie = await signIn(base, facade.auth.generatedPassword)
+
+  const started = await (await fetch(base + '/api/chat/start', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ session_id: 'sess-mock', message: 'run it' }),
+  })).json()
+  const sse = await openSse(base + '/api/chat/stream?stream_id=' + started.stream_id, cookie)
+  t.after(() => sse.close())
+
+  host.simulateApproval('sess-mock')
+  const live = await sse.nextEvent()
+  assert.equal(live.event, 'approval')
+  assert.equal(JSON.parse(live.data).pending.command, 'bash')
+
+  host.simulatePromptResolved('sess-mock')
+  const retracted = await sse.nextEvent()
+  assert.equal(retracted.event, 'approval')
+  assert.deepEqual(JSON.parse(retracted.data), { pending: null, pending_count: 0 })
 })

@@ -2,7 +2,7 @@
 
 Last verified: **2026-11-07** · client: Hermex **2.0.1** source (`ec066d9`) · facade: **main** (history
 paging, tool results, model switching, honest turn outcomes, pin/archive visibility, export, live
-model overlay; see CHANGELOG) ·
+model overlay, approval/clarify reconnect; see CHANGELOG) ·
 DSH `0.2.2-rc.1` · protocol: hermes-webui HTTP + SSE.
 
 This is the honest accounting of what the stock Hermex iOS app can do against this facade, what it
@@ -67,8 +67,8 @@ points to your configured server." Only the 408/502/503/504 statuses fall back t
 | `/btw` side question | `POST /api/btw` | **STUB** | "Not supported" in the side panel | yes-ish: a side session; DSH has no btw primitive |
 | `/background` task | `POST /api/background`, `GET /api/background/status` | **STUB / 404** | start refused; status 404 | needs a DSH background-agent primitive |
 | `/goal` | `POST /api/goal` | **STUB** | refusal in the send banner | yes: `goals/*` |
-| Approvals | `/api/approval/{pending,stream,respond}` | **PARTIAL** | once/deny work; session/always collapse to once; after reconnect or polling the card loses command/description; no 409 stale and no retraction | yes |
-| Clarifications | `/api/clarify/{pending,stream,respond}` | **PARTIAL** | live card works; a re-attached pending sends only `clarify_id`, so the app decodes it as an approval that can never be answered | yes (contract bug) |
+| Approvals | `/api/approval/{pending,stream,respond}` | **WORKS** | once/deny/session/always all apply; a reconnect or polling keeps command/description; a resolved or timed-out prompt is retracted; an expired respond answers `409 {"stale":true}`. session/always are standing grants keyed by **tool name** (no `pattern_key`), so they cover more than webui's command-pattern allowlist and the "Allow session covers every …" sentence stays hidden | — |
+| Clarifications | `/api/clarify/{pending,stream,respond}` | **WORKS** | live and re-attached cards both carry `question`/`choices_offered`, so they render and answer as clarifications; a resolved or timed-out prompt is retracted | — |
 | Insights / usage | `GET /api/insights` | **STUB** | "No Data" | partly: session/context usage |
 | Tasks / cron | `GET /api/crons`, `POST /api/crons/*` | **STUB / 404** | empty list; create/run/pause/resume refused; history/output/status 404 | yes: `schedule/*` (mapping work) |
 | Skills | `GET /api/skills`, `GET /api/skills/content`, `POST /api/skills/toggle` | **STUB / 404** | empty list; content 404; toggle refused | yes for list/content: `skills.list` + skill files |
@@ -117,25 +117,30 @@ gateway we do not implement.
 
 ## Known defects that are not deliberate stubs
 
-1. **Clarify marker contract.** `initial` and `GET /api/clarify/pending` send only `{clarify_id}`;
-   the client needs `question` or `choices_offered` to classify it. A re-attached clarification
-   renders as an approval card whose respond can never succeed.
-2. **Approval payload/expiry.** `GET pending` and `initial` carry only `approval_id`; a GUI-side or
-   timed-out resolution never reaches the phone, and there is no `409 {"stale":true}`.
-3. **Silent profile/attachment loss** on `chat/start` and `session/new` (the model is applied now).
-4. **History is bounded at 800 messages** by the recent-window read; paging works inside it.
+1. **Approval scope is coarser than the app's copy.** The grant behind "Allow session"/"Always
+   allow" is keyed by tool name, because the host approval request exposes no command pattern; a
+   `bash` grant covers every `bash` call. `pattern_key`/`pattern_keys` are not sent, so the app
+   shows no scope line. Grants live in the facade process and are lost on restart.
+2. **Silent profile/attachment loss** on `chat/start` and `session/new` (the model is applied now).
+3. **History is bounded at 800 messages** by the recent-window read; paging works inside it.
    Session export uses the same host snapshot (with a wider cap of 5000 messages), so a very long
    chat exports what the host can still return.
-5. **Stream journals are kept for a bounded time.** A finished stream stays replayable for 30
+4. **Stream journals are kept for a bounded time.** A finished stream stays replayable for 30
    minutes (config `streamRetainMs`) and the newest 64 finished journals are kept; older ones are
    pruned as the next turn finishes, never held for the process lifetime.
+5. **A clarification answer is one question.** The facade surfaces the first question; a batch with
+   several questions would be answered with only the first. The app's card is single-question, so
+   this only appears if a tool asks several at once.
+6. **Clarify expiry is not a 409.** A respond to an expired clarification still answers
+   `200 {ok:false}`; the phone learns the prompt is gone from the stream retraction or from polling
+   (both clear the card), not from `409 {"stale":true}`.
 
 ## Verifying a build
 
 ```bash
 curl -s http://127.0.0.1:9120/health
 # {"status":"ok","active_streams":0,
-#  "features":["history-paging","tool-results","model-switch","session-export","pin-archive","providers"],
+#  "features":["history-paging","tool-results","model-switch","session-export","pin-archive","providers","approval-retract","clarify-markers"],
 #  "history":{"page":200,"window":800}}
 
 cd ~/self/dsh-hermes-facade && npm run check && npm test
