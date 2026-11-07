@@ -201,7 +201,7 @@ run opens as its session and there are no host output files or per-run cost. `so
 because DSH stores no session provenance. Tests cover the mapping and the full lifecycle through the gateway and the
 facade.
 
-Verify: `npm run check && npm test` (192 tests), then rename a chat from the phone's list, pin it, archive it,
+Verify: `npm run check && npm test` (193 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---
