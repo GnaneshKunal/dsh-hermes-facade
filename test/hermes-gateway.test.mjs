@@ -36,6 +36,7 @@ async function boot({ hostCwd } = {}) {
     config,
     facadeUrl: 'http://127.0.0.1:' + address.port,
     facadeAuth: facade.auth,
+    memoryHome: dir,
   })
   const gatewayAddress = await gateway.listen()
   return {
@@ -1820,6 +1821,57 @@ test('the Tasks screen lists, edits, runs and deletes schedules', async () => {
     assert.deepEqual(after.json, [])
 
     const missing = await api(harness.base, '/api/cron/jobs/nope/trigger', { cookie, method: 'POST', body: {} })
+    assert.equal(missing.status, 404)
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('Memory shows the global AGENTS.md read-only', async () => {
+  const harness = await boot()
+  try {
+    writeFileSync(join(harness.dir, 'AGENTS.md'), '# Memory\n\nBe nice.\n')
+    const cookie = await signIn(harness.base, harness.password)
+
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const listed = await socket.call('profiles.list', { include_sessions: false })
+      assert.equal(listed.result.profiles[0].path, 'dsh://memory')
+    } finally {
+      socket.ws.close()
+    }
+
+    const config = await api(harness.base, '/api/config?profile=default', { cookie })
+    assert.equal(config.status, 200)
+    assert.equal(config.json.memory.memory_enabled, true)
+    assert.equal(config.json.memory.user_profile_enabled, false)
+
+    const soul = await api(harness.base, '/api/profiles/default/soul', { cookie })
+    assert.deepEqual(soul.json, { content: '', exists: false })
+
+    const memoryPath = encodeURIComponent('dsh://memory/memories/MEMORY.md')
+    const read = await api(harness.base, '/api/files/read?path=' + memoryPath, { cookie })
+    assert.equal(read.status, 200)
+    const encoded = read.json.data_url.split(',')[1]
+    assert.equal(Buffer.from(encoded, 'base64').toString('utf8'), '# Memory\n\nBe nice.\n')
+
+    const user = await api(harness.base, '/api/files/read?path=' + encodeURIComponent('dsh://memory/memories/USER.md'), { cookie })
+    assert.equal(user.status, 404)
+    const arbitrary = await api(harness.base, '/api/files/read?path=' + encodeURIComponent('/etc/passwd'), { cookie })
+    assert.equal(arbitrary.status, 404)
+
+    const write = await api(harness.base, '/api/files/upload', { cookie, method: 'POST', body: {
+      path: 'dsh://memory/memories/MEMORY.md', overwrite: true, data_url: 'data:text/plain;base64,aGk=',
+    } })
+    assert.equal(write.status, 400)
+    assert.match(write.json.detail, /read-only/)
+    const soulWrite = await api(harness.base, '/api/profiles/default/soul', { cookie, method: 'PUT', body: { content: 'x' } })
+    assert.equal(soulWrite.status, 400)
+
+    rmSync(join(harness.dir, 'AGENTS.md'))
+    const missing = await api(harness.base, '/api/files/read?path=' + memoryPath, { cookie })
     assert.equal(missing.status, 404)
   } finally {
     await harness.gateway.close()

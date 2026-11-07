@@ -86,6 +86,17 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   or per-run cost. `sources=cron` on the agenda stays empty because DSH stores
   no session provenance. Tests cover the mapping and the full lifecycle through
   the gateway and the facade.
+- **Memory (read-only).** The Memory screen now loads on the Hermes listener: `profiles.list`
+  carries a virtual `dsh://memory` path, `GET /api/config` turns on only the memory
+  section, `GET /api/profiles/default/soul` is an empty soul, and
+  `GET /api/files/read` serves `.../memories/MEMORY.md` as the global
+  `$DSH_HOME/AGENTS.md` (a missing file answers 404, so a fresh host is an honest
+  empty state). There is no USER.md (the section is off; DSH has no user-profile
+  file) and no soul, and both writes answer 400 with the reason. `/api/files/read`
+  serves only that allowlisted suffix — every other path is 404 — so Memory is not
+  a second file browser and does not bypass the Files fence for arbitrary paths.
+  Per-workspace `AGENTS.md` files are not part of this global screen. Tests cover
+  the loaded document, the empty state, the 404s and both refused writes.
 - **A shared path fence for file surfaces** (`src/hermes/fence.mjs`). Hermex
   sends absolute host paths and its own check is explicitly not a security
   boundary, so a path is served only when its realpath is inside a chat folder

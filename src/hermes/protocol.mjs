@@ -122,6 +122,9 @@ export function profileRow() {
     is_default: true,
     is_active: true,
     home: PROFILE_NAME,
+    // The Memory screen derives <path>/memories/MEMORY.md; the gateway maps that
+    // exact suffix to the global AGENTS.md, so no real home path is sent.
+    path: 'dsh://memory',
     avatar: null,
     created_at: null,
     session_count: null,
