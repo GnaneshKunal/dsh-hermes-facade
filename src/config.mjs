@@ -41,6 +41,18 @@ export function resolveConfig(raw = {}) {
   const gatewayBindHost = typeof raw.gatewayBindHost === 'string' && raw.gatewayBindHost.length > 0
     ? raw.gatewayBindHost
     : bindHost
+  const lanHost = raw.lanHost === 'auto'
+    ? 'auto'
+    : (typeof raw.lanHost === 'string' && raw.lanHost.length > 0 ? raw.lanHost : undefined)
+  // The Hermes listener follows the webui listener's LAN policy unless it says
+  // otherwise: with lanHost: auto (or a host), it is widened the same way.
+  // gatewayLanHost: 'off' forces loopback-only again.
+  const gatewayLanHostRaw = raw.gatewayLanHost
+  const gatewayLanHost = gatewayLanHostRaw === 'auto'
+    ? 'auto'
+    : (typeof gatewayLanHostRaw === 'string' && gatewayLanHostRaw.length > 0
+      ? (gatewayLanHostRaw === 'off' ? undefined : gatewayLanHostRaw)
+      : lanHost)
   return {
     enabled: raw.enabled !== false,
     port,
@@ -53,11 +65,9 @@ export function resolveConfig(raw = {}) {
       ? raw.gatewayPort
       : DEFAULT_GATEWAY_PORT,
     gatewayBindHost,
-    // "auto" also binds every non-loopback IPv4 (Wi-Fi LAN and Tailscale) for the
-    // Hermes listener, matching lanHost for the webui one. A string binds it.
-    gatewayLanHost: raw.gatewayLanHost === 'auto'
-      ? 'auto'
-      : (typeof raw.gatewayLanHost === 'string' && raw.gatewayLanHost.length > 0 ? raw.gatewayLanHost : undefined),
+    // "auto" (or a host) also binds every non-loopback IPv4 for the Hermes
+    // listener; it inherits lanHost unless set, and 'off' forces loopback-only.
+    gatewayLanHost,
     // Shared secret the two listeners use to talk to each other over loopback.
     // Never leaves the machine: the gateway forwards to the facade with it
     // instead of replaying the phone's cookie.
@@ -87,9 +97,7 @@ export function resolveConfig(raw = {}) {
     streamRetainMs: Number.isSafeInteger(raw.streamRetainMs) && raw.streamRetainMs >= 0
       ? raw.streamRetainMs
       : undefined,
-    lanHost: raw.lanHost === 'auto'
-      ? 'auto'
-      : (typeof raw.lanHost === 'string' && raw.lanHost.length > 0 ? raw.lanHost : undefined),
+    lanHost,
   }
 }
 

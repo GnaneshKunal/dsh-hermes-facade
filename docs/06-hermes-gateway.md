@@ -52,12 +52,12 @@ config:
   gatewayLanHost: auto      # also bind Wi-Fi LAN + Tailscale IPv4 (plain HTTP)
 ```
 
-`gatewayBindHost` is separate from `bindHost` on purpose: the Hermes listener
-starts loopback-only, and is widened deliberately. `gatewayLanHost: auto` gives
-it the same LAN/Tailscale addresses `lanHost: auto` gives the webui listener,
-over plain HTTP (Hermex permits insecure HTTP on a local network and on the
-`100.64.0.0/10` tailnet). With it unset, only 127.0.0.1 and the tailscale serve
-rule in §7 reach the listener.
+`gatewayBindHost` is separate from `bindHost` on purpose, but the LAN policy is
+shared: `gatewayLanHost` **inherits `lanHost`** unless set, so a profile with
+`lanHost: auto` widens both listeners the same way, over plain HTTP (Hermex
+permits insecure HTTP on a local network and on the `100.64.0.0/10` tailnet).
+Set `gatewayLanHost: 'off'` to keep the Hermes listener loopback-only anyway, or
+name a single address to bind just that one.
 
 ---
 
