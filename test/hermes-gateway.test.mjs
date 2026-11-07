@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { createFacadeServer } from '../src/server.mjs'
+import { latestTranscriptWindow } from '../src/hermes/shapes.mjs'
 import { createGatewayServer } from '../src/hermes/server.mjs'
 import { createMockHost } from '../scripts/standalone.mjs'
 
@@ -1753,6 +1754,19 @@ test('the in-chat Git menu reads status, changes, diffs and branches (read-only)
     await harness.gateway.close()
     await harness.facade.close()
   }
+})
+
+test('a tool-only newest page widens to the closest visible row', () => {
+  const messages = Array.from({ length: 120 }, (_, index) => ({
+    role: 'assistant',
+    content: index === 115 ? 'the only text' : '',
+    tool_calls: [{ id: 'call-' + index, type: 'function', function: { name: 'bash', arguments: '{}' } }],
+  }))
+  const window = latestTranscriptWindow(messages, 50, 0)
+  assert.equal(window.end, 120)
+  assert.ok(window.start <= 115)
+  assert.ok(window.end - window.start >= 50, 'the page keeps older-history pagination')
+  assert.deepEqual(latestTranscriptWindow(messages, 50, 60), { start: 10, end: 60 })
 })
 
 test('the Git surface refuses ref injection, symlink escapes and deny trees', async () => {
