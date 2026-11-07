@@ -228,6 +228,92 @@ test('push honours an upstream remote whose name contains a slash', async () => 
   }
 })
 
+test('pushRemote wins when the upstream remote is another remote', async () => {
+  const root = repository()
+  const upstream = mkdtempSync(join(tmpdir(), 'hermes-git-upstream-'))
+  const fork = mkdtempSync(join(tmpdir(), 'hermes-git-fork-'))
+  try {
+    git(upstream, ['init', '-q', '--bare'])
+    git(fork, ['init', '-q', '--bare'])
+    git(root, ['remote', 'add', 'up', upstream])
+    git(root, ['remote', 'add', 'fork', fork])
+    // Seed `up` so `@{u}` is `up/main`, then make the push remote another one.
+    const seed = git(root, ['rev-parse', 'main']).trim()
+    git(root, ['push', upstream, 'main:refs/heads/main'])
+    git(root, ['config', 'branch.main.remote', 'up'])
+    git(root, ['config', 'branch.main.merge', 'refs/heads/main'])
+    git(root, ['config', 'branch.main.pushRemote', 'fork'])
+    // A site-wide default must not outrank the branch's pushRemote either.
+    git(root, ['config', 'remote.pushDefault', 'up'])
+    git(root, ['fetch', '-q', 'up'])
+    assert.equal(git(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']).trim(), 'up/main')
+
+    writeFileSync(join(root, 'b.txt'), 'two\n')
+    await stageFile(root, 'b.txt')
+    await commitRepo(root, { message: 'add b' })
+    const head = git(root, ['rev-parse', 'main']).trim()
+    assert.notEqual(head, seed)
+
+    const pushed = await pushRepo(root)
+    assert.equal(pushed.ok, true)
+    // pushRemote wins over the upstream remote, and the upstream pair stays put.
+    assert.equal(git(fork, ['rev-parse', 'main']).trim(), head)
+    assert.equal(git(upstream, ['rev-parse', 'main']).trim(), seed)
+    assert.equal(git(root, ['config', '--get', 'branch.main.remote']).trim(), 'up')
+    assert.equal(git(root, ['config', '--get', 'branch.main.merge']).trim(), 'refs/heads/main')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(upstream, { recursive: true, force: true })
+    rmSync(fork, { recursive: true, force: true })
+  }
+})
+
+test('remote.pushDefault is used when the branch sets no pushRemote', async () => {
+  const root = repository()
+  const upstream = mkdtempSync(join(tmpdir(), 'hermes-git-default-up-'))
+  const shared = mkdtempSync(join(tmpdir(), 'hermes-git-default-push-'))
+  try {
+    git(upstream, ['init', '-q', '--bare'])
+    git(shared, ['init', '-q', '--bare'])
+    git(root, ['remote', 'add', 'origin', upstream])
+    git(root, ['remote', 'add', 'shared', shared])
+    const seed = git(root, ['rev-parse', 'main']).trim()
+    git(root, ['push', upstream, 'main:refs/heads/main'])
+    git(root, ['config', 'branch.main.remote', 'origin'])
+    git(root, ['config', 'branch.main.merge', 'refs/heads/main'])
+    git(root, ['config', 'remote.pushDefault', 'shared'])
+    git(root, ['fetch', '-q', 'origin'])
+    assert.equal(git(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']).trim(), 'origin/main')
+
+    writeFileSync(join(root, 'b.txt'), 'two\n')
+    await stageFile(root, 'b.txt')
+    await commitRepo(root, { message: 'add b' })
+    const head = git(root, ['rev-parse', 'main']).trim()
+
+    const pushed = await pushRepo(root)
+    assert.equal(pushed.ok, true)
+    // remote.pushDefault takes the push; the upstream remote only keeps the seed.
+    assert.equal(git(shared, ['rev-parse', 'main']).trim(), head)
+    assert.equal(git(upstream, ['rev-parse', 'main']).trim(), seed)
+    assert.equal(git(root, ['config', '--get', 'branch.main.remote']).trim(), 'origin')
+    assert.equal(git(root, ['config', '--get', 'remote.pushDefault']).trim(), 'shared')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(upstream, { recursive: true, force: true })
+    rmSync(shared, { recursive: true, force: true })
+  }
+})
+
+test('a configured push remote cannot smuggle a git option', async () => {
+  const root = repository()
+  try {
+    git(root, ['config', 'branch.main.pushRemote', '--force'])
+    await assert.rejects(() => pushRepo(root), error => error.status === 400 && /invalid push remote/.test(error.detail))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('an untracked directory lists its files, and one of them stages', async () => {
   const root = repository()
   try {
