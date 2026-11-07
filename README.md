@@ -167,7 +167,7 @@ and add it in Hermex as its own server.
 | Memory on the Hermes listener | read-only: the global `$DSH_HOME/AGENTS.md` as MEMORY.md; no USER.md, no soul, saves refused |
 | Skills on the Hermes listener | read-only: DSH's catalogue (newest session) and each SKILL.md; the disable toggle is refused |
 | Usage/Insights on the Hermes listener | sessions (archived + subagent), input/output/cache tokens, per-model rows, daily chart; cost from `dsh-cost-meter` (ledger USD), messages ≈0 |
-| Chat attachments on the Hermes listener | images: staged, then sent as a native DSH image part with a markdown transcript line; documents: staged and referenced as `@file:<path>`; the app's preview reads the same uploads root |
+| Chat attachments on the Hermes listener | images: staged, then sent as a native DSH image part; the app's vision reference stays in the transcript so the chip survives a reload; documents: staged and referenced as `@file:<path>`; both preview through the uploads root |
 | insights (Legacy), kanban | stubbed: screens open empty or unavailable |
 | bots, push, Move to Hermes | different transport (Hermes gateway); not served |
 | Hermes host contract (second listener, :9121) | v1.12: chat/streaming with context/token telemetry and image/document attachments, sessions incl. the write fence the list actions need and the list's search, approvals, clarifications, models, commands, export, Tasks/cron (local delivery only, no cost), Memory and Skills (read-only), Usage/Insights (tokens + `dsh-cost-meter` cost), the read-only in-chat Files browser (fenced to the chat folder) and the read-only Git menu; Git writes, kanban/bots and import answer -32601 or 400 (the per-surface state and plan are docs/05 §2 and docs/07) |

@@ -144,7 +144,7 @@ through the durable parent address.
 | Approvals | server→client `approval` + `approval.respond` | **WORKS** | once/session/always/deny; a reconnect replays open cards; a turn end withdraws them | — |
 | Clarifications | server→client `clarify` then `request.answer`/`clarify.lock` | **WORKS** | single-question cards (the legacy shape the client decodes); a batch would be answered one question deep | — |
 | Title updates | `session.title` | **WORKS** | live rename; omitting the title reads the current one | — |
-| Attachments | `file.attach`, `POST /api/chat/image-upload` | **WORKS** (image + document staging) | an image is written under the facade's uploads root and returned as an absolute path; the app's appended vision-reference block is replaced with a native image content part (and a markdown line for the transcript), so the agent sees the picture without a vision tool. `file.attach` stages a document and returns `@file:<path>`; the app's preview reads it through the same uploads root. Names are sanitized and sizes capped (20 MiB image, 25 MiB document) | documents are path-based (no native file content part), and the uploads live in one shared root |
+| Attachments | `file.attach`, `POST /api/chat/image-upload` | **WORKS** (image + document staging) | an image is written under the facade's uploads root and returned as an absolute path; the app's two-line vision reference stays in the user text (Hermex turns it into the attachment chip) while the staged file's bytes also travel as a native image content part, so the agent sees the picture and the transcript survives a reload. `file.attach` stages a document and returns `@file:<path>`; the app's preview reads both through the same uploads root. Names are sanitized, the leaf extension follows the declared MIME, and sizes are capped at 20 MiB (image) / 25 MiB (document); the image body has its own 32 MiB route cap and documents use a 48 MiB socket frame | documents are path-based (no native file content part), and the uploads live in one shared append-only root |
 | Side tasks (`/btw`, `/background`) | `prompt.btw`, `prompt.background` | **-32601** | side panels hidden | needs DSH primitives |
 | Goal / loop / heartbeat | `session.control.read`, `session.control` | **-32601** | the goal menu is hidden | partly: DSH has a `goal` projection, no loop/heartbeat |
 | Delegated work | `subagent.list/tail/interrupt` | **-32601** | the follow-a-subagent fold is hidden | partly: DSH has subagent sessions |
@@ -225,7 +225,7 @@ capability probes, so an absent backend shows the screen's own error. Kanban is 
 | Usage | stub (`/api/insights`) | works; cost via `dsh-cost-meter`, messages ≈0 |
 | Git | panel unavailable | read-only: status, changes, diffs, branches; writes refused |
 | Kanban | stub | 404, "unavailable" |
-| Attachments | works | image + document upload; image reached the model natively, document by path |
+| Attachments | works | image + document upload; image reaches the model natively and keeps its transcript chip, document by path |
 | YOLO | POST reports false | refused with a key-level error (honest) |
 | `@path` completion | n/a | `complete.path` -32601 |
 

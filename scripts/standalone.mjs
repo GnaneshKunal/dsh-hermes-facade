@@ -295,7 +295,11 @@ export function createMockHost({ cwd = process.cwd() } = {}) {
       record.running = true
       record.updatedAt = Date.now()
       promptLog.push({ sessionId, text, images })
-      record.events.push({ type: 'user/message', seq: seq++, time: Date.now(), data: { content: [{ type: 'text', text }] } })
+      const content = [{ type: 'text', text }]
+      for (const image of images) {
+        content.push({ type: 'image', attachment: { attachmentId: 'att-' + seq, mediaType: image.mediaType, name: image.name } })
+      }
+      record.events.push({ type: 'user/message', seq: seq++, time: Date.now(), data: { content } })
       const queue = queues.get(sessionId)
       const reply = 'Echo: ' + text
       // A failure still streams its partial answer, then closes with the reason a

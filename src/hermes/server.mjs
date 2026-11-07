@@ -99,12 +99,16 @@ function sendJson(res, status, body, headers = {}) {
  * @param {import('node:http').IncomingMessage} req request.
  * @returns {Promise<object>} parsed body or {}.
  */
-async function readJson(req) {
+async function readJson(req, maxBytes = MAX_BODY_BYTES) {
   const chunks = []
   let size = 0
   for await (const chunk of req) {
     size += chunk.length
-    if (size > MAX_BODY_BYTES) throw new Error('body too large')
+    if (size > maxBytes) {
+      const error = new Error('body too large')
+      error.statusCode = 413
+      throw error
+    }
     chunks.push(chunk)
   }
   if (chunks.length === 0) return {}
@@ -868,15 +872,21 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
     // path in the vision-reference block, and prompt.submit turns it into a
     // native image part.
     if (method === 'POST' && path === '/api/chat/image-upload') {
-      const body = await readJson(req)
+      // A 20 MiB image is ~27 MiB of base64 before JSON; the route has its own
+      // bound rather than the 4 MiB general request cap.
+      const body = await readJson(req, 32 * 1024 * 1024)
       const decoded = decodeUpload(body.data_url, 20 * 1024 * 1024)
       if (decoded === null || !new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']).has(decoded.mime)) {
         sendJson(res, 400, { detail: 'data_url must be a base64 PNG, JPEG, WebP or GIF' })
         return
       }
       const extension = ({ 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif' })[decoded.mime]
-      let leaf = sanitizeUploadName(body.filename, 'image' + extension)
-      if (!new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']).has(extname(leaf).toLowerCase())) leaf += extension
+      // The leaf extension must follow the declared MIME, not the client name:
+      // DSH compares the native part's media type with the decoded bytes.
+      let leaf = sanitizeUploadName(body.filename, 'image')
+      const suppliedExtension = extname(leaf).toLowerCase()
+      if (new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']).has(suppliedExtension)) leaf = leaf.slice(0, -suppliedExtension.length)
+      leaf = (leaf.length > 0 ? leaf : 'image') + extension
       await mkdir(uploads, { recursive: true, mode: 0o700 })
       const target = join(uploads, randomUUID() + '-' + leaf)
       await writeFile(target, decoded.bytes, { mode: 0o600 })
@@ -1157,7 +1167,8 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
     const instance = createServer((req, res) => {
       void handle(req, res).catch(error => {
         logger.warn?.('hermes-gateway: ' + String(error?.stack ?? error))
-        try { sendJson(res, 500, { detail: 'Internal error' }) } catch { /* answered */ }
+        const status = Number.isInteger(error?.statusCode) ? error.statusCode : 500
+        try { sendJson(res, status, { detail: status === 413 ? 'Body too large' : 'Internal error' }) } catch { /* answered */ }
       })
     })
     instance.on('upgrade', onUpgrade)

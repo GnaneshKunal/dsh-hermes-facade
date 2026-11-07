@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -316,12 +316,136 @@ test('image upload stages bytes and prompt.submit sends them as a native image',
       const prompt = harness.host.lastPrompt()
       assert.equal(prompt.images.length, 1)
       assert.equal(prompt.images[0].mediaType, 'image/png')
-      assert.equal(prompt.images[0].data, png)
-      assert.match(prompt.text, /^what is this\?\n\n!\[.*\]\(/)
-      assert.equal(prompt.text.includes('vision_analyze'), false)
+      assert.equal(prompt.images[0].path, realpathSync(uploaded.json.path))
+      // The app's own two-line reference stays in the history text; Hermex turns
+      // it back into the attachment chip, so the bubble never shows raw markdown.
+      assert.equal(prompt.text, text)
+
+      const history = await api(harness.base, '/api/sessions/sess-mock/messages?profile=default&order=latest&limit=50&offset=0', { cookie })
+      assert.equal(history.status, 200)
+      const user = history.json.messages.find(message => message.role === 'user')
+      assert.ok(user.content.includes('[The user attached an image: pixel.png]'))
+      assert.ok(user.content.includes(uploaded.json.path))
 
       const preview = await api(harness.base, '/api/fs/download?path=' + encodeURIComponent(uploaded.json.path), { cookie })
       assert.equal(preview.status, 200)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('image upload follows the declared MIME and carries a multi-megabyte image', async () => {
+  const harness = await boot()
+  const bytes = Buffer.alloc(3 * 1024 * 1024, 3)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const uploaded = await api(harness.base, '/api/chat/image-upload', {
+      method: 'POST',
+      cookie,
+      body: { filename: 'photo.png', data_url: 'data:image/jpeg;base64,' + bytes.toString('base64') },
+    })
+    assert.equal(uploaded.status, 200)
+    assert.equal(uploaded.json.mime_type, 'image/jpeg')
+    assert.ok(uploaded.json.path.endsWith('.jpg'))
+    assert.equal(uploaded.json.bytes, bytes.length)
+
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      await socket.call('session.create', { profile: 'default' })
+      const text = 'big image\n\n[The user attached an image: photo.png]\n[Examine it with the vision_analyze tool using image_url: ' + uploaded.json.path + ']'
+      await socket.call('prompt.submit', { session_id: 'sess-mock', text })
+      await socket.waitFor(frame => frame.params?.type === 'message.complete')
+      const prompt = harness.host.lastPrompt()
+      assert.equal(prompt.images[0].path, realpathSync(uploaded.json.path))
+      assert.equal(prompt.images[0].mediaType, 'image/jpeg')
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('multiple image references resolve and a prompt without one is untouched', async () => {
+  const harness = await boot()
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK9GkAAAAABJRU5ErkJggg=='
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const first = await api(harness.base, '/api/chat/image-upload', { method: 'POST', cookie, body: { filename: 'one.png', data_url: 'data:image/png;base64,' + png } })
+    const second = await api(harness.base, '/api/chat/image-upload', { method: 'POST', cookie, body: { filename: 'two.png', data_url: 'data:image/png;base64,' + png } })
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      await socket.call('session.create', { profile: 'default' })
+      const plain = 'keep  $&  spaces\n\n\n  indented code'
+      await socket.call('prompt.submit', { session_id: 'sess-mock', text: plain })
+      await socket.waitFor(frame => frame.params?.type === 'message.complete')
+      assert.equal(harness.host.lastPrompt().text, plain)
+      assert.equal(harness.host.lastPrompt().images.length, 0)
+
+      const text = 'two images\n\n[The user attached an image: one.png]\n[Examine it with the vision_analyze tool using image_url: ' + first.json.path + ']\n\n[The user attached an image: two.png]\n[Examine it with the vision_analyze tool using image_url: ' + second.json.path + ']'
+      await socket.call('prompt.submit', { session_id: 'sess-mock', text })
+      await socket.waitFor(frame => frame.params?.type === 'message.complete')
+      const prompt = harness.host.lastPrompt()
+      assert.equal(prompt.text, text)
+      assert.deepEqual(prompt.images.map(image => image.path), [realpathSync(first.json.path), realpathSync(second.json.path)])
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('a staged image outside the uploads root (symlink) is not sent to the model', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    mkdirSync(harness.uploadsDir, { recursive: true })
+    const secret = join(harness.dir, 'secret.txt')
+    writeFileSync(secret, 'secret')
+    const link = join(harness.uploadsDir, 'link.png')
+    symlinkSync(secret, link)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      await socket.call('session.create', { profile: 'default' })
+      const text = 'look\n\n[The user attached an image: link.png]\n[Examine it with the vision_analyze tool using image_url: ' + link + ']'
+      await socket.call('prompt.submit', { session_id: 'sess-mock', text })
+      await socket.waitFor(frame => frame.params?.type === 'message.complete')
+      assert.equal(harness.host.lastPrompt().images.length, 0)
+      assert.equal(harness.host.lastPrompt().text, text)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('file.attach carries a document larger than the old 8 MiB frame cap', async () => {
+  const harness = await boot()
+  const bytes = Buffer.alloc(6 * 1024 * 1024, 5)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const reply = await socket.call('file.attach', {
+        session_id: 'sess-mock',
+        name: 'big.bin',
+        data_url: 'data:application/octet-stream;base64,' + bytes.toString('base64'),
+      })
+      assert.equal(reply.result.attached, true)
+      assert.equal(statSync(reply.result.path).size, bytes.length)
     } finally {
       socket.ws.close()
     }

@@ -11,8 +11,8 @@
 
 import { randomUUID } from 'node:crypto'
 import { statSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { basename, join, resolve, sep } from 'node:path'
+import { mkdir, realpath, writeFile } from 'node:fs/promises'
+import { basename, join, sep } from 'node:path'
 
 import { commandsOf, modelOptionsOf, resumeReplyOf, sessionRowOf } from './shapes.mjs'
 import { decodeUpload, imageMediaType, sanitizeUploadName } from './uploads.mjs'
@@ -43,31 +43,29 @@ function rpcError(code, message) {
 export function createMethods({ backend, hub, runner, requests, sessions, uploadsDir, bumpRevision = () => {}, logger = console }) {
   const unavailable = new Set()
 
-
   /**
-   * Turn the app's appended image reference blocks into native image parts and
-   * markdown transcript references. Only files inside the uploads directory are
-   * read; an unrecognized block is left as text.
+   * Find the app's appended image reference blocks and resolve them to staged
+   * files inside the uploads root. The text is left exactly as the app sent it:
+   * Hermex parses the same two-line reference into an attachment chip, so the
+   * history row keeps it while DSH receives the bytes as a native image part.
+   * A path that resolves outside the uploads root (including a symlink) is
+   * ignored; an unrecognized block stays text.
    * @param {string} text prompt text.
-   * @returns {Promise<{text: string, images: Array<object>}>} cleaned text and images.
+   * @returns {Promise<{text: string, images: Array<{path: string, mediaType: string, name: string}>}>} text and staged files.
    */
   async function extractImages(text) {
     const images = []
-    let output = text
-    const root = resolve(uploadsDir)
+    const root = await realpath(uploadsDir).catch(() => null)
+    if (root === null) return { text, images }
     const pattern = /\[The user attached an image: ([^\]\n]*)\]\n\[Examine it with the vision_analyze tool using image_url: ([^\]\n]+)\]/g
     for (const match of [...text.matchAll(pattern)]) {
-      const target = resolve(match[2])
-      if (!target.startsWith(root + sep)) continue
-      let bytes
-      try { bytes = await readFile(target) } catch { continue }
+      const target = await realpath(match[2]).catch(() => null)
+      if (target === null || !target.startsWith(root + sep)) continue
       const mediaType = imageMediaType(target)
       if (mediaType === null) continue
-      const name = basename(target)
-      images.push({ mediaType, data: bytes.toString('base64'), name })
-      output = output.replace(match[0], '![' + name.replace(/[\[\]]/g, '') + '](' + target + ')')
+      images.push({ path: target, mediaType, name: basename(target) })
     }
-    return { text: output.replace(/\n{3,}/g, '\n\n').trim(), images }
+    return { text, images }
   }
   /** Cached catalog/reasoning defaults for chats that have no DSH session yet. */
   let defaultsCache
@@ -353,7 +351,9 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
         await mkdir(uploadsDir, { recursive: true, mode: 0o700 })
         const target = join(uploadsDir, randomUUID() + '-' + sanitizeUploadName(p.name, 'upload'))
         await writeFile(target, decoded.bytes, { mode: 0o600 })
-        return { attached: true, path: target, ref_text: '@file:' + target }
+        // Hermex's @file parser stops at whitespace, so quote a path that needs it.
+        const ref = /[\s"'`]/.test(target) ? '@file:`' + target + '`' : '@file:' + target
+        return { attached: true, path: target, ref_text: ref }
       }
       case 'session.events.since': {
         const sessionId = String(p.session_id ?? '')

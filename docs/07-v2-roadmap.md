@@ -56,8 +56,8 @@ V1 too, so real parity work is short:
 | P6 | `@path` / file completion | n/a | `complete.path` -32601 | map to directory listing | S |
 
 **Chat attachments are shipped** (v1.12): the Hermes listener stages images/documents, image uploads become native
-image parts plus a transcript markdown line, and a document is an `@file:<path>` reference. V1 still refuses them;
-the V2 contract is where they become first-class.
+image parts while the app's two-line vision reference stays in the transcript (Hermex rebuilds the chip), and a
+document is an `@file:<path>` reference. V1 still refuses them; the V2 contract is where they become first-class.
 
 ---
 
@@ -78,7 +78,7 @@ Effort: **S** = one route/method over an existing facade primitive; **M** = new 
 | 8 | Git write | stage / commit / push | `review/{stage,unstage,revert,commit,push}`, `branch/switch` | exec `git`, with the idle guard the client already expects | M | later |
 | 9 | Skills | browse skills and their files | `/api/skills`, `/api/skills/content` | `skills/list` (read-only) + the catalog SKILL.md path | S/M | done (read-only) |
 | 10 | Usage / Insights | token and session usage | `/api/analytics/{usage,models}`, `insights.get` | a facade ledger over the session projections, plus `dsh-cost-meter` cost when installed | M/L | done (tokens + cost) |
-| 11 | Attachments | send a photo or a file | `POST /api/chat/image-upload`, `file.attach` | native `session/prompt` image parts + a facade uploads staging root; documents stay path-based | M | done (v1.12) |
+| 11 | Attachments | send a photo or a file | `POST /api/chat/image-upload`, `file.attach` | native `session/prompt` image parts + a facade uploads staging root; the app's vision reference stays in the transcript text; documents stay path-based | M | done (v1.12) |
 | 12 | Goal / loop / heartbeat | the goal menu | `session.control.read`, `session.control` | `goal` projection only; no loop/heartbeat | M/L | later |
 | 13 | `/btw`, `/background` | side questions and background runs | `prompt.btw`, `prompt.background` | no DSH primitive | L | later |
 | 14 | Delegated work | follow a subagent | `subagent.list/tail/interrupt` | DSH subagent sessions exist, their events do not | L | later |
@@ -237,7 +237,7 @@ the figure is the plugin's estimate. `insights.get` answers `{messages:0}` becau
 already marks its Messages total approximate. No sessions in the window is a real empty state. Tests cover the host
 aggregation, both routes and the RPC.
 
-Verify: `npm run check && npm test` (208 tests), then rename a chat from the phone's list, pin it, archive it,
+Verify: `npm run check && npm test` (213 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---

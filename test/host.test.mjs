@@ -252,6 +252,22 @@ test('prompt attaches native image parts', async () => {
   ])
 })
 
+test('prompt reads a staged image path and sends base64 data', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'prompt-image-'))
+  const file = join(dir, 'pixel.png')
+  writeFileSync(file, Buffer.from('AAAA'))
+  const { host, calls } = build()
+  await host.prompt({
+    sessionId: 's1',
+    text: '',
+    images: [{ mediaType: 'image/png', path: file, name: 'pixel.png' }],
+  })
+  const call = calls.find(entry => entry.method === 'prompt')
+  assert.deepEqual(call.args.request.content, [
+    { type: 'image', mediaType: 'image/png', data: 'QUFBQQ==', name: 'pixel.png' },
+  ])
+})
+
 test('follow iterates a promise-wrapped stream', async () => {
   const { host } = build()
   const frames = []

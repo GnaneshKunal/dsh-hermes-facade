@@ -1189,12 +1189,22 @@ export function createDshHost({ ctx, logger = console }) {
       const content = []
       if (typeof text === 'string' && text.length > 0) content.push({ type: 'text', text })
       for (const image of Array.isArray(images) ? images : []) {
-        if (typeof image?.mediaType !== 'string' || typeof image?.data !== 'string') continue
+        if (typeof image?.mediaType !== 'string') continue
         if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(image.mediaType)) continue
+        let data = typeof image.data === 'string' && image.data.length > 0 ? image.data : null
+        if (data === null && typeof image.path === 'string' && image.path.length > 0) {
+          // The Hermes listener passes the staged path, not bytes, so the
+          // gateway's and facade's JSON body caps never gate a full image.
+          try {
+            const bytes = await readFile(image.path)
+            if (bytes.length > 0 && bytes.length <= 25 * 1024 * 1024) data = bytes.toString('base64')
+          } catch { /* an unreadable staged file is a failed prompt */ }
+        }
+        if (data === null) throw new Error('image bytes unavailable')
         content.push({
           type: 'image',
           mediaType: image.mediaType,
-          data: image.data,
+          data,
           ...(typeof image.name === 'string' && image.name.length > 0 ? { name: image.name } : {}),
         })
       }

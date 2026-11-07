@@ -1244,7 +1244,8 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         const text = typeof body.message === 'string' ? body.message : ''
         const images = Array.isArray(body.images)
           ? body.images.filter(image => image !== null && typeof image === 'object'
-            && typeof image.mediaType === 'string' && typeof image.data === 'string')
+            && typeof image.mediaType === 'string'
+            && (typeof image.data === 'string' || typeof image.path === 'string'))
           : []
         if (text.length === 0 && images.length === 0) { sendJson(res, 400, { detail: 'message required' }); return }
         let sessionId = typeof body.session_id === 'string' && body.session_id.length > 0 ? body.session_id : undefined

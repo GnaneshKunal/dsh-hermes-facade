@@ -28,7 +28,8 @@ const OP_PING = 0x9
 const OP_PONG = 0xa
 
 /** Largest message accepted from a client. JSON-RPC frames are far smaller. */
-const MAX_MESSAGE = 8 * 1024 * 1024
+// file.attach may carry a 25 MiB document as base64 (~33 MiB) inside one frame.
+const MAX_MESSAGE = 48 * 1024 * 1024
 
 /**
  * Split a `Sec-WebSocket-Protocol` header into its offered tokens.
