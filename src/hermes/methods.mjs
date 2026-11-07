@@ -11,7 +11,7 @@
 
 import { statSync } from 'node:fs'
 
-import { commandsOf, modelOptionsOf, resumeReplyOf } from './shapes.mjs'
+import { commandsOf, modelOptionsOf, resumeReplyOf, sessionRowOf } from './shapes.mjs'
 import { profilesListBody, profileRow, PROFILE_NAME } from './protocol.mjs'
 
 /**
@@ -36,7 +36,7 @@ function rpcError(code, message) {
  * @param {object} [options.logger] logger.
  * @returns {{dispatch: Function, unavailable: Set<string>}} methods.
  */
-export function createMethods({ backend, hub, runner, requests, sessions, logger = console }) {
+export function createMethods({ backend, hub, runner, requests, sessions, bumpRevision = () => {}, logger = console }) {
   const unavailable = new Set()
   /** Cached catalog/reasoning defaults for chats that have no DSH session yet. */
   let defaultsCache
@@ -167,7 +167,9 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
         return { ok: true }
       case 'session.list': {
         const list = await rows()
-        return { sessions: list.map(row => ({ id: String(row.session_id ?? ''), title: row.title ?? null, resolved_id: null })) }
+        // The row shape the list decodes, not just id/title: the Bot Chat lookup
+        // needs resolved_id, and a row without its title/timestamps sorts badly.
+        return { sessions: list.map(row => ({ ...sessionRowOf(row), resolved_id: null })) }
       }
       case 'session.create': {
         // A draft: DSH bakes a session's cwd at creation and validates workspace
@@ -217,8 +219,18 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
       }
       case 'session.title': {
         const sessionId = String(p.session_id ?? '')
-        const title = String(p.title ?? '')
-        if (sessionId.length === 0 || title.length === 0) throw rpcError(-32602, 'session_id and title required')
+        if (sessionId.length === 0) throw rpcError(-32602, 'session_id required')
+        // The contract's read form: omitting the title asks for the current one.
+        if (typeof p.title !== 'string' || p.title.trim().length === 0) {
+          const resolvedId = sessions.resolve(sessionId)
+          const draft = sessions.draft(sessionId)
+          if (draft !== undefined && resolvedId === sessionId) {
+            return { title: typeof draft.title === 'string' ? draft.title : null, session_key: sessionId }
+          }
+          const detail = await detailOf(sessionId)
+          return { title: typeof detail.title === 'string' ? detail.title : null, session_key: sessionId }
+        }
+        const title = p.title.trim()
         const resolved = sessions.resolve(sessionId)
         if (sessions.draft(sessionId) !== undefined && resolved === sessionId) {
           // An unpromoted draft: remember the title and write it when promoted.
@@ -281,6 +293,10 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
       case 'prompt.submit': {
         const sessionId = String(p.session_id ?? '')
         if (sessionId.length === 0) throw rpcError(-32602, 'session_id required')
+        const text = typeof p.text === 'string' ? p.text : ''
+        // Validate before promoting: an empty prompt used to create the DSH
+        // session first and then fail, burning the draft's id for nothing.
+        if (text.trim().length === 0) throw rpcError(-32602, 'text required')
         // The first prompt is when a draft becomes a real DSH session, in the
         // folder the composer picked (or the host default when it picked none).
         try {
@@ -288,7 +304,9 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
         } catch (error) {
           throw rpcError(-32000, String(error?.message ?? error))
         }
-        return runner.start({ sessionId, text: String(p.text ?? '') })
+        const accepted = await runner.start({ sessionId, text })
+        bumpRevision(sessionId)
+        return accepted
       }
       case 'session.events.since': {
         const sessionId = String(p.session_id ?? '')
@@ -405,14 +423,14 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
             effort: String(applied.json?.effective_effort ?? value),
           }
         }
+        // Fast mode and yolo are not DSH settings. Echoing success used to make
+        // the phone display a state the host never stored; a key-level refusal
+        // keeps config.set itself available and lets those controls revert.
         if (key === 'fast') {
-          return { ok: true, key, scope: 'session', value }
+          throw rpcError(-32000, 'config.set fast is not supported by DeepSeek Harness')
         }
         if (key === 'yolo') {
-          // The request says "on"/"off"; the client reads the reply's value as
-          // "1"/"0" and compares it to the switch it drew, so echo that spelling.
-          const enabled = value === 'on' || value === '1' || value === 'true'
-          return { ok: true, key: 'yolo', scope: 'session', value: enabled ? '1' : '0' }
+          throw rpcError(-32000, 'config.set yolo is not supported by DeepSeek Harness')
         }
         // personality and approvals.mode are Profile-wide host writes DSH has no
         // equivalent for. A key-level error keeps this write failing without

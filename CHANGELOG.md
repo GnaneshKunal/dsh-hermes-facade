@@ -3,6 +3,51 @@
 Notable changes to dsh-hermes-facade. Version headings correspond to releases; unreleased
 changes accumulate at the top. Format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **The Hermes listener's session write fence.** Hermex reads
+  `GET /api/sessions/{id}/mutation-snapshot` before every rename, pin or
+  archive and rethrows anything but a 200 (or the host's "old server" 404
+  wording) — so on `:9121` every list action failed even though the PATCH route
+  existed. The listener now answers the snapshot with
+  `{session_id, exists, runtime_revision}` (`exists:false` for an unknown id),
+  seeds the revision from the session's activity timestamp, advances it on every
+  write and turn, validates `request_id` + `expected_revision` on a PATCH
+  (`409 revision_conflict` / `409 mutation_identity_required`), and applies a
+  write with no identity bare for an older client. `unread` is refused with a
+  detail instead of a 200 that changed nothing.
+- **Hermes-listener wire defects from the compatibility audit.** The turn now
+  reports the canonical `message.complete.status:"complete"`; `session.interrupt`
+  answers `interrupted`/`not_interrupted`; `session.title` has its read form
+  (omit the title); `session.list` returns the same row shape as REST;
+  `session.info` falls back to the catalog's default model/provider when the
+  session has no selection, so the composer's chip is never blank; a `PATCH`
+  applies every field it names,
+  not just the first; `/api/sessions/search` and `/stats` answer a plain 404
+  instead of the row regex's "Session not found"; `sources` is matched as a CSV
+  of names (`cron` no longer empties the list by substring) and `limit=0` is
+  honoured; reverse requests go only to sockets that advertised
+  `client.capabilities {server_requests:true}`, and a raw JSON-RPC answer now
+  withdraws its card; the login rate limit keys on the forwarded client (trusted
+  only from loopback) so one phone behind `tailscale serve` cannot lock out the
+  rest; an empty prompt is refused before a draft is promoted and a double submit
+  queues instead of racing; Fast and yolo are refused with a key-level error
+  rather than echoed as applied. The listener's 32 gateway tests (175 in the
+  whole suite) cover these.
+
+### Changed
+
+- **The compatibility matrix now covers both transports.** `docs/05` is
+  restructured into the Legacy webui surface (`:9120`) and a first-class Hermes
+  host surface (`:9121`), with the app's behaviour, bridgeability and the known
+  defects for each. `docs/07-v2-roadmap.md` is new: parity with the Legacy
+  server first, then the V2-only screens, ranked by value per effort with
+  acceptance criteria.
+- `docs/06` records the write fence, the clarify request shape the client
+  decodes, and the remaining chat-wire gaps (usage, `terminal_backend`).
+
 ## [0.3.0] - 2026-11-07
 
 ### Added

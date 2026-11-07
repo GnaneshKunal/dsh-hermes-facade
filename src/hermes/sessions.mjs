@@ -70,6 +70,8 @@ export function createSessionRegistry({ backend, dir, logger = console }) {
     if (Number.isFinite(row.createdAt)) drafts.set(row.id, { ...row })
   }
   let counter = drafts.size
+  /** In-flight promotions by draft id, so concurrent submits share one creation. */
+  const promotions = new Map()
   let saveTimer
 
   /**
@@ -133,13 +135,37 @@ export function createSessionRegistry({ backend, dir, logger = console }) {
 
   /**
    * Create the DSH session for a draft, in the folder the composer chose.
+   *
+   * Two prompt.submit frames can arrive before either has promoted the draft;
+   * both used to call `session/new` and create two DSH sessions, orphaning the
+   * first message. The in-flight promise is shared per draft id, so concurrent
+   * callers wait for the one creation and receive the same backend id.
+   *
    * @param {string} id client id.
    * @returns {Promise<string>} backend session id.
    */
   async function promote(id) {
-    const entry = drafts.get(String(id))
+    const key = String(id)
+    const entry = drafts.get(key)
     if (entry === undefined) return String(id)
     if (typeof entry.backendId === 'string' && entry.backendId.length > 0) return entry.backendId
+    const inflight = promotions.get(key)
+    if (inflight !== undefined) return inflight
+    const creation = createDraftSession(entry)
+    promotions.set(key, creation)
+    try {
+      return await creation
+    } finally {
+      promotions.delete(key)
+    }
+  }
+
+  /**
+   * Create the DSH session behind one draft and apply its composer picks.
+   * @param {object} entry draft record.
+   * @returns {Promise<string>} backend session id.
+   */
+  async function createDraftSession(entry) {
     const created = await backend.call('POST', '/api/session/new', {
       body: {
         ...(typeof entry.cwd === 'string' && entry.cwd.length > 0 ? { workspace: entry.cwd } : {}),

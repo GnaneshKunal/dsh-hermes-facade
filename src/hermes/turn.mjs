@@ -47,10 +47,26 @@ async function infoPayload(backend, sessionId) {
       if (typeof row.title === 'string' && row.title.length > 0) info.title = row.title
       if (typeof row.workspace === 'string' && row.workspace.length > 0) info.cwd = row.workspace
     }
+  } catch { /* the state is advisory; the turn still runs */ }
+  // A session that has never picked a model has no modelSelection projection,
+  // so its row names none and the composer's chip would be blank. It still runs
+  // on the catalog's default, which is what the picker already shows.
+  if (info.model === undefined || info.provider === undefined) {
+    try {
+      const models = await backend.call('GET', '/api/models')
+      if (info.model === undefined && typeof models.json?.default_model === 'string' && models.json.default_model.length > 0) {
+        info.model = models.json.default_model
+      }
+      if (info.provider === undefined && typeof models.json?.active_provider === 'string' && models.json.active_provider.length > 0) {
+        info.provider = models.json.active_provider
+      }
+    } catch { /* the catalog is advisory */ }
+  }
+  try {
     const reasoning = await backend.call('GET', '/api/reasoning', { query: { session_id: sessionId } })
     const effort = reasoning.json?.effective_effort ?? reasoning.json?.effort
     if (typeof effort === 'string' && effort.length > 0) info.reasoning_effort = effort
-  } catch { /* the state is advisory; the turn still runs */ }
+  } catch { /* the effort is advisory */ }
   return info
 }
 
@@ -69,6 +85,7 @@ export function createTurnRunner({
   hub,
   requestClient,
   resolveBackendSession = id => id,
+  onSettled,
   logger = console,
   now = () => Math.floor(Date.now() / 1000),
 }) {
@@ -76,6 +93,8 @@ export function createTurnRunner({
   const active = new Map()
   /** Prompts submitted while the session already had a turn, oldest first. */
   const queued = new Map()
+  /** Sessions whose start is still in flight, so a second submit cannot race it. */
+  const starting = new Set()
 
   /**
    * Whether a turn is running for a session.
@@ -96,41 +115,48 @@ export function createTurnRunner({
   async function start({ sessionId, text }) {
     if (typeof text !== 'string' || text.length === 0) throw new Error('text required')
     if (typeof sessionId !== 'string' || sessionId.length === 0) throw new Error('session_id required')
-    if (active.has(sessionId)) {
+    if (active.has(sessionId) || starting.has(sessionId)) {
       // A second chat/start would create a second stream, and two consumers of
       // the same session split its frames and publish two turn boundaries. Keep
-      // the text and run it when the current turn settles.
+      // the text and run it when the current turn settles. `starting` closes the
+      // window between this check and `active.set` below, where two concurrent
+      // submits used to both pass.
       const pending = queued.get(sessionId) ?? []
       pending.push(text)
       queued.set(sessionId, pending)
       return { status: 'queued', session_id: sessionId, turn_isolation: null }
     }
-    const backendSessionId = resolveBackendSession(sessionId)
-    const started = await backend.call('POST', '/api/chat/start', {
-      body: { session_id: backendSessionId, message: text },
-    })
-    const streamId = started.json?.stream_id
-    if (started.status !== 200 || typeof streamId !== 'string' || streamId.length === 0) {
-      const detail = started.json?.detail ?? started.json?.error ?? ('HTTP ' + started.status)
-      throw new Error(String(detail))
-    }
-    const controller = new AbortController()
-    const info = await infoPayload(backend, backendSessionId)
-    // The phone holds the draft id for this chat; every frame speaks it.
-    info.session_id = sessionId
-    const wasRunning = active.has(sessionId)
-    active.set(sessionId, { streamId, controller, startedAt: now(), info })
-    hub.publish('session.info', { ...info, running: true, turn_started_at: now() }, sessionId)
-    hub.publish('message.start', { role: 'assistant' }, sessionId)
-    void pump(sessionId, streamId, controller, info)
-    // The client turns the reply's status into the send's outcome: only
-    // "streaming" (this send started the turn) and "queued" (a turn was already
-    // running) count as accepted. Anything else rolls the optimistic message
-    // back into the composer and shows an error, while the turn still runs.
-    return {
-      status: wasRunning ? 'queued' : 'streaming',
-      session_id: sessionId,
-      turn_isolation: null,
+    starting.add(sessionId)
+    try {
+      const backendSessionId = resolveBackendSession(sessionId)
+      const started = await backend.call('POST', '/api/chat/start', {
+        body: { session_id: backendSessionId, message: text },
+      })
+      const streamId = started.json?.stream_id
+      if (started.status !== 200 || typeof streamId !== 'string' || streamId.length === 0) {
+        const detail = started.json?.detail ?? started.json?.error ?? ('HTTP ' + started.status)
+        throw new Error(String(detail))
+      }
+      const controller = new AbortController()
+      const info = await infoPayload(backend, backendSessionId)
+      // The phone holds the draft id for this chat; every frame speaks it.
+      info.session_id = sessionId
+      const wasRunning = active.has(sessionId)
+      active.set(sessionId, { streamId, controller, startedAt: now(), info })
+      hub.publish('session.info', { ...info, running: true, turn_started_at: now() }, sessionId)
+      hub.publish('message.start', { role: 'assistant' }, sessionId)
+      void pump(sessionId, streamId, controller, info)
+      // The client turns the reply's status into the send's outcome: only
+      // "streaming" (this send started the turn) and "queued" (a turn was already
+      // running) count as accepted. Anything else rolls the optimistic message
+      // back into the composer and shows an error, while the turn still runs.
+      return {
+        status: wasRunning ? 'queued' : 'streaming',
+        session_id: sessionId,
+        turn_isolation: null,
+      }
+    } finally {
+      starting.delete(sessionId)
     }
   }
 
@@ -190,7 +216,9 @@ export function createTurnRunner({
           else await handleClarify(sessionId, data.pending)
         } else if (frame.event === 'done') {
           finished = true
-          hub.publish('message.complete', { status: 'completed', text }, sessionId)
+          // The contract's literal is "complete"; the client renders anything
+          // but interrupted/error as completed, so this only removes drift.
+          hub.publish('message.complete', { status: 'complete', text }, sessionId)
           hub.publish('session.info', { ...info, running: false }, sessionId)
           break
         } else if (frame.event === 'error') {
@@ -217,6 +245,9 @@ export function createTurnRunner({
       }
     } finally {
       active.delete(sessionId)
+      // One turn changes the transcript, so a write-fence revision read before
+      // it must no longer match.
+      onSettled?.(sessionId)
       requestClient.cancelSession?.(sessionId, 'resolved')
       if (!finished) {
         hub.publish('session.info', { ...info, running: false }, sessionId)
@@ -315,14 +346,14 @@ export function createTurnRunner({
     // its finally and the card would sit until the request's own TTL.
     requestClient.cancelSession?.(sessionId, 'interrupted')
     const entry = active.get(sessionId)
-    if (entry === undefined) return { status: 'idle', interrupted: false }
+    if (entry === undefined) return { status: 'not_interrupted', interrupted: false }
     entry.controller.abort()
     try {
       await backend.call('GET', '/api/chat/cancel', { query: { stream_id: entry.streamId } })
     } catch (error) {
       logger.warn?.('hermes-gateway: cancel failed: ' + String(error?.message ?? error))
     }
-    return { status: 'ok', interrupted: true }
+    return { status: 'interrupted', interrupted: true }
   }
 
   /**

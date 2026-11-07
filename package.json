@@ -54,7 +54,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "check": "for f in index.js src/*.mjs scripts/*.mjs test/*.mjs; do node --check \"$f\" || exit 1; done",
+    "check": "for f in index.js src/*.mjs src/hermes/*.mjs scripts/*.mjs test/*.mjs; do node --check \"$f\" || exit 1; done",
     "test": "node --test test/*.test.mjs",
     "logs": "tail -n 25 \"${DSH_HOME:-$HOME/.dsh}/hermes-facade/unknown-endpoints.log\" 2>/dev/null; echo '--- access (last 25) ---'; tail -n 25 \"${DSH_HOME:-$HOME/.dsh}/hermes-facade/access.log\" 2>/dev/null",
     "standalone": "node scripts/standalone.mjs"
