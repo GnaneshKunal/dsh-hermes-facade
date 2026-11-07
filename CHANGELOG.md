@@ -122,6 +122,19 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   sessions is a real empty state. Tests cover the host aggregation, the
   subagent/window attribution, the cost merge (including cost-only rows) and
   the routes/RPC.
+- **Git writes on the Hermes listener.** The in-chat Git menu can now stage,
+  unstage and revert one file (unstage also all), commit the staged index,
+  push the current branch (upstream, or `origin` as its new upstream), and
+  switch branches. The app's `:(literal)` file prefix is normalized before the
+  shared path fence validates it; a symlink or credential path is still refused.
+  Every write answers `409` while a turn on this listener is running, a conflict is `409`,
+  an empty index is `409` for commit, and a bad ref/path or git failure is `400`.
+  `commit-context` now returns the staged diff and recent subjects for the app's
+  message helper, and status carries the `totals` block the client reads.
+  Push needs non-interactive credentials and an origin; hooks run under a 60 s
+  timeout. Tests cover a real temp repo: stage/unstage (including the literal
+  prefix), revert (tracked/new), commit, push with a bare remote, branch switch,
+  commit context, and the route's idle guard.
 - **Package-provided skills open instead of 404ing.** DSH's `skills/list`
   omits `path` for skills a plugin or bundle contributes (`dsh-badge`,
   `dsh-interconnect`, `visualize` on this host), so selecting one asked for

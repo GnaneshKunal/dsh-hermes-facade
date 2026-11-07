@@ -9,12 +9,13 @@ Hermes host contract, so the same iOS app can be pointed at DeepSeek Harness as
 a native Hermes server. It is additive: port 9120 keeps serving the webui
 contract unchanged.
 
-Status: **v1.12** (2026-11-07). Chat (with context/token telemetry and image/
+Status: **v1.13** (2026-11-07). Chat (with context/token telemetry and image/
 document attachments), sessions (including the write fence the session list needs
 and the list's search), approvals, clarifications, models, commands, export,
 Tasks/cron, Memory and Skills (both read-only), Usage/Insights (tokens, and cost
 from `dsh-cost-meter` where installed), the read-only in-chat Files browser and
-the read-only Git menu.
+the in-chat Git menu (reads plus stage/unstage/revert, commit, push and branch
+switch behind an idle-turn guard).
 The 2026-11-07 audit's wire defects (turn status, stop vocabulary, title read,
 list rows, multi-field PATCH, collection 404s, source matching, `limit=0`,
 capability-gated reverse requests, forwarded-client rate limiting, prompt races,
@@ -203,8 +204,8 @@ with reason `resolved`, like the `approval.respond`/`request.answer` path.
 | `GET /api/fs/read-text?path=` | `{binary, byteSize, language, path, text, truncated}`; only the first 512 KiB is read (the facade's `max_bytes`), a source over 64 MiB answers `413 File too large`, and a binary file answers `binary:true` |
 | `GET /api/fs/download?path=[&session_id=]` | the file's bytes and content type. A relative `path` resolves against `session_id`'s folder and is then fenced; `attachment:` refs answer 400; a directory answers 400 `Path points to a directory`; a source over 64 MiB answers 413 |
 | `GET /api/fs/git-root?path=` | `{root}`: the repository holding the chat's folder, or `null` outside one |
-| `GET /api/git/status?path=`, `/api/git/branches?path=`, `/api/git/review/list?path=&scope=[&base=]`, `/api/git/review/diff?path=&file=&scope=[&base=][&staged=]`, `/api/git/file-diff?path=&file=`, `/api/git/review/rev-parse?path=[&ref=]` | read-only git for that root: status (branch/ahead/behind/flags/rows), changed files per scope, per-file patches, branch rows, sha. A credential file is filtered from the rows and its patch answers `403`. A non-repository answers the host's empty shapes |
-| `POST /api/git/*` (stage/unstage/revert/commit/push, branch switch, worktrees) and `review/commit-context` | `400 Git writes are not supported…`; `review/ship-info` → `{pr:null}`, `gh-auth` → `{available:false}`, `worktrees` → `{worktrees:[]}` |
+| `GET /api/git/status?path=`, `/api/git/branches?path=`, `/api/git/review/list?path=&scope=[&base=]`, `/api/git/review/diff?path=&file=&scope=[&base=][&staged=]`, `/api/git/file-diff?path=&file=`, `/api/git/review/rev-parse?path=[&ref=]`, `/api/git/review/commit-context?path=` | read-only git for that root: status (branch/ahead/behind/flags/rows and a `totals` block), changed files per scope, per-file patches, branch rows, sha, and the staged diff + recent subjects the commit-message helper reads. A credential file is filtered from the rows and its patch answers `403`. A non-repository answers the host's empty shapes |
+| `POST /api/git/review/{stage,unstage,revert,commit,push}`, `POST /api/git/branch/switch` | stage/unstage/revert take `{path, file}` (the app prefixes a file with `:(literal)`; unstage also accepts no file for the whole index) and answer `{ok, git:<status>}`. Commit takes `{path, message, push?}` and answers `{ok, commit:<7-char sha>, status}`; nothing staged or a conflict is `409`. Push answers `{ok, message:null, status}` and sets `origin` as the upstream when none is configured. Branch switch takes `{path, branch}` and answers `{ok, status, branches}`. **Every write** answers `409` while a turn started on this listener is running (the guard cannot see GUI/scheduler turns); a bad ref/path/symlink/credential path is `400`/`403`; `review/ship-info` → `{pr:null}`, `gh-auth` → `{available:false}`, `worktrees` → `{worktrees:[]}` |
 | `POST /api/chat/image-upload` | stages one base64 image (PNG/JPEG/WebP/GIF, ≤20 MiB) under the facade uploads root and answers `{ok:true, path, name, bytes, mime_type}`; the leaf extension follows the declared MIME, not the client filename. The route has its own 32 MiB request cap; the image itself reaches the model by path, so the 2 MiB `/api/chat/start` body is not involved. A malformed data URL answers 400 and an over-cap body 413 |
 | `GET /api/files/*` | **not implemented** (404) |
 
@@ -224,7 +225,7 @@ same names plus the host's build/VCS caches are hidden from a listing. A denied 
 `403 {"detail":"Path is outside the session workspace"}`; credential material
 answers `403 {"detail":"Access to sensitive files is not allowed"}`.
 
-The read-only Git routes share the same instinct at a different boundary: the
+The Git routes share the same instinct at a different boundary: the
 client names the repository root, which normally sits *above* the chat folder, so
 the Git scope admits that top-level only when it really is the git root of an
 allowed folder. A `file` is realpath-checked inside that root, a symlink is
@@ -243,15 +244,18 @@ answers `403`, and the all-add fallback runs only for an untracked file.
   archive (the write-fence route above is what lets those three work), branch,
   export, model picker, slash commands, the session list's search, the in-chat
   Files browser (`session.info.terminal_backend:"local"` plus the fenced
-  `/api/fs/*` routes), the read-only Git menu (status, changes, diffs, branches)
+  `/api/fs/*` routes), the in-chat Git menu (status, changes, diffs, branches
+  and the writes above)
   and the Tasks screen (list/create/edit/pause/resume/trigger/delete and run
   history; local delivery only), Memory (the global `$DSH_HOME/AGENTS.md` as
   MEMORY.md, read-only), Skills (the DSH catalogue and each skill's SKILL.md;
   the toggle is refused) and Usage/Insights (tokens and sessions, plus cost from
   `dsh-cost-meter` where installed; the Messages total is approximate 0).
 - **Partial:** the session rows carry no `preview`; Fast and yolo are refused, so their controls
-  revert instead of showing a false state; Git is read-only (stage/commit/push
-  and branch switch answer 400 with a reason).
+  revert instead of showing a false state. Git writes are wired, but push needs
+  an upstream/`origin` and non-interactive credentials, commit hooks have a 60 s
+  timeout, and the idle guard refuses while **any** turn runs, not only a turn in
+  that repository.
 - **Empty/absent:** Kanban, Bots, Bot
   screen. Those screens exist on a Hermes host; here they have no backend, and
   unimplemented methods make their controls hide rather than error (the sidebar

@@ -120,10 +120,10 @@ The gateway listener does not reimplement DSH: it translates to the webui facade
 over loopback with an internal token, so sessions, streaming, approvals,
 clarifications and export keep one implementation. It covers chat, sessions,
 approvals, clarifications, models, commands, export and the session write
-fence the list's rename/pin/archive actions read first, the read-only in-chat Files browser and the read-only Git
-menu, Tasks/cron, Memory and Skills (both read-only), Usage (tokens + cost from `dsh-cost-meter`) and chat
-attachments (images + documents); Bots and session import are not implemented and answer `-32601` (the app hides
-those controls). Details, endpoint table and gaps:
+fence the list's rename/pin/archive actions read first, the read-only in-chat Files browser and the in-chat Git
+menu (reads plus writes), Tasks/cron, Memory and Skills (both read-only), Usage (tokens + cost from `dsh-cost-meter`), chat
+attachments (images + documents) and in-chat Git writes (stage/unstage/revert, commit, push, branch switch); Bots
+and session import are not implemented and answer `-32601` (the app hides those controls). Details, endpoint table and gaps:
 [docs/06-hermes-gateway.md](docs/06-hermes-gateway.md).
 
 ```yaml
@@ -156,7 +156,7 @@ and add it in Hermex as its own server.
 | workspaces | partial: list only; add/remove/rename/reorder refused or 404 |
 | workspace file browser (`/api/list`, `/api/file`) | full: read-only |
 | in-chat Files on the Hermes listener (`/api/fs/*`) | read-only: listing, 512 KiB text preview, binary downloads, fenced to the chat folder |
-| in-chat Git on the Hermes listener (`/api/fs/git-root`, `/api/git/*`) | read-only: status, changes, diffs, branches, sha; credential files filtered and refused; writes answer 400 with a reason |
+| in-chat Git on the Hermes listener (`/api/fs/git-root`, `/api/git/*`) | status, changes, diffs, branches, sha; stage/unstage/revert, commit, push and branch switch; every write refuses with 409 while a turn runs; credential files filtered and refused |
 | profiles (DSH has agent presets, not profiles) | partial: one static profile |
 | session rename / branch (fork) | full |
 | session pin / archive | full: rows report the real flags; `include_archived`/`archived_limit` list archived chats |
@@ -170,7 +170,7 @@ and add it in Hermex as its own server.
 | Chat attachments on the Hermes listener | images: staged, then sent as a native DSH image part; the app's vision reference stays in the transcript so the chip survives a reload; documents: staged and referenced as `@file:<path>`; both preview through the uploads root |
 | insights (Legacy), kanban | stubbed: screens open empty or unavailable |
 | bots, push, Move to Hermes | different transport (Hermes gateway); not served |
-| Hermes host contract (second listener, :9121) | v1.12: chat/streaming with context/token telemetry and image/document attachments, sessions incl. the write fence the list actions need and the list's search, approvals, clarifications, models, commands, export, Tasks/cron (local delivery only, no cost), Memory and Skills (read-only), Usage/Insights (tokens + `dsh-cost-meter` cost), the read-only in-chat Files browser (fenced to the chat folder) and the read-only Git menu; Git writes, kanban/bots and import answer -32601 or 400 (the per-surface state and plan are docs/05 §2 and docs/07) |
+| Hermes host contract (second listener, :9121) | v1.13: chat/streaming with context/token telemetry and image/document attachments, sessions incl. the write fence the list actions need and the list's search, approvals, clarifications, models, commands, export, Tasks/cron (local delivery only, no cost), Memory and Skills (read-only), Usage/Insights (tokens + `dsh-cost-meter` cost), the read-only in-chat Files browser (fenced to the chat folder) and the in-chat Git menu (reads plus stage/unstage/revert, commit, push and branch switch behind an idle-turn guard); kanban/bots and import answer -32601 or 400 (the per-surface state and plan are docs/05 §2 and docs/07) |
 
 The verified matrix — every surface, the endpoint behind it, what the phone shows, and whether it is
 bridgeable here — is [docs/05-compatibility-matrix.md](docs/05-compatibility-matrix.md). docs/00 is
@@ -203,7 +203,9 @@ POST /api/sessions/import, GET /api/fs/list, GET /api/fs/read-text,
 GET /api/fs/download (read-only, fenced to the chat folder),
 GET /api/fs/git-root, GET /api/git/status, GET /api/git/branches,
 GET /api/git/review/list, GET /api/git/review/diff, GET /api/git/file-diff,
-GET /api/git/review/rev-parse (read-only; the Git panel's routes),
+GET /api/git/review/rev-parse, GET /api/git/review/commit-context,
+POST /api/git/review/{stage,unstage,revert,commit,push}, POST /api/git/branch/switch
+(the Git panel's reads and writes),
 GET /api/cron/jobs, POST /api/cron/jobs, GET/PUT/DELETE /api/cron/jobs/{id},
 POST /api/cron/jobs/{id}/{pause,resume,trigger}, GET /api/cron/jobs/{id}/runs,
 GET /api/cron/delivery-targets (Tasks; local delivery only),
