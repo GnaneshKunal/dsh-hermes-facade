@@ -728,6 +728,95 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         return
       }
 
+      if (method === 'GET' && path === '/api/sessions/search') {
+        // Hermex's list search: id matches first, then message-content hits, then
+        // title matches, one row per session. The same reply carries the Hermes
+        // host's `results` (V2) and the webui's `sessions` (Legacy); both decoders
+        // ignore the other key. DSH carries no session provenance, so a source
+        // filter we cannot satisfy (e.g. `sources=cron`) honestly matches nothing.
+        const q = (url.searchParams.get('q') ?? url.searchParams.get('query') ?? '').trim()
+        if (q.length === 0) {
+          sendJson(res, 200, { results: [], sessions: [], query: '', count: 0 })
+          return
+        }
+        const limitParsed = Number.parseInt(url.searchParams.get('limit') ?? '', 10)
+        const limit = Number.isSafeInteger(limitParsed) && limitParsed > 0 ? Math.min(limitParsed, 100) : 20
+        const content = url.searchParams.get('content') === null
+          ? true
+          : flagEnabled(url.searchParams.get('content'))
+        const csv = value => (value ?? '').split(',').map(part => part.trim()).filter(Boolean)
+        const single = (url.searchParams.get('source') ?? '').trim()
+        const includeSources = new Set(single.length > 0 ? [single] : csv(url.searchParams.get('sources')))
+        const excludeSources = new Set(csv(url.searchParams.get('exclude_sources')))
+        const items = (await host.listSessions()).filter(item => item?.origin !== 'subagent')
+        const visibility = await sessionVisibility()
+        const entries = items.map(item => {
+          const sessionId = String(item?.sessionId ?? '')
+          return {
+            row: summaryOf(item, visibility.index.get(sessionId), {
+              pinned: visibility.pinned.has(sessionId),
+              archived: visibility.archived.has(sessionId),
+            }),
+            source: 'gui',
+          }
+        })
+        const byId = new Map(entries.map(entry => [entry.row.session_id, entry]))
+        const allowed = entry => !excludeSources.has(entry.source)
+          && (includeSources.size === 0 || includeSources.has(entry.source))
+        const results = []
+        const sessions = []
+        const seen = new Set()
+        const add = (sessionId, snippet, role, matchType) => {
+          if (results.length >= limit || seen.has(String(sessionId))) return
+          const entry = byId.get(String(sessionId))
+          if (entry === undefined || !allowed(entry)) return
+          seen.add(String(sessionId))
+          const row = entry.row
+          const text = String(snippet ?? '')
+          const matchPreview = text.length > 124 ? text.slice(0, 124) : text
+          const summary = {
+            ...row,
+            session_id: row.session_id,
+            id: row.session_id,
+            // DSH has one id per conversation (branches are their own sessions), so
+            // each result is its own lineage root.
+            lineage_root: row.session_id,
+            source: entry.source,
+            match_type: matchType,
+            last_active: row.last_message_at,
+            session_started: row.created_at,
+            started_at: row.created_at,
+            archived: row.archived === true,
+            profile: 'default',
+          }
+          // Hermex's host decoder only keeps a snippet when it also knows the
+          // author, and DSH's search API exposes no role. So the host shape
+          // carries no excerpt; the webui shape keeps match_preview for Legacy.
+          results.push({ ...summary, snippet: null, role: null })
+          sessions.push({ ...summary, snippet: text, role: role ?? null, match_preview: matchPreview })
+        }
+        const needle = q.toLowerCase()
+        for (const entry of entries) {
+          if (entry.row.session_id.toLowerCase().includes(needle)) {
+            add(entry.row.session_id, 'Session ID: ' + entry.row.session_id, null, 'id')
+          }
+        }
+        if (content) {
+          try {
+            const found = await host.searchSessions(q)
+            for (const hit of found.items) add(hit.sessionId, String(hit?.snippet ?? ''), hit?.role, 'content')
+          } catch (error) {
+            logger.warn?.('hermes-facade: session search failed: ' + String(error?.message ?? error))
+          }
+        }
+        for (const entry of entries) {
+          const title = typeof entry.row.title === 'string' ? entry.row.title : ''
+          if (title.length > 0 && title.toLowerCase().includes(needle)) add(entry.row.session_id, title, null, 'title')
+        }
+        sendJson(res, 200, { results, sessions, query: q, count: results.length })
+        return
+      }
+
       if (method === 'GET' && path === '/api/sessions') {
         const items = (await host.listSessions()).filter(item => item?.origin !== 'subagent')
         const visibility = await sessionVisibility()

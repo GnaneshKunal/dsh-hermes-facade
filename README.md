@@ -143,6 +143,7 @@ and add it in Hermex as its own server.
 |---|---|
 | health, auth (password + signed cookie) | full |
 | session list, session detail, history | full: newest 200 + 50-message scroll-back pages within the newest 800 |
+| session search | full: id, message-content and title matches with snippets; empty queries are empty results |
 | chat start / SSE stream / cancel / stream status | full; a failed or cancelled turn ends the stream with `error`/`cancel` instead of `done`; `profile`/`attachments` in the start body are ignored |
 | token deltas, thinking, tool cards | full: live and reloaded transcripts carry tool results, error verdicts and durations |
 | approvals (once / session / always / deny) | full: a reconnect keeps command/description, expired prompts answer `409 {"stale":true}` and are retracted. `session`/`always` are standing grants keyed by tool name (no command-pattern allowlist) |
@@ -162,7 +163,7 @@ and add it in Hermex as its own server.
 | projects (one per DSH workspace) | partial: read-only list |
 | tasks/cron, skills, memory, insights, kanban | stubbed: screens open empty or unavailable |
 | bots, push, Move to Hermes | different transport (Hermes gateway); not served |
-| Hermes host contract (second listener, :9121) | v1.4: chat/streaming, sessions incl. the write fence the list actions need, approvals, clarifications, models, commands, export, the read-only in-chat Files browser (fenced to the chat folder) and the read-only Git menu; Git writes, tasks/skills/memory/usage/kanban/bots and import answer -32601 or 400 (the per-surface state and plan are docs/05 §2 and docs/07) |
+| Hermes host contract (second listener, :9121) | v1.5: chat/streaming, sessions incl. the write fence the list actions need and the list's search, approvals, clarifications, models, commands, export, the read-only in-chat Files browser (fenced to the chat folder) and the read-only Git menu; Git writes, tasks/skills/memory/usage/kanban/bots and import answer -32601 or 400 (the per-surface state and plan are docs/05 §2 and docs/07) |
 
 The verified matrix — every surface, the endpoint behind it, what the phone shows, and whether it is
 bridgeable here — is [docs/05-compatibility-matrix.md](docs/05-compatibility-matrix.md). docs/00 is
@@ -188,7 +189,7 @@ Hermes listener (:9121): GET /api/status, GET /api/health,
 POST /auth/password-login, POST /auth/logout, GET /api/auth/me,
 POST /api/auth/ws-ticket, GET /api/auth/providers, GET /api/profiles/active,
 GET /api/profiles, GET /api/config, GET /api/models, GET /api/commands,
-GET /api/sessions, GET /api/sessions/{id}, GET /api/sessions/{id}/messages,
+GET /api/sessions, GET /api/sessions/search, GET /api/sessions/{id}, GET /api/sessions/{id}/messages,
 GET /api/sessions/{id}/mutation-snapshot, GET /api/sessions/{id}/export,
 PATCH /api/sessions/{id} (title/pin/archive behind the write fence),
 POST /api/sessions/import, GET /api/fs/list, GET /api/fs/read-text,

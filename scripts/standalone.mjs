@@ -141,6 +141,27 @@ export function createMockHost({ cwd = process.cwd() } = {}) {
     setClientPredicate() {},
     onInteraction(listener) { listeners.add(listener); return () => listeners.delete(listener) },
     async listSessions() { return [...sessions.values()] },
+    async searchSessions(query) {
+      const needle = String(query ?? '').toLowerCase()
+      const items = []
+      if (needle.length === 0) return { items, hasMore: false }
+      for (const record of sessions.values()) {
+        // DSH's search covers message content only; titles are the host's own
+        // supplement lane, so the mock must not match them here.
+        let snippet
+        {
+          for (const event of record.events) {
+            const content = event?.data?.message?.content ?? event?.data?.content
+            const text = Array.isArray(content)
+              ? content.map(part => (typeof part?.text === 'string' ? part.text : '')).join(' ')
+              : (typeof content === 'string' ? content : '')
+            if (text.toLowerCase().includes(needle)) { snippet = text.slice(0, 160); break }
+          }
+        }
+        if (snippet !== undefined) items.push({ sessionId: record.sessionId, snippet })
+      }
+      return { items, hasMore: false }
+    },
     async readSession(sessionId) {
       const record = sessions.get(sessionId)
       return { item: record, events: record ? record.events : [], projections: {} }

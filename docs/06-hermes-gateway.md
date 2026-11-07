@@ -9,9 +9,9 @@ Hermes host contract, so the same iOS app can be pointed at DeepSeek Harness as
 a native Hermes server. It is additive: port 9120 keeps serving the webui
 contract unchanged.
 
-Status: **v1.4** (2026-11-07). Chat, sessions (including the write fence the
-session list needs), approvals, clarifications, models, commands, export, the
-read-only in-chat Files browser and the read-only Git menu.
+Status: **v1.5** (2026-11-07). Chat, sessions (including the write fence the
+session list needs and the list's search), approvals, clarifications, models,
+commands, export, the read-only in-chat Files browser and the read-only Git menu.
 The 2026-11-07 audit's wire defects (turn status, stop vocabulary, title read,
 list rows, multi-field PATCH, collection 404s, source matching, `limit=0`,
 capability-gated reverse requests, forwarded-client rate limiting, prompt races,
@@ -175,6 +175,7 @@ with reason `resolved`, like the `approval.respond`/`request.answer` path.
 | Route | Behaviour |
 |---|---|
 | `GET /api/sessions` | `profile, order=recent|created, archived=exclude|only|include, limit, offset`; `scheduled=1` answers empty (no cron rows are exposed) |
+| `GET /api/sessions/search` | `q`, `limit<=100`, `profile`, `source`/`sources`, `exclude_sources`, `content=false`; `{results:[row with match_type]}`. Host content rows carry no excerpt: DSH's search API exposes no author, and Hermex drops a snippet without a role; the webui `sessions` rows keep `match_preview`, so the Legacy listener shows excerpts. DSH returns at most 20 content hits, so the id/title lanes fill the rest of the 1–100 clamp. An empty query is `{results:[]}`; a source DSH cannot satisfy (`cron`) honestly matches nothing |
 | `GET /api/sessions/{id}` | one row, 404 when unknown |
 | `GET /api/sessions/{id}/messages` | `order=latest|oldest, limit<=500, offset`; rows in the transcript shape (`role, content, timestamp, row_id, tool_calls…`) |
 | `PATCH /api/sessions/{id}` | `title`, `pinned`, `archived` through the facade's rename/pin/archive routes. A `request_id` + `expected_revision` pair is validated: a stale pair answers `409 revision_conflict`, half a pair `409 mutation_identity_required`, neither is applied bare for an older client. `unread` is refused (DSH has no flag) |
@@ -221,9 +222,10 @@ answers `403`, and the all-add fallback runs only for an untracked file.
 - **Works:** chat with tokens, thinking, live tool cards, stop, approvals
   (once/session/always/deny), clarifications, session list, open, rename, pin,
   archive (the write-fence route above is what lets those three work), branch,
-  export, model picker, slash commands, the in-chat Files browser
-  (`session.info.terminal_backend:"local"` plus the fenced `/api/fs/*` routes)
-  and the read-only Git menu (status, changes, diffs, branches).
+  export, model picker, slash commands, the session list's search, the in-chat
+  Files browser (`session.info.terminal_backend:"local"` plus the fenced
+  `/api/fs/*` routes) and the read-only Git menu (status, changes, diffs,
+  branches).
 - **Partial:** the context ring stays empty (no `usage` on turn events); the
   session rows carry no `preview`; Fast and yolo are refused, so their controls
   revert instead of showing a false state; Git is read-only (stage/commit/push

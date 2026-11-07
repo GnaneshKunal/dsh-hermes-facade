@@ -938,10 +938,19 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
       res.end(reply.text)
       return
     }
-    if (method === 'GET' && (path === '/api/sessions/search' || path === '/api/sessions/stats')) {
-      // Unimplemented collection endpoints answer a plain 404. The row regex
-      // below would match them and report "Session not found" for a session
-      // literally named "search"/"stats".
+    if (method === 'GET' && path === '/api/sessions/search') {
+      // The facade builds the host result rows (id, title, snippet, recency) and
+      // the Legacy session rows in one reply; Hermex reads `results`.
+      const query = {}
+      for (const [key, value] of url.searchParams) query[key] = value
+      const reply = await backend.call('GET', '/api/sessions/search', { query })
+      if (reply.status !== 200) { sendJson(res, 500, { detail: 'Search failed' }); return }
+      sendJson(res, 200, { results: Array.isArray(reply.json?.results) ? reply.json.results : [] })
+      return
+    }
+    if (method === 'GET' && path === '/api/sessions/stats') {
+      // Unimplemented collection endpoint: a plain 404 (the row regex below would
+      // report "Session not found" for a session literally named "stats").
       sendJson(res, 404, { detail: 'Not Found' })
       return
     }
