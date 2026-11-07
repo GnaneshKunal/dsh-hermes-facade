@@ -65,8 +65,10 @@ async function infoPayload(backend, sessionId) {
  * @returns {object} runner.
  */
 export function createTurnRunner({ backend, hub, requestClient, logger = console, now = () => Math.floor(Date.now() / 1000) }) {
-  /** @type {Map<string, {streamId: string, controller: AbortController, startedAt: number}>} */
+  /** @type {Map<string, {streamId: string, controller: AbortController, startedAt: number, info: object}>} */
   const active = new Map()
+  /** Prompts submitted while the session already had a turn, oldest first. */
+  const queued = new Map()
 
   /**
    * Whether a turn is running for a session.
@@ -87,6 +89,15 @@ export function createTurnRunner({ backend, hub, requestClient, logger = console
   async function start({ sessionId, text }) {
     if (typeof text !== 'string' || text.length === 0) throw new Error('text required')
     if (typeof sessionId !== 'string' || sessionId.length === 0) throw new Error('session_id required')
+    if (active.has(sessionId)) {
+      // A second chat/start would create a second stream, and two consumers of
+      // the same session split its frames and publish two turn boundaries. Keep
+      // the text and run it when the current turn settles.
+      const pending = queued.get(sessionId) ?? []
+      pending.push(text)
+      queued.set(sessionId, pending)
+      return { status: 'queued', session_id: sessionId, turn_isolation: null }
+    }
     const started = await backend.call('POST', '/api/chat/start', { body: { session_id: sessionId, message: text } })
     const streamId = started.json?.stream_id
     if (started.status !== 200 || typeof streamId !== 'string' || streamId.length === 0) {
@@ -198,6 +209,17 @@ export function createTurnRunner({ backend, hub, requestClient, logger = console
       if (!finished) {
         hub.publish('session.info', { ...info, running: false }, sessionId)
       }
+      // A prompt queued behind this turn starts now, on a single stream.
+      const pending = queued.get(sessionId)
+      const next = pending?.shift()
+      if (pending !== undefined && pending.length === 0) queued.delete(sessionId)
+      if (next !== undefined) {
+        setTimeout(() => {
+          start({ sessionId, text: next }).catch(error => {
+            logger.warn?.('hermes-gateway: queued prompt failed: ' + String(error?.message ?? error))
+          })
+        }, 0)
+      }
     }
   }
 
@@ -274,6 +296,8 @@ export function createTurnRunner({ backend, hub, requestClient, logger = console
    * @returns {Promise<object>} reply.
    */
   async function interrupt(sessionId) {
+    // A stop withdraws prompts queued behind the running turn, as the host does.
+    queued.delete(sessionId)
     // Withdraw the cards before the abort: the pump may be parked inside an
     // awaited reverse request, so aborting the stream alone would never reach
     // its finally and the card would sit until the request's own TTL.

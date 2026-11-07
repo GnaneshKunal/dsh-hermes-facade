@@ -187,7 +187,20 @@ export function createMethods({ backend, hub, runner, requests, logger = console
       }
       case 'model.options': {
         const reply = await backend.call('GET', '/api/models')
-        return modelOptionsOf(reply.json ?? {})
+        const options = modelOptionsOf(reply.json ?? {})
+        // The picker's active tick comes from this reply, not from session.info,
+        // so a chat must answer with the model the session actually runs.
+        const sessionId = String(p.session_id ?? '')
+        if (sessionId.length > 0) {
+          try {
+            const detail = await detailOf(sessionId)
+            if (typeof detail.model === 'string' && detail.model.length > 0) options.model = detail.model
+            if (typeof detail.model_provider === 'string' && detail.model_provider.length > 0) {
+              options.provider = detail.model_provider
+            }
+          } catch { /* fall back to the catalog default */ }
+        }
+        return options
       }
       case 'commands.catalog': {
         const reply = await backend.call('GET', '/api/commands')
@@ -252,12 +265,20 @@ export function createMethods({ backend, hub, runner, requests, logger = console
             effort: String(applied.json?.effective_effort ?? value),
           }
         }
-        if (key === 'fast' || key === 'yolo') {
+        if (key === 'fast') {
           return { ok: true, key, scope: 'session', value }
         }
+        if (key === 'yolo') {
+          // The request says "on"/"off"; the client reads the reply's value as
+          // "1"/"0" and compares it to the switch it drew, so echo that spelling.
+          const enabled = value === 'on' || value === '1' || value === 'true'
+          return { ok: true, key: 'yolo', scope: 'session', value: enabled ? '1' : '0' }
+        }
         // personality and approvals.mode are Profile-wide host writes DSH has no
-        // equivalent for; -32601 hides the control instead of lying.
-        throw rpcError(-32601, 'method not found: config.set ' + key)
+        // equivalent for. A key-level error keeps this write failing without
+        // marking config.set itself unavailable, which would disable the model,
+        // effort and Fast controls on every chat of the connection.
+        throw rpcError(-32000, 'config.set ' + key + ' is not supported by DeepSeek Harness')
       }
       case 'session.control.read':
         throw rpcError(-32601, 'method not found')
