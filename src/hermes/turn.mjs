@@ -10,6 +10,8 @@
  * @module dsh-hermes-facade/src/hermes/turn
  */
 
+import { TERMINAL_BACKEND } from './protocol.mjs'
+
 /** How long an approval or question may stay unanswered. */
 const REQUEST_TTL_MS = 10 * 60 * 1000
 
@@ -36,7 +38,8 @@ function jsonOf(data) {
  * @returns {Promise<object>} info fields without `running`.
  */
 async function infoPayload(backend, sessionId) {
-  const info = { session_id: sessionId }
+  // The Files/Git entries appear only when the host names a local backend.
+  const info = { session_id: sessionId, terminal_backend: TERMINAL_BACKEND }
   try {
     const list = await backend.call('GET', '/api/sessions', { query: { include_archived: 1 } })
     const rows = Array.isArray(list.json?.sessions) ? list.json.sessions : []

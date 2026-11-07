@@ -152,6 +152,7 @@ and add it in Hermex as its own server.
 | live model overlay / providers | full (derived): both read the DSH model catalog; providers is read-only |
 | workspaces | partial: list only; add/remove/rename/reorder refused or 404 |
 | workspace file browser (`/api/list`, `/api/file`) | full: read-only |
+| in-chat Files on the Hermes listener (`/api/fs/*`) | read-only: listing, 512 KiB text preview, binary downloads, fenced to the chat folder |
 | profiles (DSH has agent presets, not profiles) | partial: one static profile |
 | session rename / branch (fork) | full |
 | session pin / archive | full: rows report the real flags; `include_archived`/`archived_limit` list archived chats |
@@ -160,7 +161,7 @@ and add it in Hermex as its own server.
 | projects (one per DSH workspace) | partial: read-only list |
 | tasks/cron, skills, memory, insights, kanban, git panel | stubbed: screens open empty or unavailable |
 | bots, push, Move to Hermes | different transport (Hermes gateway); not served |
-| Hermes host contract (second listener, :9121) | v1.2: chat/streaming, sessions incl. the write fence the list actions need, approvals, clarifications, models, commands, export; files/git/tasks/skills/memory/usage/kanban/bots and import answer -32601 or 400 (the per-surface state and plan are docs/05 §2 and docs/07) |
+| Hermes host contract (second listener, :9121) | v1.3: chat/streaming, sessions incl. the write fence the list actions need, approvals, clarifications, models, commands, export and the read-only in-chat Files browser (fenced to the chat folder); git/tasks/skills/memory/usage/kanban/bots and import answer -32601 or 400 (the per-surface state and plan are docs/05 §2 and docs/07) |
 
 The verified matrix — every surface, the endpoint behind it, what the phone shows, and whether it is
 bridgeable here — is [docs/05-compatibility-matrix.md](docs/05-compatibility-matrix.md). docs/00 is
@@ -189,8 +190,9 @@ GET /api/profiles, GET /api/config, GET /api/models, GET /api/commands,
 GET /api/sessions, GET /api/sessions/{id}, GET /api/sessions/{id}/messages,
 GET /api/sessions/{id}/mutation-snapshot, GET /api/sessions/{id}/export,
 PATCH /api/sessions/{id} (title/pin/archive behind the write fence),
-POST /api/sessions/import, WS /api/ws (JSON-RPC with server-to-client
-approval/clarify requests).
+POST /api/sessions/import, GET /api/fs/list, GET /api/fs/read-text,
+GET /api/fs/download (read-only, fenced to the chat folder),
+WS /api/ws (JSON-RPC with server-to-client approval/clarify requests).
 
 ## Diagnostics
 

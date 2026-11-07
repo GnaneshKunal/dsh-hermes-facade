@@ -9,8 +9,9 @@ Hermes host contract, so the same iOS app can be pointed at DeepSeek Harness as
 a native Hermes server. It is additive: port 9120 keeps serving the webui
 contract unchanged.
 
-Status: **v1.2** (2026-11-07). Chat, sessions (including the write fence the
-session list needs), approvals, clarifications, models, commands and export.
+Status: **v1.3** (2026-11-07). Chat, sessions (including the write fence the
+session list needs), approvals, clarifications, models, commands, export and the
+read-only in-chat Files browser.
 The 2026-11-07 audit's wire defects (turn status, stop vocabulary, title read,
 list rows, multi-field PATCH, collection 404s, source matching, `limit=0`,
 capability-gated reverse requests, forwarded-client rate limiting, prompt races,
@@ -184,7 +185,23 @@ with reason `resolved`, like the `approval.respond`/`request.answer` path.
 | `GET /api/profiles/active`, `GET /api/profiles` | the single Profile |
 | `GET /api/config` | `{platform_hints:{}}`; the app's note is advisory |
 | `GET /api/models`, `GET /api/commands` | the catalogs |
-| `GET /api/fs/*`, `/api/files/*` | **not implemented** (404) |
+| `GET /api/fs/list?path=` | one chat folder: `{entries:[{name, path, isDirectory}]}`. An unreadable folder is a well-formed 200 `{entries:[],error:...}`. The host's hidden caches (`.git`, `node_modules`, `dist`, …) and credential stores (`.env`, `.git-credentials`, `mcp-tokens/`, …) are not listed |
+| `GET /api/fs/read-text?path=` | `{binary, byteSize, language, path, text, truncated}`; only the first 512 KiB is read (the facade's `max_bytes`), a source over 64 MiB answers `413 File too large`, and a binary file answers `binary:true` |
+| `GET /api/fs/download?path=[&session_id=]` | the file's bytes and content type. A relative `path` resolves against `session_id`'s folder and is then fenced; `attachment:` refs answer 400; a directory answers 400 `Path points to a directory`; a source over 64 MiB answers 413 |
+| `GET /api/files/*`, `/api/fs/git-root` | **not implemented** (404); the Git menu stays hidden |
+
+The three `/api/fs/*` routes share one fence: the client's path (absolute, or
+relative to `session_id`'s folder) must realpath inside a chat folder (DSH
+workspaces, known session folders, and a draft's chosen folder). The facade
+state directory, `$DSH_HOME`, `~/.ssh`, `~/.aws` and `~/.gnupg` are never
+served, even if a chat folder were opened inside one; a symlink resolves first,
+so it cannot point out. Credential material the host's own Files guard refuses
+(`.env`, `.env.*`, `.envrc`, `.git-credentials`, `auth.json`, `credentials`,
+`config.yaml`, and any `mcp-tokens`/`pairing` component) is refused wherever it
+sits, and the same names plus the host's build/VCS caches are hidden from a
+listing. A denied path answers `403 {"detail":"Path is outside the session
+workspace"}`; credential material answers `403 {"detail":"Access to sensitive
+files is not allowed"}`.
 
 ---
 
@@ -193,12 +210,13 @@ with reason `resolved`, like the `approval.respond`/`request.answer` path.
 - **Works:** chat with tokens, thinking, live tool cards, stop, approvals
   (once/session/always/deny), clarifications, session list, open, rename, pin,
   archive (the write-fence route above is what lets those three work), branch,
-  export, model picker, slash commands.
+  export, model picker, slash commands, and the in-chat Files browser
+  (`session.info.terminal_backend:"local"` plus the fenced `/api/fs/*` routes).
 - **Partial:** the context ring stays empty (no `usage` on turn events); the
   session rows carry no `preview`; Fast and yolo are refused, so their controls
-  revert instead of showing a false state; the Files and Git entries never appear
-  because `session.info` does not report `terminal_backend`.
-- **Empty/absent:** Tasks, Kanban, Skills, Memory, Usage, Files, Git, Bots, Bot
+  revert instead of showing a false state; the Git entry never appears because
+  there is no `fs/git-root`.
+- **Empty/absent:** Tasks, Kanban, Skills, Memory, Usage, Git, Bots, Bot
   screen. Those screens exist on a Hermes host; here they have no backend, and
   unimplemented methods make their controls hide rather than error (the sidebar
   toggles for Tasks/Skills/Memory/Usage are local, so those screens show their
@@ -262,8 +280,9 @@ The full surface state and the plan for the missing screens are
 1. **No session import.** Move to Hermes cannot use this host as a destination
    until DSH can accept a transcript. The webui side also refuses
    `/api/profile/switch`, so a move cannot even read its source yet.
-2. **No files/git/tasks/skills/memory/kanban/bots.** Each is a separate backend
-   (and DSH has no memory or kanban store at all).
+2. **No git/tasks/skills/memory/kanban/bots.** Each is a separate backend (and
+   DSH has no memory or kanban store at all). Files is read-only: the app never
+   writes through `/api/fs/*`, and this listener refuses to invent writes.
 3. **One Profile.** Everything is filed under `default`; DSH has agent presets,
    not Profiles.
 4. **Version claim.** We report 0.22.5 to clear the gate, but only implement the
@@ -271,14 +290,15 @@ The full surface state and the plan for the missing screens are
 5. **Protocol drift.** The client pins 0.22.5; the contract at HEAD already has
    more methods. Re-read `/tmp/hermex` (the client source) before chasing a new
    build; do not implement from the 261-method OpenRPC document.
-6. **No usage or workspace facts on the chat wire.** `message.complete` carries
-   no `usage`/`partial`/`persisted_turn` and `session.info` carries no
-   `terminal_backend`, so the context ring stays empty and the Files/Git entries
-   stay hidden.
-7. **Path fence missing before any file surface.** The facade's file routes accept
-   any absolute path (`src/host.mjs resolvePath`), and the client says its own
-   check is not a security boundary. Add one realpath fence before Files/Git/Memory
-   ship on this listener.
+6. **No usage on the chat wire.** `message.complete` carries no
+   `usage`/`partial`/`persisted_turn`, so the context ring stays empty. (The
+   Files/Git entries now have their `terminal_backend`; Git still needs
+   `fs/git-root`.)
+7. **The Legacy file browser is still unfenced.** The `:9121` Files routes use the
+   shared realpath fence (chat folders only, state and secret directories denied),
+   but `:9120`'s `/api/{list,file,file/raw,media}` accept any absolute path, as
+   they always have. Any new file surface must use the fence; tightening `:9120`
+   is separate.
 8. **Two ports, two servers on the phone.** Kind is fixed per URL, so the same
    host:port cannot be both. Keep the webui entry as the fallback until the
    Hermes one covers what you use.

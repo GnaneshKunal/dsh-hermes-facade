@@ -15,6 +15,13 @@ export const HERMES_VERSION = '0.22.5'
 /** The only Profile DSH has. */
 export const PROFILE_NAME = 'default'
 
+/**
+ * The terminal backend `session.info` reports. Hermex only offers the in-chat
+ * Files and Git entries when it is "local", because a docker/ssh backend's
+ * folder is not on this host's filesystem.
+ */
+export const TERMINAL_BACKEND = 'local'
+
 /** Cookie names the client keeps and replays. */
 export const COOKIE_AT = 'hermes_session_at'
 export const COOKIE_RT = 'hermes_session_rt'

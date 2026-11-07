@@ -85,6 +85,27 @@ export function createBackend({ baseUrl, token, fetchImpl = globalThis.fetch }) 
   }
 
   /**
+   * One binary request: the facade's file bytes, not its JSON or text.
+   * @param {string} path path beginning with /.
+   * @param {object} [options] request options.
+   * @returns {Promise<{status: number, headers: Headers, body: Uint8Array}>} reply.
+   */
+  async function download(path, options = {}) {
+    const url = withQuery(new URL(origin + path), options.query)
+    const headers = { 'x-facade-internal': token }
+    if (typeof options.accept === 'string') headers.accept = options.accept
+    const response = await fetchImpl(url, {
+      headers,
+      signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+    })
+    return {
+      status: response.status,
+      headers: response.headers,
+      body: new Uint8Array(await response.arrayBuffer()),
+    }
+  }
+
+  /**
    * Follow one SSE stream until it ends.
    * @param {string} path path beginning with /.
    * @param {object} [options] stream options.
@@ -116,5 +137,5 @@ export function createBackend({ baseUrl, token, fetchImpl = globalThis.fetch }) 
     if (tail !== undefined) yield tail
   }
 
-  return { call, stream, origin, token }
+  return { call, download, stream, origin, token }
 }

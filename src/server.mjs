@@ -1475,9 +1475,11 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
       if (method === 'GET' && path === '/api/file') {
         const sessionId = url.searchParams.get('session_id') ?? ''
         const reference = url.searchParams.get('path') ?? ''
+        const maxBytesRaw = Number.parseInt(url.searchParams.get('max_bytes') ?? '', 10)
+        const maxBytes = Number.isSafeInteger(maxBytesRaw) && maxBytesRaw > 0 ? maxBytesRaw : undefined
         let file
         try {
-          file = await host.readText(sessionId, reference)
+          file = await host.readText(sessionId, reference, maxBytes === undefined ? undefined : { maxBytes })
         } catch (error) {
           notes.error = String(error?.message ?? error)
         }

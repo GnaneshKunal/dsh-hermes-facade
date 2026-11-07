@@ -12,7 +12,7 @@
 import { statSync } from 'node:fs'
 
 import { commandsOf, modelOptionsOf, resumeReplyOf, sessionRowOf } from './shapes.mjs'
-import { profilesListBody, profileRow, PROFILE_NAME } from './protocol.mjs'
+import { profilesListBody, profileRow, PROFILE_NAME, TERMINAL_BACKEND } from './protocol.mjs'
 
 /**
  * Build an RPC error with an explicit JSON-RPC code.
@@ -131,6 +131,7 @@ export function createMethods({ backend, hub, runner, requests, sessions, bumpRe
       ...(typeof provider === 'string' && provider.length > 0 ? { provider } : {}),
       ...(typeof effort === 'string' && effort.length > 0 ? { reasoning_effort: effort } : {}),
       yolo: false,
+      terminal_backend: TERMINAL_BACKEND,
     }
   }
 

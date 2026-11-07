@@ -5,6 +5,38 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 
 ## [Unreleased]
 
+### Added
+
+- **The in-chat Files browser on the Hermes listener (read-only).** Hermex
+  offers a workspace browser for a chat whose `session.info` names a local
+  terminal backend, so `session.info` (drafts, resume snapshots and live
+  events) now reports `terminal_backend:"local"` along with the existing
+  `cwd`. The listener serves the three read routes the phone calls:
+  `GET /api/fs/list` (folder entries with `isDirectory`),
+  `GET /api/fs/read-text` (text with a 512 KiB preview and a `truncated`
+  flag, or `binary:true` with the size) and `GET /api/fs/download` (the bytes
+  and content type; a relative MEDIA path resolves against `session_id`'s
+  folder, and `attachment:` refs answer 400). They translate the facade's Legacy
+  file reads, so the two transports keep one mapping. Sizes match the host: a
+  preview reads only the first 512 KiB through the facade's new `max_bytes`, and
+  a source over 64 MiB answers `413 File too large` before it is buffered; a
+  directory answers `400 Path points to a directory` on both routes.
+- **A shared path fence for file surfaces** (`src/hermes/fence.mjs`). Hermex
+  sends absolute host paths and its own check is explicitly not a security
+  boundary, so a path is served only when its realpath is inside a chat folder
+  (a DSH workspace, a known session folder, or the folder a draft picked).
+  The facade state directory, `$DSH_HOME`, `~/.ssh`, `~/.aws` and
+  `~/.gnupg` are never served, even from inside an allowed root; a symlink is
+  resolved first, so it cannot point out. It also mirrors the host's own Files
+  guard: `.env`/`.env.*`/`.envrc`, `.git-credentials`, `auth.json`,
+  `credentials`, `config.yaml` and the other credential basenames are refused
+  wherever they sit, any `mcp-tokens`/`pairing` component is refused, and the
+  same names plus the host's build/VCS caches are hidden from listings. A denied
+  path answers `403 {"detail":"Path is outside the session workspace"}`; a
+  credential answers `403 {"detail":"Access to sensitive files is not allowed"}`.
+  Git and Memory will reuse this fence. The Legacy `:9120` file routes are
+  unchanged.
+
 ### Fixed
 
 - **The Hermes listener's session write fence.** Hermex reads

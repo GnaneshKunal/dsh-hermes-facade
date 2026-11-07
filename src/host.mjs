@@ -10,7 +10,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { readFile, readdir, stat } from 'node:fs/promises'
+import { open, readFile, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, join } from 'node:path'
 
@@ -828,14 +828,42 @@ export function createDshHost({ ctx, logger = console }) {
      * Read one text file for the workspace file browser (GET /api/file).
      * @param {string} sessionId session id (defines the relative-path base).
      * @param {string} reference file path, absolute or session-relative.
+     * @param {object} [options] options.
+     * @param {number} [options.maxBytes] read only this prefix (a preview).
      * @returns {Promise<object|undefined>} file payload, undefined when absent or binary.
      */
-    async readText(sessionId, reference) {
+    async readText(sessionId, reference, options = {}) {
       const target = await this.resolvePath(sessionId, reference)
       if (target === undefined) return undefined
+      const maxBytes = Number.isSafeInteger(options?.maxBytes) && options.maxBytes > 0
+        ? options.maxBytes
+        : undefined
       let body
+      let size
       try {
-        body = await readFile(target)
+        if (maxBytes === undefined) {
+          body = await readFile(target)
+          size = body.length
+        } else {
+          // A preview must not load a large file whole: read the window only.
+          const handle = await open(target, 'r')
+          try {
+            const info = await handle.stat()
+            if (info.isDirectory()) return undefined
+            size = info.size
+            const length = Math.min(size, maxBytes)
+            const buffer = Buffer.alloc(length)
+            let offset = 0
+            while (offset < length) {
+              const { bytesRead } = await handle.read(buffer, offset, length - offset, offset)
+              if (bytesRead === 0) break
+              offset += bytesRead
+            }
+            body = buffer.subarray(0, offset)
+          } finally {
+            await handle.close()
+          }
+        }
       } catch {
         return undefined
       }
@@ -847,8 +875,9 @@ export function createDshHost({ ctx, logger = console }) {
         path: target,
         name: basename(target),
         language: extname(target).replace(/^\./, '').toLowerCase(),
-        size: body.length,
+        size: size ?? body.length,
         lines: content.length === 0 ? 0 : content.split('\n').length,
+        truncated: (size ?? body.length) > body.length,
       }
     },
 
