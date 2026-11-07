@@ -66,7 +66,9 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   fill the same ring. **No cost**: DSH reports tokens, not prices, and the app's
   Hermes chat snapshot ignores cost even when present — Usage/Insights stays
   token-only. `partial`/`persisted_turn` remain absent (the saved row ids are
-  not in the turn event).
+  not in the turn event). The facade's `/api/session` detail and JSON export
+  carry the same snapshot, so the Legacy ring survives the app's post-turn
+  transcript refresh.
 - **A shared path fence for file surfaces** (`src/hermes/fence.mjs`). Hermex
   sends absolute host paths and its own check is explicitly not a security
   boundary, so a path is served only when its realpath is inside a chat folder

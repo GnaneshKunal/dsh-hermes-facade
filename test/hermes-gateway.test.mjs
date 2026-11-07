@@ -1733,6 +1733,26 @@ test('a turn publishes context-window and token usage', async () => {
   }
 })
 
+test('a turn without a usage measurement carries no usage field', async () => {
+  const harness = await boot()
+  try {
+    harness.host.setSessionUsage({})
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'no usage' })
+      const complete = await socket.waitFor(frame => frame.params?.type === 'message.complete')
+      assert.equal('usage' in complete.params.payload, false)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
 
 
 

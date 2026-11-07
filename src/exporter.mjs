@@ -103,6 +103,8 @@ function renderJson(session, messages, toolCalls) {
     ...(typeof session.model_provider === 'string' ? { model_provider: session.model_provider } : {}),
     ...(Number.isSafeInteger(session.input_tokens) ? { input_tokens: session.input_tokens } : {}),
     ...(Number.isSafeInteger(session.output_tokens) ? { output_tokens: session.output_tokens } : {}),
+    ...(Number.isSafeInteger(session.context_length) ? { context_length: session.context_length } : {}),
+    ...(Number.isSafeInteger(session.last_prompt_tokens) ? { last_prompt_tokens: session.last_prompt_tokens } : {}),
     message_count: messages.length,
     messages,
     ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),

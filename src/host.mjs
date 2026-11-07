@@ -531,8 +531,10 @@ export function createDshHost({ ctx, logger = console }) {
         : undefined
       const output = Number.isFinite(token?.outputTokens) ? token.outputTokens : undefined
       const max = Number.isFinite(pressure?.contextWindow) ? pressure.contextWindow : undefined
-      const used = Number.isFinite(pressure?.pressureTokens) ? pressure.pressureTokens
-        : (Number.isFinite(pressure?.projectedTokens) ? pressure.projectedTokens : undefined)
+      // last_prompt_tokens is the provider's actual prompt size, the same number
+      // the upstream host reports; projectedTokens is a heuristic for the NEXT
+      // request, so it is deliberately not a fallback.
+      const used = Number.isFinite(pressure?.pressureTokens) ? pressure.pressureTokens : undefined
       return {
         ...(input === undefined ? {} : { input_tokens: input }),
         ...(output === undefined ? {} : { output_tokens: output }),

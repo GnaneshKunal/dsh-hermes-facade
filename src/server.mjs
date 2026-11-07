@@ -911,19 +911,22 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         const timeline = timelineOf(snapshot.events)
         const page = pageMessages(timeline.messages, { limit, before, initial: historyPage })
         const visibility = await sessionVisibility()
-        sendJson(res, 200, {
-          session: detailOf(
-            item ?? { sessionId },
-            page.messages,
-            visibility.index.get(String(sessionId)),
-            page,
-            timeline.toolCalls,
-            {
-              pinned: visibility.pinned.has(String(sessionId)),
-              archived: visibility.archived.has(String(sessionId)),
-            },
-          ),
-        })
+        const detail = detailOf(
+          item ?? { sessionId },
+          page.messages,
+          visibility.index.get(String(sessionId)),
+          page,
+          timeline.toolCalls,
+          {
+            pinned: visibility.pinned.has(String(sessionId)),
+            archived: visibility.archived.has(String(sessionId)),
+          },
+        )
+        // The app rebuilds its context ring from this detail after every turn
+        // (loadMessages), so the snapshot must carry the usage too — otherwise
+        // the ring fills on `done` and empties on the follow-up refresh.
+        Object.assign(detail, await usageFor(sessionId))
+        sendJson(res, 200, { session: detail })
         return
       }
 
@@ -959,6 +962,7 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
             archived: visibility.archived.has(String(sessionId)),
           },
         )
+        Object.assign(detail, await usageFor(sessionId))
         const document = renderExport({
           format,
           session: detail,

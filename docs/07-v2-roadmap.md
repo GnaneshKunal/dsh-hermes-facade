@@ -183,10 +183,13 @@ context_used, context_max}`. Legacy's `done.usage` is the context-window snapsho
 (`input_tokens`, `output_tokens`, `context_length`, `last_prompt_tokens`), so both transports fill the same ring.
 There is **no cost**: DSH reports tokens, not prices, and Hermex's chat snapshot ignores cost even when present —
 Usage/Insights remains a later item and stays token-only. `partial`/`persisted_turn` remain absent because the
-saved row ids are not in the turn event. Tests cover the Legacy SSE usage frame and the done payload, and the
-gateway's live `session.usage` plus `message.complete.usage`.
+saved row ids are not in the turn event. The facade's `/api/session` detail and JSON export carry the same snapshot
+(`context_length`, `last_prompt_tokens`, `input_tokens`, `output_tokens`), so the Legacy ring survives the app's
+post-turn transcript refresh and a later chat open. Tests cover the Legacy SSE usage frame, the done payload, the
+detail/export snapshot, the host mapping against fake projections, and the gateway's live `session.usage` plus
+`message.complete.usage`.
 
-Verify: `npm run check && npm test` (182 tests), then rename a chat from the phone's list, pin it, archive it,
+Verify: `npm run check && npm test` (185 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---

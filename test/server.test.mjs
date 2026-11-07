@@ -283,6 +283,11 @@ test('session detail returns messages', async t => {
   const body = await res.json()
   assert.equal(body.session.session_id, 'sess-mock')
   assert.ok(Array.isArray(body.session.messages))
+  // The app rebuilds its context ring from this detail after every turn.
+  assert.equal(body.session.context_length, 200000)
+  assert.equal(body.session.last_prompt_tokens, 4321)
+  assert.equal(body.session.input_tokens, 1234)
+  assert.equal(body.session.output_tokens, 56)
 })
 
 test('chat start streams token, done and stream_end over SSE', async t => {
@@ -1224,6 +1229,10 @@ test('GET /api/session/export downloads the transcript in the requested format',
   const dump = await jsonRes.json()
   assert.equal(dump.session_id, 'sess-export')
   assert.equal(dump.messages.length, 3)
+  assert.equal(dump.input_tokens, 1234)
+  assert.equal(dump.output_tokens, 56)
+  assert.equal(dump.context_length, 200000)
+  assert.equal(dump.last_prompt_tokens, 4321)
   assert.deepEqual(dump.messages.map(message => message.content), ['u0', 'a1', 'u2'])
 
   // Same mapping as the open chat, not a second rendering of the transcript.

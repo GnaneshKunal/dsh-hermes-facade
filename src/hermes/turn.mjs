@@ -227,11 +227,15 @@ export function createTurnRunner({
           finished = true
           // The contract's literal is "complete"; the client renders anything
           // but interrupted/error as completed, so this only removes drift.
-          const usage = usageOf(data.usage)
+          // An absent/empty usage is not a measurement: reporting input/output 0
+          // would look authoritative. The ring needs context_max anyway, so only
+          // fields the facade sent are mapped.
+          const measured = data.usage !== null && typeof data.usage === 'object'
+            && Object.keys(data.usage).length > 0
           hub.publish('message.complete', {
             status: 'complete',
             text,
-            ...(Object.keys(usage).length > 0 ? { usage } : {}),
+            ...(measured ? { usage: usageOf(data.usage) } : {}),
           }, sessionId)
           hub.publish('session.info', { ...info, running: false }, sessionId)
           break
