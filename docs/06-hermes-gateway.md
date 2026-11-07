@@ -9,10 +9,18 @@ Hermes host contract, so the same iOS app can be pointed at DeepSeek Harness as
 a native Hermes server. It is additive: port 9120 keeps serving the webui
 contract unchanged.
 
-Status: **v1** (2026-11-07). Chat, sessions, approvals, clarifications, models,
-commands and export. Not implemented: session import, files, tasks, skills,
-memory, kanban, git, insights, bots and the bot screen. Those answer
-`-32601` (socket) or 404 (REST), which the client degrades on.
+Status: **v1.2** (2026-11-07). Chat, sessions (including the write fence the
+session list needs), approvals, clarifications, models, commands and export.
+The 2026-11-07 audit's wire defects (turn status, stop vocabulary, title read,
+list rows, multi-field PATCH, collection 404s, source matching, `limit=0`,
+capability-gated reverse requests, forwarded-client rate limiting, prompt races,
+Fast/yolo honesty) are fixed in the same change.
+Not implemented: session import, files, tasks, skills, memory, kanban, git,
+insights, bots and the bot screen. Those answer `-32601` (socket) or 404
+(REST), which the client degrades on. The full per-surface state, and the plan
+for closing the gaps, are [05-compatibility-matrix.md](05-compatibility-matrix.md)
+§2 and [07-v2-roadmap.md](07-v2-roadmap.md); this document is the listener's own
+contract reference.
 
 ---
 
@@ -109,13 +117,13 @@ refusing it withdraws approvals silently.
 | `gateway.ping` | `{ok:true}`; the app heartbeats with it |
 | `client.capabilities` | `{ok:true, server_requests:true}` |
 | `profiles.list` / `profiles.describe` | one Profile, `default` |
-| `session.list` | every facade session, id/title |
+| `session.list` | every facade session in the REST row shape (`id`, `resolved_id`, title, flags, timestamps, model/cwd when known) |
 | `session.most_recent` | no-op acknowledgement |
 | `session.create` | creates a DSH session (optional `cwd`, `model`, `provider`) |
 | `session.resume` | live state only (`messages_omitted`); the transcript is read over REST |
-| `session.title` | rename through the facade |
+| `session.title` | rename through the facade; omitting `title` reads the current one |
 | `session.branch` | fork through the facade; refused with the host's reason when the session has no completed turn |
-| `session.interrupt` | stops the running turn |
+| `session.interrupt` | stops the running turn; answers `{status: interrupted|not_interrupted, interrupted}` |
 | `session.steer` | queues a mid-run message |
 | `session.delete` | refused: DSH has no session-delete primitive |
 | `session.events.since` | `{latest_seq, epoch, truncated, events}`, contiguous per session |
@@ -124,7 +132,7 @@ refusing it withdraws approvals silently.
 | `request.answer` / `clarify.lock` | answers a clarification |
 | `model.options` | providers/models from the DSH catalog |
 | `commands.catalog` | slash commands as `pairs` + `canon` |
-| `config.set` | acknowledged, not stored (the app's platform note) |
+| `config.set` | `model` and `reasoning` are applied through the facade; `fast`, `yolo`, `personality` and `approvals.mode` answer a key-level error so the control reverts and the rest of the method stays available |
 | anything else | `-32601`, which the client records and uses to hide the control |
 
 ### Events
@@ -144,13 +152,17 @@ session only; sequence gaps make the client rebuild from a snapshot, so the ring
 | `tool.start` | `{name, args, tool_id}` |
 | `tool.complete` | `{name, tool_id, result, is_error?}` |
 | `session.title` | `{session_id, title}` |
-| `message.complete` | `{status: completed|error|interrupted, text}` |
-| `request.cancel` | `{request_id, reason}`; withdraws an unanswered card |
+| `message.complete` | `{status: complete|error|interrupted, text}` |
+| `request.cancel` | `{id, method, reason}`; withdraws an unanswered card |
 
-Reverse requests: `approval` (`request_id, command, description, choices`), and
-`clarify` (`request_id, question, choices`). The client answers with
-`approval.respond`, `request.answer` or `clarify.lock`; a turn that ends
-withdraws whatever is still open.
+Reverse requests: `approval` (`request_id, command, description, choices`) and
+`clarify` in the single-question legacy shape (`request_id, question, choices,
+multi_select`) — the client decodes that as well as the contract's
+`questions:[{qid,…}]` batch. The client answers with `approval.respond`,
+`request.answer` or `clarify.lock`; a turn that ends withdraws whatever is still
+open. The reverse request is only useful to a socket that sent
+`client.capabilities {server_requests:true}`; the stock client always does, but
+this listener does not yet gate on it.
 
 ---
 
@@ -161,8 +173,9 @@ withdraws whatever is still open.
 | `GET /api/sessions` | `profile, order=recent|created, archived=exclude|only|include, limit, offset`; `scheduled=1` answers empty (no cron rows are exposed) |
 | `GET /api/sessions/{id}` | one row, 404 when unknown |
 | `GET /api/sessions/{id}/messages` | `order=latest|oldest, limit<=500, offset`; rows in the transcript shape (`role, content, timestamp, row_id, tool_calls…`) |
-| `PATCH /api/sessions/{id}` | `title`, `pinned`, `archived` through the facade's rename/pin/archive routes |
+| `PATCH /api/sessions/{id}` | `title`, `pinned`, `archived` through the facade's rename/pin/archive routes. A `request_id` + `expected_revision` pair is validated: a stale pair answers `409 revision_conflict`, half a pair `409 mutation_identity_required`, neither is applied bare for an older client. `unread` is refused (DSH has no flag) |
 | `DELETE /api/sessions/{id}` | 400 with the reason (no DSH primitive) |
+| `GET /api/sessions/{id}/mutation-snapshot` | `{session_id, exists, runtime_revision}`, the revision the phone reads before every rename/pin/archive. Without it the client rethrows the catch-all 404 and every list action fails. Unknown sessions answer `exists:false` |
 | `GET /api/sessions/{id}/export` | forwards the facade's JSON transcript download |
 | `POST /api/sessions/import` | 400: DSH cannot inject a transcript, so Move to Hermes cannot land here yet |
 | `GET /api/profiles/active`, `GET /api/profiles` | the single Profile |
@@ -176,10 +189,17 @@ withdraws whatever is still open.
 
 - **Works:** chat with tokens, thinking, live tool cards, stop, approvals
   (once/session/always/deny), clarifications, session list, open, rename, pin,
-  archive, branch, export, model picker, slash commands.
+  archive (the write-fence route above is what lets those three work), branch,
+  export, model picker, slash commands.
+- **Partial:** the context ring stays empty (no `usage` on turn events); the
+  session rows carry no `preview`; Fast and yolo are refused, so their controls
+  revert instead of showing a false state; the Files and Git entries never appear
+  because `session.info` does not report `terminal_backend`.
 - **Empty/absent:** Tasks, Kanban, Skills, Memory, Usage, Files, Git, Bots, Bot
   screen. Those screens exist on a Hermes host; here they have no backend, and
-  unimplemented methods make their controls hide rather than error.
+  unimplemented methods make their controls hide rather than error (the sidebar
+  toggles for Tasks/Skills/Memory/Usage are local, so those screens show their
+  own error; Kanban's config 404 gives the clean "unavailable").
 - **No "Move to Hermes" invite:** the app offers that only for servers it
   classified as webui. A Hermes-kind server never shows it. The webui entry on
   9120 still does; its X dismisses the invite permanently.
@@ -224,9 +244,13 @@ node scripts/standalone.mjs --port 9199 --gateway-port 9198
 # hermes-gateway (standalone, MOCK agent) on http://127.0.0.1:9198
 ```
 
-`tests/hermes-gateway.test.mjs` drives the whole contract with a real WebSocket
+`test/hermes-gateway.test.mjs` drives the whole contract with a real WebSocket
 client: status, login, ticket, `gateway.ready`, capabilities, session list,
-REST paging, a streamed turn, and an approval answered as a reverse request.
+REST paging, the session write fence (snapshot, stale revision, half identity,
+bare write), a streamed turn and an approval answered as a reverse request.
+The full surface state and the plan for the missing screens are
+[05-compatibility-matrix.md](05-compatibility-matrix.md) §2 and
+[07-v2-roadmap.md](07-v2-roadmap.md).
 
 ---
 
@@ -244,6 +268,14 @@ REST paging, a streamed turn, and an approval answered as a reverse request.
 5. **Protocol drift.** The client pins 0.22.5; the contract at HEAD already has
    more methods. Re-read `/tmp/hermex` (the client source) before chasing a new
    build; do not implement from the 261-method OpenRPC document.
+6. **No usage or workspace facts on the chat wire.** `message.complete` carries
+   no `usage`/`partial`/`persisted_turn` and `session.info` carries no
+   `terminal_backend`, so the context ring stays empty and the Files/Git entries
+   stay hidden.
+7. **Path fence missing before any file surface.** The facade's file routes accept
+   any absolute path (`src/host.mjs resolvePath`), and the client says its own
+   check is not a security boundary. Add one realpath fence before Files/Git/Memory
+   ship on this listener.
 6. **Two ports, two servers on the phone.** Kind is fixed per URL, so the same
    host:port cannot be both. Keep the webui entry as the fallback until the
    Hermes one covers what you use.

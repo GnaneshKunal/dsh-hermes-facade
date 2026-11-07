@@ -1,53 +1,75 @@
-# 05 — Hermex 2.0 compatibility matrix
+# 05 — Hermex compatibility matrix: Legacy (V1) and Hermes host (V2)
 
-Last verified: **2026-11-07** · client: Hermex **2.0.1** source (`ec066d9`) · facade: **main** (history
-paging, tool results, model switching, honest turn outcomes, pin/archive visibility, export, live
-model overlay, approval/clarify reconnect; see CHANGELOG) ·
-DSH `0.2.2-rc.1` · protocol: hermes-webui HTTP + SSE.
+Last verified: **2026-11-07** · client: **Hermex 2.0.1** (build 1; sources at `7547796`, chat stack re-verified at
+`ec066d9`) · facade: **main** (0.3.x, including the session write fence; see CHANGELOG) · DSH `0.2.2-rc.1` ·
+transports: **hermes-webui** HTTP + SSE on **:9120** (the app calls it *Legacy*) and **Hermes host** REST +
+JSON-RPC over a WebSocket on **:9121**.
 
-This is the honest accounting of what the stock Hermex iOS app can do against this facade, what it
-shows when something is missing, and what it would take to close each gap. The app is an App Store
-binary: every fix here is server-side (response shaping plus a DSH primitive). "Bridgeable?" says
-whether this plugin can close it, whether a DSH RPC that does not exist yet is required, or whether
-it belongs to the other (gateway) transport entirely.
+This is the honest accounting of what the stock Hermex app can do against this facade, on **both** transports:
+the endpoint or method behind each surface, what the phone shows when something is missing, and what it would
+take to close the gap. The app is an App Store binary, so every fix here is server-side (response shaping plus a
+DSH primitive). "Bridgeable?" says whether this plugin can close it, whether a DSH RPC that does not exist yet is
+required, or whether it belongs to another transport entirely.
 
-Evidence: the client's own Swift sources (call sites and error handling), the facade route table,
-and a runtime probe of **114 app-facing calls** against the standalone harness. The probe files are
-not committed; rerun with `node scripts/standalone.mjs --port 9199` and the paths in
-`docs/02-hermex-client-wire.md`.
+**Evidence.** The client's own Swift sources (call sites, decoders, error handling), the facade's route and method
+tables, and runtime probes: `114` app-facing webui calls and `19` gateway methods plus every gateway REST route on
+a standalone mock host. The legacy probe files are not committed; rerun with
+`node scripts/standalone.mjs --port 9199 --gateway-port 9198` and the paths in [02-hermex-client-wire.md](02-hermex-client-wire.md).
+The `:9121` section was additionally cross-checked against the upstream host contract
+([01-hermes-gateway-api.md](01-hermes-gateway-api.md) and the fuller extraction of `/tmp/hermes-agent` at
+`90d6b98`) and against the phone's own `access.log` in `~/.dsh/hermes-facade/`. No device retest was run for this
+revision.
 
-## Legend
+## 0. The app picks a transport once
+
+Hermex decides what a server *is* from its **Add server** probe and stores the kind per URL forever; it never
+re-probes, and there is no fallback from one stack to the other.
+
+| Probe response | Kind | Transport used for everything | In the app |
+|---|---|---|---|
+| `GET /api/status` carries `auth_required` | **Hermes** (V2) | REST + `GET /api/ws` JSON-RPC; no webui route is called | a native server; no Legacy badge, no Move-to-Hermes invite |
+| `GET /api/status` is 404 / has no `auth_required` | **hermes-webui** (V1) | REST + SSE `/api/chat/stream` | marked **Legacy**; keeps working, gets fixes only |
+
+`:9120` deliberately does **not** answer `/api/status`, so it can only be the Legacy entry; `:9121` answers it
+with `auth_required:true` and a stable `install_id`, so it can only be the Hermes entry. Add both as separate
+servers. The two listeners share one password file, one state directory and one set of DSH sessions.
+
+### Legend
 
 | State | Meaning |
 |---|---|
 | **WORKS** | Behaves as the app expects. |
-| **PARTIAL** | The route exists but the phone loses something (details, state, an option, a page). |
+| **PARTIAL** | The route or method exists but the phone loses something (details, state, an option, a page). |
 | **STUB** | Well-formed empty payload or `200 {ok:false}` refusal; the screen opens but the feature does nothing. |
-| **404** | No route (or wrong method), so the app shows "The server endpoint was not found". |
-| **—** | Not applicable: the app never calls it on a webui account, or it needs a different transport. |
+| **404** / **-32601** | No route / no method, so the app shows its "endpoint not found" copy, or records the method as unavailable and hides the control. |
+| **—** | Not applicable: the app never calls it on this transport, or it needs a different backend. |
 
-A 404 is not an empty state: Hermex maps it to "The server endpoint was not found. Check that the URL
-points to your configured server." Only the 408/502/503/504 statuses fall back to cached rows.
+A 404 is not an empty state: Hermex maps it to "The server endpoint was not found…". On the Hermes transport an
+unknown **method** is `-32601`, which the client records per connection and uses to hide the matching control — this
+is the graceful way to say "this host cannot do that". Ship a screen only when **all** of its routes exist; a
+partial set half-renders.
 
-## Webui surfaces (main app)
+---
+
+## 1. Legacy surface (V1) — hermes-webui on `:9120`
 
 | Surface | Endpoint(s) | State | What the phone shows | Bridgeable? |
 |---|---|---|---|---|
 | Add server / sign in | `/health`, `/api/auth/{status,login,logout}` | **WORKS** | normal sign-in, signed cookie | — |
-| Session list, grouping by project | `GET /api/sessions` | **WORKS** | rows grouped into project lanes; DSH subagent sessions are hidden for now (runner-owned, parent-addressed only) | enabling Hermex's Subagent Sessions toggle needs row tagging + parent-address reads |
-| Pinned / archived state | same | **WORKS** | every row carries the real `pinned`/`archived` flags, read from the workspace baseline; the default response hides archived rows and reports `archived_count`, and `include_archived=1` (+ optional `archived_limit`) fills the app's Archived screen | — |
-| Session search | `GET /api/sessions/search` | **404** | "endpoint not found"; only the local title filter still works | yes: `session/search` |
+| Session list, grouping by project | `GET /api/sessions` | **WORKS** | rows grouped into project lanes; DSH subagent sessions are hidden (runner-owned, parent-addressed only) | enabling Hermex's Subagent Sessions toggle needs row tagging + parent-address reads |
+| Pinned / archived state | same | **WORKS** | every row carries the real `pinned`/`archived` flags; archived rows hidden by default and listed via `include_archived=1` (+ `archived_limit`) | — |
+| Session search | `GET /api/sessions/search` | **404** | "endpoint not found"; only the local title filter works | yes: `session/search` |
 | Open chat / history | `GET /api/session` | **WORKS** (bounded) | newest **200** messages, then 50-message scroll-back pages, within the newest **800**; tool results, error verdicts and durations ride along as persisted tool calls | unbounded history still needs a `session/page` walk |
 | Rename | `POST /api/session/rename` | **WORKS** | title updates | — |
 | Branch / fork | `POST /api/session/branch` | **WORKS** | child session; needs a completed turn | — |
-| Pin / archive (action) | `POST /api/session/pin`, `POST /api/session/archive` | **WORKS** | accepted and visible on the next list read (the workspace cache is dropped) | — |
+| Pin / archive (action) | `POST /api/session/{pin,archive}` | **WORKS** | accepted and visible on the next list read | — |
 | Delete | `POST /api/session/delete` | **STUB** | "Not supported by DeepSeek Harness"; the row stays | needs DSH: no session-delete RPC |
 | Duplicate | `POST /api/session/duplicate` | **STUB** | same refusal | needs DSH: no session import/copy RPC |
-| Export / share | `GET /api/session/export` | **WORKS** (bounded) | JSON (default), HTML or markdown transcript with the share-sheet filename from `Content-Disposition`; the JSON form is the one Move to Hermes imports. Bounded by the host's transcript snapshot | — |
+| Export / share | `GET /api/session/export` | **WORKS** (bounded) | JSON (default), HTML or markdown transcript with the share-sheet filename; the JSON form is what Move to Hermes imports | — |
 | Compress / clear / undo / retry / truncate / move / update | `POST /api/session/*` | **STUB** | "Not supported"; edit, regenerate, undo, clear and project-move are unavailable | mostly needs DSH; `update` (model/workspace) is bridgeable |
-| Model picker / switch | `POST /api/session/update`, `model` on `chat/start` and `session/new` | **WORKS** | applied through `session/selectModel`; catalog id and provider are resolved, reasoning effort carried over | — |
-| Chat workspace switch | `POST /api/session/update` with `workspace` | **PARTIAL** | the session is filed under the chosen project (grouping), but DSH cannot change a started session's cwd | needs a DSH cwd-change primitive |
-| YOLO / approval bypass | `GET/POST /api/session/yolo` | **PARTIAL** | GET is a 404; POST always reports `yolo_enabled:false`, so "skip all" never sticks | yes |
+| Model picker / switch | `POST /api/session/update`, `model` on `chat/start` and `session/new` | **WORKS** | applied through `session/selectModel`; catalog id and provider resolved, reasoning effort carried over | — |
+| Chat workspace switch | `POST /api/session/update` with `workspace` | **PARTIAL** | filed under the chosen project, but DSH cannot change a started session's cwd | needs a DSH cwd-change primitive |
+| YOLO / approval bypass | `GET/POST /api/session/yolo` | **PARTIAL** | GET is 404; POST always reports `yolo_enabled:false`, so "skip all" never sticks | yes |
 | Projects (lanes) | `GET /api/projects` | **PARTIAL** | real read-only list | yes for CRUD: `workspace/*` |
 | Project create / rename / delete | `POST /api/projects/*` | **STUB** | refusal message in the sheet | yes |
 | Workspaces list | `GET /api/workspaces` | **WORKS** | list of DSH workspaces | — |
@@ -55,127 +77,224 @@ points to your configured server." Only the 408/502/503/504 statuses fall back t
 | File browser (list/read/raw/media) | `GET /api/{list,file,file/raw,media}` | **WORKS** (read-only) | directory listing, text preview, images | writes not offered by this app build |
 | Attachments (camera, picker, paste, share sheet) | `POST /api/upload` | **STUB** | upload refused; Send stays blocked while it tries | yes: store the file, return `{filename,path,size,mime,is_image}` |
 | Composer catalogs | `/api/{profiles,models,reasoning,workspaces,commands}` | **PARTIAL** | models and reasoning work; profiles is one static profile; commands is empty | partly: commands catalog |
-| Models live overlay | `GET /api/models/live` | **WORKS** | the picker's overlay replaces the active provider's group with the cached catalog's models; provider ids match `/api/models` | — (DSH has no cheaper "live" list than the catalog) |
+| Models live overlay | `GET /api/models/live` | **WORKS** | the picker's overlay replaces the active provider's group with the catalog's models | — (DSH has no cheaper "live" list) |
 | Reasoning effort | `GET/POST /api/reasoning` | **WORKS** | levels come from the model catalog | — |
 | Personalities | `GET /api/personalities`, `POST /api/personality/set` | **STUB** | empty list; setting refused | maybe: map to agent presets |
-| Providers | `GET /api/providers` | **WORKS** (derived) | each routable provider with its models and active badge, read-only as the screen expects; credential provenance is approximated from the catalog because DSH exposes no key inventory here | — |
+| Providers | `GET /api/providers` | **WORKS** (derived) | each routable provider with its models and active badge | — |
 | Provider quota | `GET /api/provider/quota` | **404** | quota cards silently absent | needs a quota source; DSH has none |
-| Settings (server page) | `GET/POST /api/settings`, `/api/updates/*`, `/api/default-model` | **PARTIAL / STUB** | version "Unknown", update check 404, settings save refused, default model acknowledged but not persisted | partly: settings/default-model via DSH config |
-| Chat start / stream / stop / status / reconnect | `POST /api/chat/start`, `GET /api/chat/{stream,stream/status,cancel}` | **WORKS** | tokens, thinking, live tool cards, stop, replay after reconnect; a failed or cancelled turn ends the run with `error`/`cancel`, not as a success | — |
+| Settings (server page) | `GET/POST /api/settings`, `/api/updates/*`, `/api/default-model` | **PARTIAL / STUB** | version "Unknown", update check 404, settings save refused, default model acknowledged but not persisted | partly |
+| Chat start / stream / stop / status / reconnect | `POST /api/chat/start`, `GET /api/chat/{stream,stream/status,cancel}` | **WORKS** | tokens, thinking, live tool cards, stop, replay after reconnect; a failed or cancelled turn ends with `error`/`cancel`, not as a success | — |
 | Message fields on chat start | `model`, `model_provider`, `profile`, `attachments` | **PARTIAL** | model is applied; `profile` and `attachments` are still ignored without an error | attachments via upload + image blocks; profile needs a DSH mapping |
 | Steer / queue while running | `POST /api/chat/steer` | **WORKS** | mid-run message queued | — |
 | `/btw` side question | `POST /api/btw` | **STUB** | "Not supported" in the side panel | yes-ish: a side session; DSH has no btw primitive |
 | `/background` task | `POST /api/background`, `GET /api/background/status` | **STUB / 404** | start refused; status 404 | needs a DSH background-agent primitive |
 | `/goal` | `POST /api/goal` | **STUB** | refusal in the send banner | yes: `goals/*` |
-| Approvals | `/api/approval/{pending,stream,respond}` | **WORKS** | once/deny/session/always all apply; a reconnect or polling keeps command/description; a resolved or timed-out prompt is retracted; an expired respond answers `409 {"stale":true}`. session/always are standing grants keyed by **tool name** (no `pattern_key`), so they cover more than webui's command-pattern allowlist and the "Allow session covers every …" sentence stays hidden | — |
-| Clarifications | `/api/clarify/{pending,stream,respond}` | **WORKS** | live and re-attached cards both carry `question`/`choices_offered`, so they render and answer as clarifications; a resolved or timed-out prompt is retracted | — |
+| Approvals | `/api/approval/{pending,stream,respond}` | **WORKS** | once/deny/session/always apply; a reconnect keeps command/description; expired prompts answer `409 {"stale":true}`. session/always are standing grants keyed by **tool name** (no `pattern_key`), so they cover more than webui's command-pattern allowlist and the "Allow session covers every …" sentence stays hidden | — |
+| Clarifications | `/api/clarify/{pending,stream,respond}` | **WORKS** | live and re-attached cards carry `question`/`choices_offered`; a resolved or timed-out prompt is retracted | — |
 | Insights / usage | `GET /api/insights` | **STUB** | "No Data" | partly: session/context usage |
-| Tasks / cron | `GET /api/crons`, `POST /api/crons/*` | **STUB / 404** | empty list; create/run/pause/resume refused; history/output/status 404 | yes: `schedule/*` (mapping work) |
-| Skills | `GET /api/skills`, `GET /api/skills/content`, `POST /api/skills/toggle` | **STUB / 404** | empty list; content 404; toggle refused | yes for list/content: `skills.list` + skill files |
-| Memory | `GET /api/memory`, `POST /api/memory/write` | **STUB** | blank editors (payload keys do not even match the client); save refused | no DSH memory store; would be a new feature |
-| Kanban | `/api/kanban/*` | **STUB** | boards empty; other routes `ok:false`; `events/stream` answers JSON, not SSE | a whole backend, not a bridge |
-| Git panel | `/api/git-info`, `/api/git/*` | **STUB** | panel unavailable (every route `ok:false`) | yes: run `git` in the session cwd |
-| Voice dictation | `POST /api/transcribe` | **STUB** | server refuses; app falls back to on-device dictation | optional; on-device path is fine |
+| Tasks / cron | `GET /api/crons`, `POST /api/crons/*` | **STUB / 404** | empty list; create/run/pause/resume refused; history/output/status 404 | yes: `schedule/*` |
+| Skills | `GET /api/skills`, `/api/skills/content`, `POST /api/skills/toggle` | **STUB / 404** | empty list; content 404; toggle refused | list/content only: `skills/list` |
+| Memory | `GET /api/memory`, `POST /api/memory/write` | **STUB** | blank editors; save refused | no DSH memory store; would be a new feature |
+| Kanban | `/api/kanban/*` | **STUB** | boards empty; `events/stream` answers JSON, not SSE | a whole backend, not a bridge |
+| Git panel | `/api/git-info`, `/api/git/*` | **STUB** | panel unavailable | yes: run `git` in the session cwd |
+| Voice dictation | `POST /api/transcribe` | **STUB** | server refuses; app falls back to on-device dictation | optional |
 | Listen / TTS | `GET /api/tts` | **STUB** | server speech refused; app uses on-device voice | optional |
 | Live Activity / run status | `GET /api/chat/stream/status` | **WORKS** while connected | status polling reconciles the Live Activity | — |
 
-## Subagent sessions
+### Subagent sessions (both transports)
 
-DSH child-agent sessions carry `origin: "subagent"` and are only addressable through their durable
-parent — `{kind:"subagent", parentSessionId, childSessionId, mode:"one-shot"|"continuable"|"unknown"}`.
-A plain `{kind:"session", sessionId}` read is rejected with "subagent Sessions require their durable
-parent address" (surfaced as a 500 before this fix).
+DSH child-agent sessions carry `origin: "subagent"` and are only addressable through their durable parent. Hermex
+has **Settings → Sessions → Subagent Sessions** (default off) and classifies children only from an explicit source
+marker, never from `parent_session_id`. The facade **hides** them: `GET /api/sessions` filters those rows and a
+direct open answers `400` with a readable detail. They are runner-owned and view-only, so they add no value in the
+list. Enabling the toggle later needs row tagging (`session_source: "subagent"`, `read_only:true`) and reads
+through the durable parent address.
 
-Hermex has **Settings → Sessions → Subagent Sessions** (default off). It classifies delegated
-children only from an explicit source marker (`session_source`/`source_tag`/`raw_source` =
-"subagent"), hides them by default, and marks them view-only when shown. It does not infer them from
-`parent_session_id`.
+---
 
-For now the facade **hides** subagent sessions: `GET /api/sessions` filters `origin: "subagent"`
-rows, and a direct `GET /api/session` for one answers `400` with a readable detail. They are
-runner-owned, view-only, and the app's toggle is off by default, so they add no value in the list
-and previously produced broken chats.
+## 2. Hermes-host surface (V2) — REST + WebSocket on `:9121`
 
-Future work to enable the toggle: tag those rows `session_source: "subagent"` + `read_only: true`,
-and read them through the durable parent address (`{kind:"subagent", parentSessionId,
-childSessionId, mode:"unknown"}`) so the toggle opens a view-only transcript.
+### 2.1 Boot, auth and the socket
 
-## Hermes-host (gateway) surfaces — not servable here
+| Surface | Endpoint(s) / method(s) | State | What the phone shows | Bridgeable? |
+|---|---|---|---|---|
+| Add server / version gate | `GET /api/status` | **WORKS** | `version: "0.22.5"` (gate ≥ `0.21.3`, tested `0.23.0`), `auth_required:true`, stable `install_id`; classified as Hermes | — |
+| Health | `GET /api/health` | **WORKS** | liveness before the update wait | — |
+| Sign in | `POST /auth/password-login`, `GET /api/auth/me` | **WORKS** | same password as `:9120`; `hermes_session_at/_rt/_provider` cookies; 401/429 as the host | — |
+| Socket ticket | `POST /api/auth/ws-ticket` | **WORKS** | 30 s, single use, presented in `Sec-WebSocket-Protocol` | — |
+| Socket handshake | `GET /api/ws` | **WORKS** | `gateway.ready` with a non-empty `replay_epoch`, `session_authority:false` (a `true` here is refused as a bare gateway listener) | — |
+| Capability advertisement | `client.capabilities` | **PARTIAL** | answered; but reverse requests are sent even to a socket that never advertised `server_requests` (a defect; the stock client always advertises) | fix: gate sends on the advertisement |
+| Heartbeat | `gateway.ping` | **WORKS** | 15 s keepalive; `{ok:true}` | — |
+| Unknown method | `-32601` | **WORKS** | client records it and hides the matching control | — |
+| Sign out | `POST /auth/logout` | **—** | never sent on a Hermes host (sign-out drops the Keychain record) | — |
 
-These are the forked transport (JSON-RPC over `/api/ws`), not hermes-webui. The facade deliberately
-does not answer `/api/status`, because that would make Hermex switch to this stack and then demand a
-gateway we do not implement.
+### 2.2 Chat core
 
-| Surface | Why it cannot work |
-|---|---|
-| Bots (inbox, rooms, bot chat, artifacts, bot screens) | gateway RPC + display socket |
-| Push / APNs pairing, Live Activity relays | Hermes-host pairing and plugin routes |
-| Move to Hermes (destination side) | requires a Hermes host, by definition |
-| Hermes-host admin: env/config/profiles/plugins, gateway restart | dashboard routes and RPCs |
-| Provider quota via the hermex-push plugin | plugin on the Hermes host |
-| Kanban / Memory / Skills on a Hermes host | different clients over the gateway |
+| Surface | Endpoint(s) / method(s) | State | What the phone shows | Bridgeable? |
+|---|---|---|---|---|
+| Open / attach a chat | `session.resume`, `session.events.since` then `GET /api/sessions/{id}/messages` | **WORKS** | live state without the transcript; the settled rows come over REST | — |
+| Send | `prompt.submit` | **WORKS** | accepted as `streaming`/`queued`; a busy session queues instead of refusing | — |
+| Stream | `message.start/delta/interim`, `reasoning.delta`, `tool.start/tool.complete` | **WORKS** | tokens, thinking, live tool cards with args/result; per-session contiguous `seq` | the tool result is the facade's preview text (no parsed object or `duration_s`) |
+| Turn end | `message.complete`, `session.info {running:false}` | **PARTIAL** | the turn settles with the canonical `status:"complete"`, but no `usage`/`persisted_turn` rides along, so the context ring stays empty | add usage and the turn receipt |
+| Stop | `session.interrupt` | **WORKS** | stops the turn and answers the contract's `interrupted`/`not_interrupted` | — |
+| Steer / queue | `session.steer`, `prompt.submit` while running | **WORKS** | queued/rejected; never `redirected` | — |
+| Edit / regenerate / retry | `prompt.submit` with `truncate_before_row_id` | **PARTIAL** | we ignore the truncation, so the edited prompt is appended instead of rewinding | needs a DSH transcript-truncation primitive |
+| Undo / compress | `session.undo`, `session.compress` | **404/-32601** | the slash commands answer "not supported" | needs DSH primitives |
+| Reconnect / replay | `session.events.since` | **WORKS** | contiguous per-session `seq`; `epoch`, `truncated`, `open_requests` replay the cards | — |
+| Approvals | server→client `approval` + `approval.respond` | **WORKS** | once/session/always/deny; a reconnect replays open cards; a turn end withdraws them | — |
+| Clarifications | server→client `clarify` then `request.answer`/`clarify.lock` | **WORKS** | single-question cards (the legacy shape the client decodes); a batch would be answered one question deep | — |
+| Title updates | `session.title` | **WORKS** | live rename; omitting the title reads the current one | — |
+| Attachments | `file.attach`, `POST /api/chat/image-upload` | **404/-32601** | attach affordances are hidden or fail; a send with an attachment never reaches the model | yes: `fileUploads/upload` returns a receipt, so a staging path is needed |
+| Side tasks (`/btw`, `/background`) | `prompt.btw`, `prompt.background` | **-32601** | side panels hidden | needs DSH primitives |
+| Goal / loop / heartbeat | `session.control.read`, `session.control` | **-32601** | the goal menu is hidden | partly: DSH has a `goal` projection, no loop/heartbeat |
+| Delegated work | `subagent.list/tail/interrupt` | **-32601** | the follow-a-subagent fold is hidden | partly: DSH has subagent sessions |
 
-## Known defects that are not deliberate stubs
+### 2.3 Composer, models and commands
 
-1. **Approval scope is coarser than the app's copy.** The grant behind "Allow session"/"Always
-   allow" is keyed by tool name, because the host approval request exposes no command pattern; a
-   `bash` grant covers every `bash` call. `pattern_key`/`pattern_keys` are not sent, so the app
-   shows no scope line. Grants live in the facade process and are lost on restart.
-2. **Silent profile/attachment loss** on `chat/start` and `session/new` (the model is applied now).
-3. **History is bounded at 800 messages** by the recent-window read; paging works inside it.
-   Session export uses the same host snapshot (with a wider cap of 5000 messages), so a very long
-   chat exports what the host can still return.
-4. **Stream journals are kept for a bounded time.** A finished stream stays replayable for 30
-   minutes (config `streamRetainMs`) and the newest 64 finished journals are kept; older ones are
-   pruned as the next turn finishes, never held for the process lifetime.
-5. **A clarification answer is one question.** The facade surfaces the first question; a batch with
-   several questions would be answered with only the first. The app's card is single-question, so
-   this only appears if a tool asks several at once.
-6. **Clarify expiry is not a 409.** A respond to an expired clarification still answers
-   `200 {ok:false}`; the phone learns the prompt is gone from the stream retraction or from polling
-   (both clear the card), not from `409 {"stale":true}`.
+| Surface | Endpoint(s) / method(s) | State | What the phone shows | Bridgeable? |
+|---|---|---|---|---|
+| Model picker | `model.options` | **WORKS** | providers/models from the DSH catalog, with the active tick from the session | — |
+| Reasoning effort | `config.set` `reasoning` | **WORKS** | applied through the facade; the reply carries the effective level | — |
+| Model switch | `config.set` `model` | **WORKS** | applied through `session/selectModel`; drafts remember it | — |
+| Fast mode | `config.set` `fast` | **-32000** | refused with a key-level error, so the chip reverts instead of showing a false state | needs a DSH fast-mode primitive |
+| YOLO / approvals mode | `config.set` `yolo`, `approvals.mode` | **-32000** | both are refused with a key-level error, so the switches revert instead of showing a state the host never stored | yes (approval policy) |
+| Personality | `config.set` `personality` | **-32000** | the picker errors; DSH has agent presets, not personalities | maybe: map to presets |
+| Commands | `commands.catalog` | **WORKS** | slash commands as pairs + canon | no categories/skills half |
+| Slash execution / completion | `complete.slash`, `command.dispatch`, `slash.exec`, `complete.path` | **-32601** | autocomplete and `@path` completion are missing; typed commands still send as text | partly: `commands/list`, directory listing |
+| Profiles | `profiles.list`, `profiles.describe` | **PARTIAL** | one Profile, `default`; rows lack `path`, which Memory's folder lookup needs | yes: add `path` |
 
-## Verifying a build
+### 2.4 Sessions — REST and actions
+
+| Surface | Endpoint(s) / method(s) | State | What the phone shows | Bridgeable? |
+|---|---|---|---|---|
+| List / paging | `GET /api/sessions` | **WORKS** | `order`, `archived`, `limit`, `offset` honoured; rows carry id/title/pinned/archived/timestamps/counts | rows lack `preview`, so the list shows no snippet |
+| One row / transcript | `GET /api/sessions/{id}`, `/messages` | **WORKS** | 500-row pages, latest/oldest, `include_compacted` accepted | bounded by the host's 800-message window |
+| Rename / pin / archive | `PATCH /api/sessions/{id}` behind `GET …/mutation-snapshot` | **WORKS** (since the write fence) | list actions apply; a stale revision answers `409 revision_conflict` and the phone says the chat changed | — |
+| Write fence | `GET /api/sessions/{id}/mutation-snapshot` | **WORKS** | `{exists, runtime_revision}`; without this route every list action used to fail | — |
+| Mark unread | `PATCH … {unread}` | **400** | refused with a detail; DSH has no unread flag | — |
+| Branch / fork | `session.branch` | **WORKS** | a copy; needs a completed turn | — |
+| Move to folder | `session.workspace.move` | **PARTIAL** | works for a chat with no messages; refused afterwards with an explanation | needs a DSH cwd-change primitive |
+| Delete | `session.delete`, `DELETE /api/sessions/{id}` | **STUB** | "not supported by DeepSeek Harness" | needs DSH |
+| Duplicate / import | `POST /api/sessions/import` | **STUB** | 400: DSH cannot inject a transcript, so Move to Hermes cannot land here yet | needs DSH |
+| Export | `GET /api/sessions/{id}/export` | **WORKS** | JSON transcript download (the form Move to Hermes imports) | bounded by the host snapshot |
+| Search | `GET /api/sessions/search`, `session/search` | **404 / -32601** | the list search field 404s; `session/search` maps 1:1 to a DSH RPC | yes: S |
+| Live Working / Needs-you | `session.active_list`, `sessions.changed` | **-32601** | the live dots are absent | yes: S over the runner's state |
+| Projects (lanes) | `projects.tree` | **WORKS** | DSH workspaces drawn as folder lanes | project delete/edit missing |
+| Session store health | `GET /api/sessions/stats`, `/prune` | **—** | never called by 2.0.1 | — |
+
+### 2.5 The other screens a Hermes host unlocks
+
+The sidebar toggles for Tasks, Skills, Memory, Usage, Git and Kanban are local preferences (on by default), not
+capability probes, so an absent backend shows the screen's own error. Kanban is the exception: its
+`/api/plugins/kanban/config` 404 gives the clean "unavailable" state.
+
+| Surface | Endpoint(s) / method(s) | State | What the phone shows | Bridgeable? |
+|---|---|---|---|---|
+| Files (in-chat workspace) | `GET /api/fs/list`, `/api/fs/read-text`, `/api/fs/download`, `/api/fs/git-root` + `session.info.terminal_backend:"local"` | **404** | the Files link is **hidden** (no `terminal_backend`), so today it does not even error | yes: M — DSH `workspaceFiles/*` or the facade's file routes, behind one realpath fence |
+| Git (in-chat) | `GET /api/fs/git-root`, `/api/git/status`, `/api/git/review/{list,diff}`, `/api/git/file-diff`, `/api/git/review/{stage,unstage,revert,commit,push,rev-parse,commit-context}`, `/api/git/branches`, `POST /api/git/branch/switch` | **404** | the Git menu is hidden (it appears only when `fs/git-root` finds a repo) | yes: M — exec `git` in the session folder; writes need an idle guard |
+| Tasks / cron | `GET /api/cron/jobs`, `/runs`, `POST …/{pause,resume,trigger}`, `DELETE`, `/api/cron/delivery-targets`, `GET /api/sessions?scheduled=1&sources=cron` | **404** | the Tasks screen opens and shows its error; the agenda section is empty | yes: M — DSH `schedule/*` is a near-exact match; delivery targets are sessions only |
+| Skills | `GET /api/skills`, `/api/skills/content`, `PUT /api/skills/toggle` + `/api/fs/*` for linked files | **404** | the Skills screen errors | list/content: S/M (`skills/list`); toggle: L (no write RPC) |
+| Memory | `GET /api/config` `.memory`, `/api/profiles/{name}/soul`, `GET /api/files/read`, `POST /api/files/upload`, `profiles.list[].path` | **404 / PARTIAL** | the Memory screen errors (no profile `path`, no memory block) | possible: M — map to `$DSH_HOME/AGENTS.md` (a real memory the agent reads), with an atomic save; no soul |
+| Usage / Insights | `GET /api/analytics/{usage,models}`, `insights.get` | **-32601 / 404** | the Usage screen errors (503/5017 states are different copy); no cost data exists | possible: M/L — a facade ledger over DSH token usage; cost stays 0 |
+| Kanban | `/api/plugins/kanban/*` | **404** | the tab shows "unavailable" cleanly | no: a whole board + workers DSH does not model |
+| Bots / Bot screen | `profiles.*`, `/api/dashboard/plugins/*`, `display.*`, `/api/display/ws`, `hermex-screen` routes | **PARTIAL / 404** | one Profile; creating/configuring a bot is refused; the live bot screen is unavailable | Bots: L (a facade store + preset); screen: no |
+| Push / Live Activity | `/api/plugins/hermex-push/*` | **404** | every plugin-backed control disappears — the intended graceful path | no: a relay + APNs, not a host route |
+| Dictation / spoken replies | `POST /api/audio/transcribe`, `/api/audio/speak` | **404** | on-device dictation and voice are used instead | STT: M (`speech/transcribe`); TTS: no primitive |
+| Move to Hermes (destination) | `POST /api/sessions/import` | **STUB** | 400; the move cannot land here | needs DSH transcript injection |
+| Settings (server page) | `GET/PUT /api/config`, `/api/env` CRUD, `/api/dashboard/{plugins/hub,plugins/catalog,agent-plugins/*}`, `plugins.manage`, `/api/hermes/update/*`, `/api/actions/hermes-update/status` | **PARTIAL / 404** | config GET works; the platform note (PUT) is refused/ignored; API-keys, plugins and update rows are empty/error | partly: `pluginManager/*` read-only; updates: no |
+| Default model / themes / `model/info` | `/api/default-model`, `/api/dashboard/themes` | **—** | webui-only; the app never calls themes or `model/info` on a Hermes host | — |
+
+---
+
+## 3. The same feature on both transports
+
+| Feature | V1 (:9120, Legacy) | V2 (:9121, Hermes) |
+|---|---|---|
+| Sign in | `/health` then `/api/auth/status` then `/api/auth/login` | `/api/status` then `/auth/password-login`; ws ticket |
+| Chat | `POST /api/chat/start` + SSE | `prompt.submit` + socket events |
+| Approvals / clarify | REST polling + SSE side streams | server→client JSON-RPC requests |
+| Transcript | `GET /api/session` (bounded 800) | `GET /api/sessions/{id}/messages` (bounded 800, 500/page) |
+| Rename / pin / archive | POST routes | PATCH behind the write fence (now works) |
+| Delete / import | refused | refused |
+| Export | works | works |
+| Files browser | **works** (read-only) | **hidden** — parity gap; next |
+| Session search | 404 | 404 (DSH RPC exists) |
+| Tasks / Skills / Memory / Usage | stub screens | error screens (the real backend is missing) |
+| Git / Kanban | stubs | 404, controls hidden or "unavailable" |
+| Attachments | refused | RPC missing; a send with an attachment fails |
+| YOLO | POST reports false | refused with a key-level error (honest) |
+| `@path` completion | n/a | `complete.path` -32601 |
+
+---
+
+## 4. Known defects that are not deliberate stubs
+
+### Legacy (:9120)
+
+1. **Approval scope is coarser than the app's copy.** Grants are keyed by tool name; a `bash` grant covers every
+   `bash` call, and `pattern_key` is not sent. Grants live in the process and are lost on restart.
+2. **Silent profile/attachment loss** on `chat/start` and `session/new` (the model is applied).
+3. **History is bounded at 800 messages**; export uses the host snapshot (wider cap 5000).
+4. **Stream journals are bounded**: replayable for 30 minutes and the newest 64 are kept.
+5. **A clarification answer is one question**; several-at-once would answer only the first.
+6. **Clarify expiry is not a 409**; the card is cleared by the retraction or polling instead.
+7. A direct open of a subagent session must answer `400`; the runner can still surface it as a 500 for a row the
+   facade did not classify.
+
+### Hermes host (:9121)
+
+The wire defects found in the 2026-11-07 audit were fixed in the same change (CHANGELOG): the turn now reports the
+canonical `status:"complete"`, `session.title` has its read form, `session.interrupt` answers the contract's
+vocabulary, `session.list` carries the full row, a PATCH applies every field it names, `/search` and `/stats`
+answer a plain 404 instead of "Session not found", `sources` is matched as a CSV, `limit=0` is honoured, reverse
+requests are gated on `client.capabilities` (and a raw JSON-RPC answer withdraws the frame), the login rate limit
+keys on the forwarded client rather than the shared proxy address, an empty prompt no longer promotes a draft, a
+double submit cannot start two streams, `session.info` reads the model from the session itself, and Fast/yolo are
+refused instead of echoed. What remains:
+
+1. **Files and Git never appear** because `session.info` does not report `terminal_backend`. One field, but it must
+   ship with the routes or the tab half-renders.
+2. **No usage anywhere.** `message.complete` carries no `usage`/`partial`/`persisted_turn` and there is no
+   `session.usage` ticker, so the context ring is frozen.
+3. **Edit / regenerate / retry append instead of rewinding** (`truncate_before_row_id` ignored).
+4. **Session list rows lack `preview`** (the rest of the row shape is now mapped); the WS `session.list` rows are
+   the same shape as REST.
+5. **Event rings are 1000 per session with no session/byte cap**, and `forget()` is never called.
+6. **`personality` and `approvals.mode`** answer key-level errors by design (DSH has presets, not personalities,
+   and no yolo policy); the controls hide/revert rather than lie.
+7. **No `ping`, `gateway.capabilities`, `session.history`, `session.status`, `session.usage`, `approval.pending`,
+   `approval.received` or `session.archive`** — none is in 2.0.1's `HermesCall`, so they are not blocking; they are
+   listed because an older or newer client could send them.
+
+### Security (both)
+
+The facade's file routes accept **any absolute path**; `resolvePath` (src/host.mjs) does not fence. The password and
+the tailnet are the boundary today, exactly as for DSH's own GUI. Before any new file/git surface ships on `:9121`,
+add one shared `realpath` fence (inside the session/workspace roots, denying the state directory) — the client's
+own check is explicitly not a security boundary.
+
+---
+
+## 5. Verifying a build
 
 ```bash
 curl -s http://127.0.0.1:9120/health
-# {"status":"ok","active_streams":0,
-#  "features":["history-paging","tool-results","model-switch","session-export","pin-archive","providers","approval-retract","clarify-markers"],
-#  "history":{"page":200,"window":800}}
+# {"status":"ok","active_streams":0,"features":[...],"history":{"page":200,"window":800}}
+curl -s http://127.0.0.1:9121/api/status
+# {"version":"0.22.5","auth_required":true,"auth_providers":["basic"],"install_id":"…"}
 
 cd ~/self/dsh-hermes-facade && npm run check && npm test
-node scripts/standalone.mjs --port 9199     # mock host; probe the wire contract by curl
+node scripts/standalone.mjs --port 9199 --gateway-port 9198   # mock host for both listeners
 ```
 
-`/health` carries the build marker, so after a hot reload (dsh-hmr) or a restart it is obvious
-which code is live. The app ignores the extra keys.
+`test/hermes-gateway.test.mjs` drives the whole Hermes contract with a real WebSocket client: status, login,
+ticket, `gateway.ready`, capabilities, session list, REST paging, the write fence, a streamed turn and an approval
+answered as a reverse request. `~/.dsh/hermes-facade/unknown-endpoints.log` names anything the phone asked for that
+the facade did not implement.
 
-## Hermes host (gateway) — served by the :9121 listener
+---
 
-Since 0.3.0 the plugin can also present itself as a **Hermes host** on a second
-port, so Hermex 2.x files it as a native server instead of a Legacy webui one.
-The contract is REST + JSON-RPC over `/api/ws`; details and method tables are in
-[docs/06-hermes-gateway.md](06-hermes-gateway.md). Every answer still comes from
-this facade over loopback, so the *DSH* mapping below is unchanged.
+## 6. What to work on next
 
-| Surface | Endpoint(s) | State | Notes |
-|---|---|---|---|
-| Add server / sign in | `/api/status`, `POST /auth/password-login`, `/api/auth/me`, `POST /api/auth/ws-ticket` | **WORKS** | cookie session + 30 s single-use socket ticket, same password file as :9120 |
-| Socket handshake | `GET /api/ws` | **WORKS** | ticket in `Sec-WebSocket-Protocol`; `gateway.ready` carries `replay_epoch`, `session_authority:false` |
-| Session list / open / paging | `GET /api/sessions`, `/api/sessions/{id}`, `/api/sessions/{id}/messages` | **WORKS** | `order`, `archived`, `limit`, `offset` honoured; transcript rows in the host's shape |
-| Rename / pin / archive | `PATCH /api/sessions/{id}`, `session.title` | **WORKS** | through the facade's own routes |
-| Branch / export | `session.branch`, `GET /api/sessions/{id}/export` | **WORKS** | branch needs a completed turn; export forwards the JSON transcript |
-| Delete / import | `DELETE /api/sessions/{id}`, `POST /api/sessions/import` | **REFUSED** | 400 with the reason: DSH has no delete and no transcript injection, so Move to Hermes cannot land here yet |
-| Chat / streaming / stop / steer | `prompt.submit`, `session.interrupt`, `session.steer`, socket events | **WORKS** | message.start/delta/interim, reasoning.delta, tool.start/complete, message.complete, session.info |
-| Approvals | server->client `approval` + `approval.respond` | **WORKS** | once/session/always/deny; the facade's standing-grant behaviour carries over |
-| Clarify | server->client `clarify` + `request.answer`/`clarify.lock` | **WORKS** | single-question cards |
-| Models / commands | `model.options`, `commands.catalog` | **WORKS** | from the DSH catalogs; reasoning levels travel in the projectors' shape |
-| Profiles | `profiles.list`, `GET /api/profiles/active` | **PARTIAL** | one Profile, `default`; DSH has presets, not Profiles |
-| Files / media | `/api/fs/*`, `/api/files/*` | **404** | not implemented on the Hermes listener yet (the webui `/api/list`+`/api/file` do work on :9120) |
-| Tasks, Kanban, Skills, Memory, Usage, Git, Bots, Bot screen | gateway RPC / plugin routes | **404 / -32601** | different backends; DSH has no memory or kanban store at all. The client hides a control after a -32601 |
-| Move to Hermes | destination import | **N/A** | the invite is webui-only, so a Hermes-kind server never shows it |
-
-The registers are independent: :9120 keeps its own state (pinned/archived files,
-stream journals) and :9121 keeps its event ring and reverse-request queue. Both
-read DSH sessions, so a chat started on one is visible on the other after a
-reopen.
+The ranked plan — one small first task, then the big ones, with effort and dependencies — is
+[07-v2-roadmap.md](07-v2-roadmap.md).

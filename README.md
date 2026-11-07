@@ -119,7 +119,8 @@ ports, from one process:
 The gateway listener does not reimplement DSH: it translates to the webui facade
 over loopback with an internal token, so sessions, streaming, approvals,
 clarifications and export keep one implementation. It covers chat, sessions,
-approvals, clarifications, models, commands and export; Tasks, Skills, Memory,
+approvals, clarifications, models, commands, export and the session write
+fence the list's rename/pin/archive actions read first; Tasks, Skills, Memory,
 Usage, Files, Git, Bots and session import are not implemented and answer
 `-32601` (the app hides those controls). Details, endpoint table and gaps:
 [docs/06-hermes-gateway.md](docs/06-hermes-gateway.md).
@@ -159,7 +160,7 @@ and add it in Hermex as its own server.
 | projects (one per DSH workspace) | partial: read-only list |
 | tasks/cron, skills, memory, insights, kanban, git panel | stubbed: screens open empty or unavailable |
 | bots, push, Move to Hermes | different transport (Hermes gateway); not served |
-| Hermes host contract (second listener, :9121) | v1: chat/streaming, sessions, approvals, clarifications, models, commands, export; files/git/tasks/skills/memory/kanban/bots and import answer -32601 or 400 (see docs/06) |
+| Hermes host contract (second listener, :9121) | v1.2: chat/streaming, sessions incl. the write fence the list actions need, approvals, clarifications, models, commands, export; files/git/tasks/skills/memory/usage/kanban/bots and import answer -32601 or 400 (the per-surface state and plan are docs/05 §2 and docs/07) |
 
 The verified matrix — every surface, the endpoint behind it, what the phone shows, and whether it is
 bridgeable here — is [docs/05-compatibility-matrix.md](docs/05-compatibility-matrix.md). docs/00 is
@@ -186,8 +187,10 @@ POST /auth/password-login, POST /auth/logout, GET /api/auth/me,
 POST /api/auth/ws-ticket, GET /api/auth/providers, GET /api/profiles/active,
 GET /api/profiles, GET /api/config, GET /api/models, GET /api/commands,
 GET /api/sessions, GET /api/sessions/{id}, GET /api/sessions/{id}/messages,
-GET /api/sessions/{id}/export, PATCH /api/sessions/{id}, POST /api/sessions/import,
-WS /api/ws (JSON-RPC with server-to-client approval/clarify requests).
+GET /api/sessions/{id}/mutation-snapshot, GET /api/sessions/{id}/export,
+PATCH /api/sessions/{id} (title/pin/archive behind the write fence),
+POST /api/sessions/import, WS /api/ws (JSON-RPC with server-to-client
+approval/clarify requests).
 
 ## Diagnostics
 
@@ -240,8 +243,9 @@ throws: a full disk or an unwritable directory cannot break a request.
 ## Docs
 
 * [docs/00-DESIGN.md](docs/00-DESIGN.md): architecture, mapping tables, design snapshot
-* [docs/05-compatibility-matrix.md](docs/05-compatibility-matrix.md): verified Hermex 2.0 surface matrix
+* [docs/05-compatibility-matrix.md](docs/05-compatibility-matrix.md): the verified matrix for both transports — Legacy webui (:9120) and Hermes host (:9121)
 * [docs/06-hermes-gateway.md](docs/06-hermes-gateway.md): the Hermes-protocol listener (port 9121), its methods, events and gaps
+* [docs/07-v2-roadmap.md](docs/07-v2-roadmap.md): parity with the Legacy server first, then the V2-only screens, with effort and acceptance criteria
 * docs/01-webui-api-contract.md: hermes-webui server contract
 * docs/02-hermex-client-wire.md: the client decoder, read from Swift
 * docs/03-dsh-host-integration.md: dsh host API surface
