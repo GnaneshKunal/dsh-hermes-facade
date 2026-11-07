@@ -5,6 +5,28 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 
 ## [Unreleased]
 
+### Added
+
+- **The in-chat Files browser on the Hermes listener (read-only).** Hermex
+  offers a workspace browser for a chat whose `session.info` names a local
+  terminal backend, so `session.info` (drafts, resume snapshots and live
+  events) now reports `terminal_backend:"local"` along with the existing
+  `cwd`. The listener serves the three read routes the phone calls:
+  `GET /api/fs/list` (folder entries with `isDirectory`),
+  `GET /api/fs/read-text` (text with a 512 KiB preview and a `truncated`
+  flag, or `binary:true` with the size) and `GET /api/fs/download` (the bytes
+  and content type; a `session_id` resolves a MEDIA path). They translate the
+  facade's Legacy file reads, so the two transports keep one mapping.
+- **A shared path fence for file surfaces** (`src/hermes/fence.mjs`). Hermex
+  sends absolute host paths and its own check is explicitly not a security
+  boundary, so a path is served only when its realpath is inside a chat folder
+  (a DSH workspace, a known session folder, or the folder a draft picked).
+  The facade state directory, `$DSH_HOME`, `~/.ssh`, `~/.aws` and
+  `~/.gnupg` are never served, even from inside an allowed root; a symlink is
+  resolved first, so it cannot point out. A denied path answers
+  `403 {"detail":"Path is outside the session workspace"}`. Git and Memory
+  will reuse this fence. The Legacy `:9120` file routes are unchanged.
+
 ### Fixed
 
 - **The Hermes listener's session write fence.** Hermex reads

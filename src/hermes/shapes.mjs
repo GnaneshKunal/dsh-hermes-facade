@@ -4,7 +4,7 @@
  * @module dsh-hermes-facade/src/hermes/shapes
  */
 
-import { PROFILE_NAME } from './protocol.mjs'
+import { PROFILE_NAME, TERMINAL_BACKEND } from './protocol.mjs'
 
 /**
  * One session row for GET /api/sessions and session.list.
@@ -78,6 +78,8 @@ export function sessionInfoOf(detail, extra = {}) {
     stored_session_id: id,
     session_key: id,
     yolo: false,
+    // Hermex shows the in-chat Files and Git entries only for a local backend.
+    terminal_backend: TERMINAL_BACKEND,
     ...(typeof detail?.reasoning_effort === 'string' && detail.reasoning_effort.length > 0
       ? { reasoning_effort: detail.reasoning_effort } : {}),
     ...(detail?.is_streaming === true && Number.isFinite(detail?.turn_started_at)

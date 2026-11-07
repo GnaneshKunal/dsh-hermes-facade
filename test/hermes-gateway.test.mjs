@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -41,6 +41,7 @@ async function boot() {
     host,
     facade,
     gateway,
+    dir,
     base: 'http://127.0.0.1:' + gatewayAddress.port,
     password: facade.auth.generatedPassword,
   }
@@ -1212,5 +1213,133 @@ test('a turn advances the write-fence revision', async () => {
     await harness.facade.close()
   }
 })
+
+test('the in-chat Files surface lists, previews and downloads inside a chat folder', async () => {
+  const harness = await boot()
+  const folder = mkdtempSync(join(tmpdir(), 'hermes-files-'))
+  const outside = mkdtempSync(join(tmpdir(), 'hermes-outside-'))
+  try {
+    writeFileSync(join(folder, 'demo.md'), 'hello files\n')
+    // A NUL byte makes the facade's text read answer 404: the binary tell.
+    writeFileSync(join(folder, 'pic.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]))
+    writeFileSync(join(folder, 'huge.log'), 'x'.repeat(512 * 1024 + 10))
+    mkdirSync(join(folder, 'sub'))
+    writeFileSync(join(folder, 'sub', 'deep.txt'), 'deep\n')
+    writeFileSync(join(outside, 'secret.txt'), 'not yours\n')
+
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      // A new chat in that folder: its draft folder is what the fence admits.
+      const created = await socket.call('session.create', { profile: 'default', cwd: folder })
+      assert.equal(created.result.info.terminal_backend, 'local')
+      assert.equal(created.result.info.cwd, folder)
+
+      const enc = value => encodeURIComponent(value)
+      const list = await api(harness.base, '/api/fs/list?path=' + enc(folder), { cookie })
+      assert.equal(list.status, 200)
+      assert.deepEqual(list.json.entries.map(entry => entry.name).sort(), ['demo.md', 'huge.log', 'pic.png', 'sub'])
+      assert.equal(list.json.entries.find(entry => entry.name === 'sub').isDirectory, true)
+      assert.equal(list.json.entries.find(entry => entry.name === 'demo.md').isDirectory, false)
+
+      const nested = await api(harness.base, '/api/fs/list?path=' + enc(join(folder, 'sub')), { cookie })
+      assert.deepEqual(nested.json.entries.map(entry => entry.name), ['deep.txt'])
+
+      const text = await api(harness.base, '/api/fs/read-text?path=' + enc(join(folder, 'demo.md')), { cookie })
+      assert.equal(text.status, 200)
+      assert.equal(text.json.binary, false)
+      assert.equal(text.json.text, 'hello files\n')
+      assert.equal(text.json.byteSize, 12)
+      assert.equal(text.json.language, 'md')
+      assert.equal(text.json.truncated, false)
+
+      const binary = await api(harness.base, '/api/fs/read-text?path=' + enc(join(folder, 'pic.png')), { cookie })
+      assert.equal(binary.status, 200)
+      assert.equal(binary.json.binary, true)
+      assert.equal(binary.json.byteSize, 6)
+
+      // A preview returns the host's 512 KiB cap, flagged as truncated.
+      const huge = await api(harness.base, '/api/fs/read-text?path=' + enc(join(folder, 'huge.log')), { cookie })
+      assert.equal(huge.status, 200)
+      assert.equal(huge.json.truncated, true)
+      assert.equal(Buffer.byteLength(huge.json.text), 512 * 1024)
+
+      const missing = await api(harness.base, '/api/fs/read-text?path=' + enc(join(folder, 'nope.txt')), { cookie })
+      assert.equal(missing.status, 404)
+      assert.equal(missing.json.detail, 'Path not found')
+
+      const raw = await fetch(harness.base + '/api/fs/download?path=' + enc(join(folder, 'demo.md')), { headers: { cookie } })
+      assert.equal(raw.status, 200)
+      assert.match(raw.headers.get('content-type'), /text\/plain/)
+      assert.equal(await raw.text(), 'hello files\n')
+
+      const image = await fetch(harness.base + '/api/fs/download?path=' + enc(join(folder, 'pic.png')), { headers: { cookie } })
+      assert.equal(image.status, 200)
+      assert.equal(image.headers.get('content-type'), 'image/png')
+      assert.deepEqual([...Buffer.from(await image.arrayBuffer())], [0x89, 0x50, 0x4e, 0x47, 0x00, 0x01])
+
+      // The chat folder is the boundary, and the facade's state is never served.
+      const forbidden = await api(harness.base, '/api/fs/list?path=' + enc(outside), { cookie })
+      assert.equal(forbidden.status, 403)
+      assert.match(forbidden.json.detail, /outside the session workspace/)
+      const forbiddenFile = await api(harness.base, '/api/fs/read-text?path=' + enc(join(outside, 'secret.txt')), { cookie })
+      assert.equal(forbiddenFile.status, 403)
+      const traversal = await api(harness.base, '/api/fs/list?path=' + enc(join(folder, '..', outside.split('/').pop())), { cookie })
+      assert.equal(traversal.status, 403)
+
+      // A symlink inside the folder cannot point out of it: the fence resolves it.
+      symlinkSync(join(outside, 'secret.txt'), join(folder, 'escape.txt'))
+      const linked = await api(harness.base, '/api/fs/read-text?path=' + enc(join(folder, 'escape.txt')), { cookie })
+      assert.equal(linked.status, 403)
+
+      // Even a draft opened on the state directory cannot read it: deny wins.
+      await socket.call('session.create', { profile: 'default', cwd: harness.dir })
+      writeFileSync(join(harness.dir, 'probe.txt'), 'token\n')
+      const stateDir = await api(harness.base, '/api/fs/read-text?path=' + enc(join(harness.dir, 'probe.txt')), { cookie })
+      assert.equal(stateDir.status, 403)
+
+      // A relative path has no session to resolve against on this route.
+      const relative = await api(harness.base, '/api/fs/list?path=demo.txt', { cookie })
+      assert.equal(relative.status, 400)
+      assert.match(relative.json.detail, /absolute/)
+
+      // The session's own folder is a root too, not only the draft's.
+      const workspace = await api(harness.base, '/api/fs/list?path=' + enc(process.cwd()), { cookie })
+      assert.equal(workspace.status, 200)
+      assert.ok(workspace.json.entries.some(entry => entry.name === 'package.json'))
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    rmSync(folder, { recursive: true, force: true })
+    rmSync(outside, { recursive: true, force: true })
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('session.info names the local terminal backend the Files entry needs', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const resumed = await socket.call('session.resume', { session_id: 'sess-mock', profile: 'default', omit_messages: true })
+      assert.equal(resumed.result.info.terminal_backend, 'local')
+      await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'files please' })
+      const info = await socket.waitFor(frame =>
+        frame.params?.type === 'session.info' && frame.params.payload.running === true)
+      assert.equal(info.params.payload.terminal_backend, 'local')
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
 
 

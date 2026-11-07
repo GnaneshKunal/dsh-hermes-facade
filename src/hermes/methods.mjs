@@ -131,6 +131,7 @@ export function createMethods({ backend, hub, runner, requests, sessions, bumpRe
       ...(typeof provider === 'string' && provider.length > 0 ? { provider } : {}),
       ...(typeof effort === 'string' && effort.length > 0 ? { reasoning_effort: effort } : {}),
       yolo: false,
+      terminal_backend: 'local',
     }
   }
 

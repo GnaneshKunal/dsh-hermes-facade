@@ -13,9 +13,12 @@
 
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
-import { networkInterfaces } from 'node:os'
+import { homedir, networkInterfaces } from 'node:os'
+import { join } from 'node:path'
 
 import { createBackend } from './backend.mjs'
+import { createFileRoutes } from './files.mjs'
+import { createPathFence } from './fence.mjs'
 import { createEventHub } from './events.mjs'
 import { createMethods } from './methods.mjs'
 import {
@@ -326,6 +329,51 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
     logger,
   })
   const methods = createMethods({ backend, hub, runner, requests, sessions, bumpRevision, logger })
+
+  /**
+   * Directories the in-chat Files browser may read.
+   *
+   * The chat's folder is the boundary: DSH workspaces, the working folder of
+   * every known session, and the folder a draft chat picked before its first
+   * message. Hermex sends absolute host paths, so the fence is what turns "any
+   * path the phone names" into "any path inside a folder this account chats in".
+   * @returns {Promise<string[]>} roots.
+   */
+  async function fileRoots() {
+    const roots = new Set()
+    if (typeof config.defaultWorkspace === 'string' && config.defaultWorkspace.length > 0) {
+      roots.add(config.defaultWorkspace)
+    }
+    try {
+      const reply = await backend.call('GET', '/api/workspaces')
+      for (const workspace of Array.isArray(reply.json?.workspaces) ? reply.json.workspaces : []) {
+        if (typeof workspace?.path === 'string' && workspace.path.length > 0) roots.add(workspace.path)
+      }
+      if (typeof reply.json?.last === 'string' && reply.json.last.length > 0) roots.add(reply.json.last)
+    } catch { /* the workspace list is advisory */ }
+    try {
+      const reply = await backend.call('GET', '/api/sessions', { query: { include_archived: 1 } })
+      for (const row of Array.isArray(reply.json?.sessions) ? reply.json.sessions : []) {
+        if (typeof row?.workspace === 'string' && row.workspace.length > 0) roots.add(row.workspace)
+      }
+    } catch { /* the session folders are advisory */ }
+    for (const cwd of sessions.cwds()) roots.add(cwd)
+    return [...roots]
+  }
+
+  // Never serve the facade's own state (internal token, password, drafts) or a
+  // known secret directory, even if a workspace were created inside one.
+  const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
+  const fence = createPathFence({
+    deny: [
+      config.dir,
+      dshHome,
+      join(homedir(), '.ssh'),
+      join(homedir(), '.aws'),
+      join(homedir(), '.gnupg'),
+    ],
+  })
+  const files = createFileRoutes({ backend, fence, rootsOf: fileRoots })
 
   /** Password attempts per address, for the login rate limit. */
   const attempts = new Map()
@@ -675,6 +723,26 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
       sendJson(res, 200, commandsOf(reply.json ?? {}))
       return
     }
+    // The in-chat Files browser. Every route fences the client's absolute path
+    // against the chat folders before reading anything.
+    if (method === 'GET' && path === '/api/fs/list') {
+      const reply = await files.list(url)
+      sendJson(res, reply.status, reply.body)
+      return
+    }
+    if (method === 'GET' && path === '/api/fs/read-text') {
+      const reply = await files.readText(url)
+      sendJson(res, reply.status, reply.body)
+      return
+    }
+    if (method === 'GET' && path === '/api/fs/download') {
+      const reply = await files.download(url)
+      if (reply.bytes === undefined) { sendJson(res, reply.status, reply.body); return }
+      res.writeHead(reply.status, reply.headers)
+      res.end(reply.bytes)
+      return
+    }
+
     if (method === 'GET' && path === '/api/sessions') {
       sendJson(res, 200, await sessionPage(url))
       return

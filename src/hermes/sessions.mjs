@@ -227,5 +227,19 @@ export function createSessionRegistry({ backend, dir, logger = console }) {
     if (drafts.delete(String(id))) scheduleSave()
   }
 
-  return { createDraft, draft, resolve, isDraft, promote, noteTitle, update, forget, save: scheduleSave }
+  /**
+   * Working folders the composer picked for drafts that have not been promoted.
+   * The Files fence needs them: a new chat's folder is browsable before its
+   * first message creates a DSH session.
+   * @returns {string[]} folders.
+   */
+  function cwds() {
+    const folders = []
+    for (const entry of drafts.values()) {
+      if (typeof entry.cwd === 'string' && entry.cwd.length > 0) folders.push(entry.cwd)
+    }
+    return folders
+  }
+
+  return { createDraft, draft, resolve, isDraft, promote, noteTitle, update, cwds, forget, save: scheduleSave }
 }
