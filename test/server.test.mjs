@@ -242,6 +242,7 @@ test('chat start streams token, done and stream_end over SSE', async t => {
   assert.match(text, /event: token/)
   assert.match(text, /event: done/)
   assert.match(text, /event: stream_end/)
+  assert.doesNotMatch(text, /event: (error|cancel)/, 'a completed turn carries no failure terminal')
   assert.match(text, /"text":"Echo: /)
 
   const replay = await fetch(base + '/api/chat/stream?stream_id=' + started.stream_id + '&replay=1&after_seq=0', { headers: { cookie } })
@@ -260,6 +261,52 @@ test('chat start streams token, done and stream_end over SSE', async t => {
   const statusBody = await statusRes.json()
   assert.equal(statusBody.active, false)
   assert.equal(statusBody.journal.terminal, true)
+})
+
+test('a failed turn ends the stream with error, not done', async t => {
+  const { facade, base, password, host } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+  host.setTurnOutcome('failed')
+
+  const start = await fetch(base + '/api/chat/start', {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ session_id: 'sess-mock', message: 'fail please' }),
+  })
+  const started = await start.json()
+  const text = await (await fetch(base + '/api/chat/stream?stream_id=' + started.stream_id, { headers: { cookie } })).text()
+
+  assert.match(text, /event: error/)
+  assert.match(text, /"message":"The turn failed: mock provider failure"/)
+  assert.doesNotMatch(text, /event: done/, 'a failed turn must not report completion')
+  assert.doesNotMatch(text, /event: stream_end/, 'error closes the stream; a stream_end after it is a second, completing teardown')
+
+  const statusRes = await fetch(base + '/api/chat/stream/status?stream_id=' + started.stream_id, { headers: { cookie } })
+  assert.equal(statusRes.status, 200)
+  const statusBody = await statusRes.json()
+  assert.equal(statusBody.active, false)
+  assert.equal(statusBody.journal.terminal_state, 'failed')
+})
+
+test('a cancelled turn reports cancel, not done', async t => {
+  const { base, password, host, facade } = await boot()
+  t.after(() => facade.close())
+  const cookie = await signIn(base, password)
+  host.setTurnOutcome('cancelled')
+
+  const start = await fetch(base + '/api/chat/start', {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ session_id: 'sess-mock', message: 'stop this' }),
+  })
+  const started = await start.json()
+  const text = await (await fetch(base + '/api/chat/stream?stream_id=' + started.stream_id, { headers: { cookie } })).text()
+
+  assert.match(text, /event: cancel/)
+  assert.doesNotMatch(text, /event: done/)
+  assert.doesNotMatch(text, /event: stream_end/)
+
+  const statusRes = await fetch(base + '/api/chat/stream/status?stream_id=' + started.stream_id, { headers: { cookie } })
+  assert.equal((await statusRes.json()).journal.terminal_state, 'cancelled')
 })
 
 test('a turn with no stream chunks still delivers its text once', async t => {

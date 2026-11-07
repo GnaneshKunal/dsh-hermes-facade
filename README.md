@@ -106,7 +106,7 @@ curl.
 |---|---|
 | health, auth (password + signed cookie) | full |
 | session list, session detail, history | full: newest 200 + 50-message scroll-back pages within the newest 800 |
-| chat start / SSE stream / cancel / stream status | full; `profile`/`attachments` in the start body are ignored |
+| chat start / SSE stream / cancel / stream status | full; a failed or cancelled turn ends the stream with `error`/`cancel` instead of `done`; `profile`/`attachments` in the start body are ignored |
 | token deltas, thinking, tool cards | full: live and reloaded transcripts carry tool results, error verdicts and durations |
 | approvals (once / deny) | partial: session/always collapse to once; details are lost after reconnect; no stale/retraction |
 | clarifications / agent questions | partial: live works; a re-attached pending renders as an approval |

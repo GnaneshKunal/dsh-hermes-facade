@@ -1,7 +1,7 @@
 # 05 — Hermex 2.0 compatibility matrix
 
 Last verified: **2026-11-07** · client: Hermex **2.0.1** source (`ec066d9`) · facade: **main** (history
-paging, tool results, model switching; see CHANGELOG) ·
+paging, tool results, model switching, honest turn outcomes; see CHANGELOG) ·
 DSH `0.2.2-rc.1` · protocol: hermes-webui HTTP + SSE.
 
 This is the honest accounting of what the stock Hermex iOS app can do against this facade, what it
@@ -60,7 +60,7 @@ points to your configured server." Only the 408/502/503/504 statuses fall back t
 | Providers | `GET /api/providers` | **STUB** | empty list | yes: derive from the model catalog |
 | Provider quota | `GET /api/provider/quota` | **404** | quota cards silently absent | needs a quota source; DSH has none |
 | Settings (server page) | `GET/POST /api/settings`, `/api/updates/*`, `/api/default-model` | **PARTIAL / STUB** | version "Unknown", update check 404, settings save refused, default model acknowledged but not persisted | partly: settings/default-model via DSH config |
-| Chat start / stream / stop / status / reconnect | `POST /api/chat/start`, `GET /api/chat/{stream,stream/status,cancel}` | **WORKS** | tokens, thinking, live tool cards, stop, replay after reconnect | — |
+| Chat start / stream / stop / status / reconnect | `POST /api/chat/start`, `GET /api/chat/{stream,stream/status,cancel}` | **WORKS** | tokens, thinking, live tool cards, stop, replay after reconnect; a failed or cancelled turn ends the run with `error`/`cancel`, not as a success | — |
 | Message fields on chat start | `model`, `model_provider`, `profile`, `attachments` | **PARTIAL** | model is applied; `profile` and `attachments` are still ignored without an error | attachments via upload + image blocks; profile needs a DSH mapping |
 | Steer / queue while running | `POST /api/chat/steer` | **WORKS** | mid-run message queued | — |
 | `/btw` side question | `POST /api/btw` | **STUB** | "Not supported" in the side panel | yes-ish: a side session; DSH has no btw primitive |
@@ -122,12 +122,10 @@ gateway we do not implement.
 2. **Approval payload/expiry.** `GET pending` and `initial` carry only `approval_id`; a GUI-side or
    timed-out resolution never reaches the phone, and there is no `409 {"stale":true}`.
 3. **Silent profile/attachment loss** on `chat/start` and `session/new` (the model is applied now).
-4. **Turn outcome.** `turn/end.reason` is ignored, so a failed or cancelled turn is reported as
-   `done` (success).
-5. **History is bounded at 800 messages** by the recent-window read; paging works inside it.
-6. **Stream registry never pruned.** `streams.mjs` has `prune()` but nothing calls it, so finished
+4. **History is bounded at 800 messages** by the recent-window read; paging works inside it.
+5. **Stream registry never pruned.** `streams.mjs` has `prune()` but nothing calls it, so finished
    stream journals stay in memory for the process lifetime.
-7. **Export is a method mismatch.** The app GETs `/api/session/export`; only POST was stubbed.
+6. **Export is a method mismatch.** The app GETs `/api/session/export`; only POST was stubbed.
 
 ## Verifying a build
 

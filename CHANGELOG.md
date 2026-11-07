@@ -44,6 +44,17 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   with a readable detail. Hermex's own Settings → Sessions → Subagent Sessions toggle can show
   them only when rows are tagged `session_source: "subagent"` and reads use the parent address;
   that is future work (see docs/05).
+- **A failed or cancelled turn no longer looks successful.** The terminal SSE event was always
+  `done`, so a provider error, a blocked turn, an output-token cut-off and a cancel all told the
+  phone the run completed. `turn/end.reason` is classified now: `completed` keeps `done`,
+  `aborted` (user Stop, parent, dispose) sends `cancel`, and every other kind (`error`,
+  `blocked`, `max-tokens`, `interrupted`, or a kind a host plugin adds) sends `error` carrying
+  the reason's message. `error`/`cancel` are closing frames for the app, so they are not
+  followed by `stream_end`, `/api/chat/stream/status` reports the matching `terminal_state`,
+  and a replayed journal ends the same way. A `turn/end` with no reason (an older host, or an
+  event synthesized without one) still completes, so a host that reports nothing keeps the old
+  behaviour. `scripts/standalone.mjs --turn-outcome failed|cancelled` — and the mock host's
+  `setTurnOutcome` — emit these turns for a hand probe or an integration test.
 - **The model picker actually applies.** `POST /api/session/update` (the picker's call),
   `POST /api/session/new` and `POST /api/chat/start` used to drop `model`/`model_provider`; the
   chip showed a model the next turn did not use. They now resolve the client's id against the DSH

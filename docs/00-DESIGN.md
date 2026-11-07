@@ -102,9 +102,11 @@ Wire rules that are not negotiable (from the Swift decoder):
 
 ## 4. SSE event map (DSH → Hermex)
 
-Terminal ordering: content → `done` → `stream_end`. Keepalive `:` comment every 5 s (>18 s of
-silence is treated as a dead transport). `id:` carries the resume sequence, replayed via
-`?replay=1&after_seq=<n>`.
+Terminal ordering: content → `done` → `stream_end`. `error` and `cancel` are closing frames for
+the app — it tears the transport down on them — so they are not followed by `stream_end`; a
+failed or cancelled turn must never be reported as `done`. Keepalive `:` comment every 5 s
+(>18 s of silence is treated as a dead transport). `id:` carries the resume sequence, replayed
+via `?replay=1&after_seq=<n>`.
 
 | Hermex `event:` | `data:` | DSH source frame |
 |---|---|---|
@@ -117,8 +119,9 @@ silence is treated as a dead transport). `id:` carries the resume sequence, repl
 | `metering` | `{"tps","tps_available","session_id"}` | turn usage (optional) |
 | `approval` | `{"pending":{…}}` | `approval/request` waterfall |
 | `clarify` | `{"pending":{…}}` | `user-questions/request` waterfall |
-| `done` | `{"usage":{…},"session":{…}}` | `turn/end` + final `assistant/message` |
-| `error` | `{"message"}` | turn error |
+| `done` | `{"usage":{…},"session":{…}}` | `turn/end` with a `completed` reason + final `assistant/message` |
+| `error` | `{"message"}` | `turn/end` with any other failure reason (`error`, `blocked`, `max-tokens`, `interrupted`, or a kind a host plugin adds) |
+| `cancel` | — | `turn/end` with an `aborted` reason (user Stop, parent, dispose) |
 | `stream_end` | — | end of follow stream |
 
 ## 5. SUPPORT MATRIX — what works, what doesn't
