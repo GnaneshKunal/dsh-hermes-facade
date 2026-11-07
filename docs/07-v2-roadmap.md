@@ -69,11 +69,11 @@ Effort: **S** = one route/method over an existing facade primitive; **M** = new 
 | # | Surface | Why the phone cares | Calls to add | DSH backing | Effort | Verdict |
 |---|---|---|---|---|---|---|
 | 1 | Session search | the list's search field 404s today | `GET /api/sessions/search` (REST) | `session/search` → `{items:[{sessionId,snippet}],hasMore}` + list rows | S | done |
-| 2 | Live Working / Needs-you | the live dots are absent | `session.active_list`, `sessions.changed` | the gateway's own runner + session rows | S | **next** |
+| 2 | Live Working / Needs-you | the live dots are absent | `session.active_list`, `sessions.changed` | the gateway's own runner + session rows | S | done |
 | 3 | Chat telemetry | context ring and turn metadata | `usage` on `message.complete` + live `session.usage`; `partial`/`persisted_turn` still absent | `tokenUsage`/`contextPressure` projections (`session/projections`) | S | done |
 | 4 | Files | read code and artifacts from the phone | **done in this change** (read-only) | the facade's file routes behind the shared fence | M | done |
 | 5 | Tasks / cron | scheduled jobs and history | `/api/cron/jobs`, `/runs`, pause/resume/trigger/delete, delivery-targets, `sources=cron` agenda | `schedule/*` (near-exact) | M | done |
-| 6 | Memory | edit what the agent remembers | `/api/memory`, `files/read`, `files/upload`, `profiles/{n}/soul`, `profiles.list[].path` | `$DSH_HOME/AGENTS.md` + the project AGENTS.md chain (a real memory) | M | done (read-only, global) |
+| 6 | Memory | edit what the agent remembers | `/api/memory`, `files/read`, `files/upload`, `profiles/{n}/soul`, `profiles.list[].path` | `$DSH_HOME/AGENTS.md` chain; managed 2 MiB atomic save, no USER/soul file | M | done (read + write, global) |
 | 7 | Git read | see what changed, diffs | `/api/fs/git-root`, `/api/git/status`, `review/list`, `review/diff`, `file-diff`, `rev-parse`, `branches` | exec `git` in the session folder | M | done |
 | 8 | Git write | stage / commit / push | `review/{stage,unstage,revert,commit,push}`, `branch/switch` | exec `git` behind the idle guard; commit context feeds the app's message helper | M | done (v1.13) |
 | 9 | Skills | browse skills and their files | `/api/skills`, `/api/skills/content` | `skills/list` (read-only) + the catalog SKILL.md path | S/M | done (read-only) |
@@ -83,7 +83,7 @@ Effort: **S** = one route/method over an existing facade primitive; **M** = new 
 | 13 | `/btw`, `/background` | side questions and background runs | `prompt.btw`, `prompt.background` | no DSH primitive | L | later |
 | 14 | Delegated work | follow a subagent | `subagent.list/tail/interrupt` | DSH subagent sessions exist, their events do not | L | later |
 | 15 | Bots | create/configure a bot (a Profile) | `profiles.create/configure/set_asset`, bot chat `session.list {include_hidden,title}` | `agentPresets/*` read-only; create needs a facade store + soul injection | L | later |
-| 16 | Dictation | host STT | `POST /api/audio/transcribe` | `speech/transcribe` | M | later |
+| 16 | Dictation | host STT | `POST /api/audio/transcribe` | `speech/transcribe`; m4a converted to canonical WAV with afconvert/ffmpeg | M | done (STT; TTS still absent) |
 
 **Non-goals (deliberately not planned):** Kanban (no store or workers in DSH; the client already shows a clean
 "unavailable" on its config 404), push/Live Activity (`hermex-push` is an external relay + APNs), the bot screen
@@ -207,16 +207,17 @@ run opens as its session and there are no host output files or per-run cost. `so
 because DSH stores no session provenance. Tests cover the mapping and the full lifecycle through the gateway and the
 facade.
 
-**Memory (read-only).** The Memory screen now loads: `profiles.list` carries the real, absolute `$DSH_HOME` path,
+**Memory (read/write).** The Memory screen loads: `profiles.list` carries the real, absolute `$DSH_HOME` path,
 `/api/config` turns on only the memory section, `/api/profiles/default/soul` is an empty soul, and
 `/api/files/read` serves `.../memories/MEMORY.md` as the global `$DSH_HOME/AGENTS.md` (a missing file is 404 → an
-empty screen). There is no USER.md (the section is off; DSH has no user-profile file), no soul, and saves answer 400
-with the reason, so the screen is honestly read-only. `/api/files/read` opens only that allowlisted suffix — every
-other path, including `/etc/passwd`, is 404 — so Memory is not a second file browser and does not bypass the Files
-fence for arbitrary paths. Per-workspace `AGENTS.md` files are not part of this global screen, and DSH's global
-chain (`$DSH_HOME/AGENTS.md` then `$DSH_AGENTS_HOME/AGENTS.md`) is represented by its first file only; the
+empty screen). `POST /api/files/upload` saves that same managed suffix back to `$DSH_HOME/AGENTS.md`: the body is
+base64 `text/plain`, empty content clears, 2 MiB cap, valid UTF-8, and a 0600 temp file is renamed into place so a
+failed save leaves the old text intact. There is no USER.md (the section is off; DSH has no user-profile file) and no
+soul, and those paths keep their 404. The requested path is never opened, so Memory is not a second file browser and
+cannot write outside the allowlist. Per-workspace `AGENTS.md` files are not part of this global screen, and DSH's
+global chain (`$DSH_HOME/AGENTS.md` then `$DSH_AGENTS_HOME/AGENTS.md`) is represented by its first file only; the
 `memory_char_limit` in the config is the editor's ceiling, not a DSH cap, and the read is not size-limited.
-Tests cover the loaded document, the empty state, the 404s and both refused writes.
+Tests cover the loaded document, the write→read round trip, empty saves, malformed/oversized bodies and the 404s.
 
 **Skills (read-only).** `GET /api/skills` maps DSH's per-session catalogue to the bare array the screen decodes
 (`enabled: true`, because every skill DSH lists is invocable), and `GET /api/skills/content` returns the named
@@ -241,15 +242,25 @@ the figure is the plugin's estimate. `insights.get` answers `{messages:0}` becau
 already marks its Messages total approximate. No sessions in the window is a real empty state. Tests cover the host
 aggregation, both routes and the RPC.
 
-Verify: `npm run check && npm test` (224 tests), then rename a chat from the phone's list, pin it, archive it,
-unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
+**Live Working / Needs-you, dictation and Git polish (parallel batch).** `session.active_list` reports
+`{session_key,status}` for the list (a run is `streaming`, an open approval/clarify is `waiting`, idle omitted) and
+`sessions.changed` is broadcast on turn/request boundaries; the client renders Working and Input without polling.
+`POST /api/audio/transcribe` calls DSH `speech/transcribe`, converting the phone's m4a to canonical 16 kHz mono WAV
+with afconvert (macOS) or ffmpeg; no converter is an honest 400. Git push reads
+`branch.<name>.remote`/`merge` so remote names containing `/` work, and status uses `--untracked-files=all` so an
+untracked directory lists its files and one can be staged. Tests cover the live statuses/events, the converter
+branches, the memory save, and the Git remote/untracked cases.
+
+Verify: `npm run check && npm test` (251 tests), then rename a chat from the phone's list, pin it, archive it,
+unarchive it, stop a running turn, watch a Working/Needs-you dot settle, edit Memory and re-read it, dictate a
+short recording, and open Files in a chat to browse a folder and preview a file.
 
 ---
 
 ## 5. Next picks, with acceptance criteria
 
-Files, Git read, session search, chat telemetry, Tasks, Memory, Skills, Usage, Attachments and Git writes are done
-(see §4). The next two, in order:
+Files, Git read, session search, chat telemetry, Tasks, Memory, Skills, Usage, Attachments, Git writes, Live
+Working / Needs-you, Memory write and Dictation are done (see §4). The next two, in order:
 
 ### Pick 1 — Bots
 
