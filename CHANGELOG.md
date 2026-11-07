@@ -3,7 +3,7 @@
 Notable changes to dsh-hermes-facade. Version headings correspond to releases; unreleased
 changes accumulate at the top. Format follows [Keep a Changelog](https://keepachangelog.com).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-07
 
 ### Added
 
