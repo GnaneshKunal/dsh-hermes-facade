@@ -22,6 +22,35 @@ import { basename, dirname, extname, join } from 'node:path'
 function localDayKey(date) {
   return String(date.getFullYear()) + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0')
 }
+/**
+ * Node module roots of every DSH profile.
+ * @returns {Promise<string[]>} roots.
+ */
+async function profileModuleRoots() {
+  const home = process.env.DSH_HOME || join(homedir(), '.dsh')
+  const profiles = await readdir(join(home, 'profiles'), { withFileTypes: true }).catch(() => [])
+  return profiles.filter(entry => entry.isDirectory()).map(entry => join(home, 'profiles', entry.name, 'node_modules'))
+}
+
+/**
+ * Package directories under one node_modules root, including one scope level.
+ * @param {string} root node_modules path.
+ * @returns {Promise<string[]>} package dirs.
+ */
+async function packageDirs(root) {
+  const dirs = []
+  for (const entry of await readdir(root, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory() || entry.name === '.bin') continue
+    if (entry.name.startsWith('@')) {
+      for (const nested of await readdir(join(root, entry.name), { withFileTypes: true }).catch(() => [])) {
+        if (nested.isDirectory()) dirs.push(join(root, entry.name, nested.name))
+      }
+      continue
+    }
+    dirs.push(join(root, entry.name))
+  }
+  return dirs
+}
 /** How long a pending interaction waits before it is released to the GUI. */
 const INTERACTION_TIMEOUT_MS = 10 * 60 * 1000
 
@@ -192,6 +221,8 @@ export function createDshHost({ ctx, logger = console }) {
   /** Short-lived cache of the model catalog: a cold read queries every provider. */
   let catalogCache
   let catalogCacheAt = 0
+  /** Lower-cased asset stem -> SKILL.md-like path, for package-provided skills. */
+  let skillAssetCache
 
   /**
    * Model catalog, cached briefly so a composer open does not query every
@@ -524,17 +555,65 @@ export function createDshHost({ ctx, logger = console }) {
      * @param {string} name skill name.
      * @returns {Promise<{name: string, content: string, path: string}|null>} detail.
      */
+    /**
+     * Find the markdown asset a package-provided skill ships. DSH's
+     * skills/list omits `path` for skills a plugin/bundle contributes, so the
+     * catalog row alone cannot name a file. Profile/plugin packages keep the
+     * body in `assets/*.md`; this indexes those stems once.
+     * @param {string} name skill name.
+     * @returns {Promise<string|null>} absolute asset path.
+     */
+    async skillAssetPath(name) {
+      if (skillAssetCache === undefined) {
+        const index = new Map()
+        const roots = [
+          ...await profileModuleRoots(),
+          join(homedir(), '.bun/install/global/node_modules'),
+          join(homedir(), '.npm-global/lib/node_modules'),
+        ]
+        for (const root of roots) {
+          for (const packageDir of await packageDirs(root)) {
+            const assetsDir = join(packageDir, 'assets')
+            for (const file of await readdir(assetsDir).catch(() => [])) {
+              if (!file.toLowerCase().endsWith('.md')) continue
+              const stem = file.slice(0, -3).toLowerCase()
+              if (!index.has(stem)) index.set(stem, join(assetsDir, file))
+            }
+          }
+        }
+        skillAssetCache = index
+      }
+      const wanted = String(name ?? '').toLowerCase()
+      if (wanted.length === 0) return null
+      const candidates = [wanted, wanted + '-skill', wanted.replace(/^dsh-/, '') + '-skill']
+      for (const candidate of candidates) {
+        const path = skillAssetCache.get(candidate)
+        if (path !== undefined) return path
+      }
+      return null
+    },
     async readSkill(name) {
       const wanted = String(name ?? '')
       if (wanted.length === 0) return null
       const skills = await this.listSkills()
       const skill = skills.find(item => item?.name === wanted)
-      if (skill === undefined || typeof skill.path !== 'string' || skill.path.length === 0) return null
-      try {
-        const content = await readFile(skill.path, 'utf8')
-        return { name: wanted, content, path: skill.path }
-      } catch {
-        return null
+      if (skill === undefined) return null
+      // A filesystem skill names its SKILL.md. A package/bundle skill has no
+      // path in the catalog; its body lives in the package's assets folder.
+      const path = typeof skill.path === 'string' && skill.path.length > 0
+        ? skill.path
+        : await this.skillAssetPath(wanted)
+      if (path !== null) {
+        try {
+          const content = await readFile(path, 'utf8')
+          return { name: wanted, content, path }
+        } catch { /* fall through to the description */ }
+      }
+      // Never 404 a skill the catalogue just listed: show what the host knows.
+      return {
+        name: wanted,
+        content: typeof skill.description === 'string' ? skill.description : '',
+        path: typeof skill.path === 'string' ? skill.path : '',
       }
     },
     /**
