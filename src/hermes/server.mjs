@@ -236,7 +236,7 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
   const requests = createRequestManager()
   requests.call.cancelSession = (sessionId, reason) => requests.cancelSession(sessionId, reason)
 
-  const sessions = createSessionRegistry({ backend, logger })
+  const sessions = createSessionRegistry({ backend, dir: config.dir, logger })
   const runner = createTurnRunner({
     backend,
     hub,

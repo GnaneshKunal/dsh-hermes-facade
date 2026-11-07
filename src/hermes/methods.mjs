@@ -9,6 +9,8 @@
  * @module dsh-hermes-facade/src/hermes/methods
  */
 
+import { statSync } from 'node:fs'
+
 import { commandsOf, modelOptionsOf, resumeReplyOf } from './shapes.mjs'
 import { profilesListBody, profileRow, PROFILE_NAME } from './protocol.mjs'
 
@@ -114,6 +116,7 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
    * @returns {object} info.
    */
   function draftInfo(draft, defaults) {
+    const title = typeof draft.title === 'string' && draft.title.length > 0 ? draft.title : undefined
     const model = typeof draft.model === 'string' && draft.model.length > 0 ? draft.model : defaults.model
     const provider = typeof draft.provider === 'string' && draft.provider.length > 0 ? draft.provider : defaults.provider
     const effort = typeof draft.effort === 'string' && draft.effort.length > 0 ? draft.effort : defaults.effort
@@ -122,6 +125,7 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
       running: false,
       stored_session_id: draft.id,
       session_key: draft.id,
+      ...(title === undefined ? {} : { title }),
       ...(typeof draft.cwd === 'string' && draft.cwd.length > 0 ? { cwd: draft.cwd } : {}),
       ...(typeof model === 'string' && model.length > 0 ? { model } : {}),
       ...(typeof provider === 'string' && provider.length > 0 ? { provider } : {}),
@@ -174,8 +178,8 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
         if (typeof p.title === 'string' && p.title.length > 0) sessions.noteTitle(draft.id, p.title)
         // /clear opens a chat on its old folder and model; a plain new chat takes
         // the host's defaults, so the composer's chips start populated.
-        if (typeof p.model === 'string' && p.model.length > 0) draft.model = p.model
-        if (typeof p.provider === 'string' && p.provider.length > 0) draft.provider = p.provider
+        if (typeof p.model === 'string' && p.model.length > 0) sessions.update(draft.id, { model: p.model })
+        if (typeof p.provider === 'string' && p.provider.length > 0) sessions.update(draft.id, { provider: p.provider })
         const defaults = await defaultState()
         return {
           session_id: draft.id,
@@ -216,7 +220,7 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
         const title = String(p.title ?? '')
         if (sessionId.length === 0 || title.length === 0) throw rpcError(-32602, 'session_id and title required')
         const resolved = sessions.resolve(sessionId)
-        if (resolved === sessionId) {
+        if (sessions.draft(sessionId) !== undefined && resolved === sessionId) {
           // An unpromoted draft: remember the title and write it when promoted.
           sessions.noteTitle(sessionId, title)
           return { title, session_key: sessionId }
@@ -256,7 +260,14 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
         if (sessionId.length === 0 || cwd.length === 0) throw rpcError(-32602, 'session_key and cwd required')
         const draft = sessions.draft(sessionId)
         if (draft !== undefined && sessions.resolve(sessionId) === sessionId) {
-          draft.cwd = cwd
+          // The host answers 4017 for a folder it cannot open, and the client has
+          // a message for exactly that code.
+          try {
+            if (statSync(cwd).isDirectory() !== true) throw new Error('not a directory')
+          } catch {
+            throw rpcError(4017, 'the working folder does not exist')
+          }
+          sessions.update(sessionId, { cwd })
           return { cwd, branch: null, git_repo_root: null }
         }
         throw rpcError(-32000, "DeepSeek Harness cannot change a session's folder after its first message; start a new chat in that folder")
@@ -364,12 +375,11 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
           }
           const draftModel = sessions.draft(sessionId)
           if (draftModel !== undefined && sessions.resolve(sessionId) === sessionId) {
-            draftModel.model = model
-            if (provider !== undefined) draftModel.provider = provider
+            sessions.update(sessionId, { model, ...(provider === undefined ? {} : { provider }) })
             return { ok: true, key: 'model', scope: 'session', value, confirm_required: false, deferred: false }
           }
           const applied = await backend.call('POST', '/api/session/update', {
-            body: { session_id: sessionId, model, ...(provider === undefined ? {} : { model_provider: provider }) },
+            body: { session_id: sessions.resolve(sessionId), model, ...(provider === undefined ? {} : { model_provider: provider }) },
           })
           if (applied.status !== 200 || applied.json?.ok === false) {
             throw rpcError(-32000, String(applied.json?.error ?? 'model change refused'))
@@ -380,7 +390,7 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
           if (sessionId.length === 0) throw rpcError(-32602, 'session_id required')
           const draftEffort = sessions.draft(sessionId)
           if (draftEffort !== undefined && sessions.resolve(sessionId) === sessionId) {
-            draftEffort.effort = value
+            sessions.update(sessionId, { effort: value })
             return { ok: true, key: 'reasoning', scope: 'session', value, effort: value }
           }
           const applied = await backend.call('POST', '/api/reasoning', { body: { session_id: sessions.resolve(sessionId), effort: value } })

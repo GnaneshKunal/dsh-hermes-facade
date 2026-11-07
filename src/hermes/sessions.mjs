@@ -13,18 +13,64 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+/** How long an unpromoted draft is kept across restarts. */
+const DRAFT_TTL_SECONDS = 30 * 24 * 60 * 60
+
+/**
+ * Read the persisted mappings.
+ * @param {string|undefined} dir state directory.
+ * @returns {object[]} draft records.
+ */
+function loadDrafts(dir) {
+  if (typeof dir !== 'string' || dir.length === 0) return []
+  const path = join(dir, 'hermes-drafts.json')
+  try {
+    if (!existsSync(path)) return []
+    const parsed = JSON.parse(readFileSync(path, 'utf8'))
+    const rows = Array.isArray(parsed?.drafts) ? parsed.drafts : []
+    const cutoff = Math.floor(Date.now() / 1000) - DRAFT_TTL_SECONDS
+    return rows.filter(row => row !== null && typeof row === 'object' &&
+      typeof row.id === 'string' && row.id.length > 0 &&
+      (!Number.isFinite(row.createdAt) || row.createdAt >= cutoff))
+  } catch { return [] }
+}
+
+/**
+ * Write the mappings atomically.
+ * @param {string|undefined} dir state directory.
+ * @param {object[]} rows draft records.
+ * @returns {void}
+ */
+function writeDrafts(dir, rows) {
+  if (typeof dir !== 'string' || dir.length === 0) return
+  const path = join(dir, 'hermes-drafts.json')
+  const temporary = path + '.tmp'
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    writeFileSync(temporary, JSON.stringify({ version: 1, drafts: rows }) + '\n', { mode: 0o600 })
+    renameSync(temporary, path)
+  } catch { /* the mapping is a convenience, never a blocker */ }
+}
 
 /**
  * Create the registry.
  * @param {object} options options.
  * @param {object} options.backend facade client.
+ * @param {string} [options.dir] state directory for persisted mappings.
  * @param {object} [options.logger] logger.
  * @returns {object} registry.
  */
-export function createSessionRegistry({ backend, logger = console }) {
-  /** client id -> {id, cwd?, title?, createdAt, backendId?} */
+export function createSessionRegistry({ backend, dir, logger = console }) {
+  /** client id -> {id, cwd?, title?, createdAt, backendId?, model?, provider?, effort?} */
   const drafts = new Map()
-  let counter = 0
+  for (const row of loadDrafts(dir)) {
+    if (Number.isFinite(row.createdAt)) drafts.set(row.id, { ...row })
+  }
+  let counter = drafts.size
+  let saveTimer
 
   /**
    * Mint a draft id and remember what the composer picked.
@@ -41,7 +87,18 @@ export function createSessionRegistry({ backend, logger = console }) {
       ...(typeof cwd === 'string' && cwd.length > 0 ? { cwd } : {}),
     }
     drafts.set(id, entry)
+    scheduleSave()
     return entry
+  }
+
+  /**
+   * Persist the mapping shortly after a change, coalescing a burst.
+   * @returns {void}
+   */
+  function scheduleSave() {
+    // Writes are small and rare (a chat is created, moved, renamed or promoted
+    // once), and a shutdown must not lose the mapping, so write through.
+    writeDrafts(dir, [...drafts.values()])
   }
 
   /**
@@ -95,6 +152,7 @@ export function createSessionRegistry({ backend, logger = console }) {
       throw new Error(String(created.json?.error ?? created.json?.detail ?? ('session create failed (HTTP ' + created.status + ')')))
     }
     entry.backendId = backendId
+    scheduleSave()
     // The composer's picks are applied before the first turn, so it runs on them.
     if (typeof entry.effort === 'string' && entry.effort.length > 0) {
       await backend.call('POST', '/api/reasoning', {
@@ -115,7 +173,23 @@ export function createSessionRegistry({ backend, logger = console }) {
    */
   function noteTitle(id, title) {
     const entry = drafts.get(String(id))
-    if (entry !== undefined) entry.title = title
+    if (entry === undefined) return
+    entry.title = title
+    scheduleSave()
+  }
+
+  /**
+   * Merge fields into a draft and persist the change (folder, model, effort).
+   * @param {string} id client id.
+   * @param {object} patch fields.
+   * @returns {object|undefined} the draft.
+   */
+  function update(id, patch) {
+    const entry = drafts.get(String(id))
+    if (entry === undefined) return undefined
+    Object.assign(entry, patch)
+    scheduleSave()
+    return entry
   }
 
   /**
@@ -124,8 +198,8 @@ export function createSessionRegistry({ backend, logger = console }) {
    * @returns {void}
    */
   function forget(id) {
-    drafts.delete(String(id))
+    if (drafts.delete(String(id))) scheduleSave()
   }
 
-  return { createDraft, draft, resolve, isDraft, promote, noteTitle, forget }
+  return { createDraft, draft, resolve, isDraft, promote, noteTitle, update, forget, save: scheduleSave }
 }
