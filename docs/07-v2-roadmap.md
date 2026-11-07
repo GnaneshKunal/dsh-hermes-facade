@@ -165,8 +165,8 @@ the write refusal.
 
 **Session search (both listeners).** `GET /api/sessions/search` now backs the list's search field on `:9120` and
 `:9121`. One facade reply carries both shapes: `results` (the Hermes host rows: `session_id`, `id`,
-`lineage_root`, title, recency, model, snippet, role, match type) and `sessions` (the webui rows with
-`match_preview`/`match_type`). Matching runs id first, then DSH's message-content search (`session/search`, a
+`lineage_root`, title, recency, model and `match_type`; `snippet`/`role` are null) and `sessions` (the webui rows
+with `match_preview`/`match_type`). Matching runs id first, then DSH's message-content search (`session/search`, a
 literal FTS read that never resumes an agent), then a title supplement; each row carries the session
 summary; the webui rows also carry `match_preview`, while the host rows carry no excerpt because DSH's search API
 exposes no author and Hermex drops a snippet without a role. One row per session, capped by `limit` (1–100); DSH
