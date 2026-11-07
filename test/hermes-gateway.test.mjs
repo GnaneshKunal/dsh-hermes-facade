@@ -2216,6 +2216,117 @@ test('the Skills screen lists skills and opens SKILL.md read-only', async () => 
   }
 })
 
+test('session.active_list reports a working turn and an open request, live', async () => {
+  const harness = await boot()
+  harness.host.setTurnDelay(3000)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      /** How many list-refresh frames the socket has seen. */
+      const changes = () => socket.frames.filter(frame => frame.params?.type === 'sessions.changed').length
+
+      // An idle session is left out of the live list, not listed as idle.
+      const idle = await socket.call('session.active_list', {})
+      assert.deepEqual(idle.result, { sessions: [] })
+      assert.equal(changes(), 0, 'an idle list has nothing to announce')
+
+      const submitted = await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'stay busy' })
+      assert.equal(submitted.result.status, 'streaming')
+      await socket.waitFor(frame => frame.params?.type === 'message.start')
+      // Starting a turn announces the change, so the list re-reads at once.
+      await socket.waitFor(frame => frame.params?.type === 'sessions.changed')
+      assert.equal(changes(), 1)
+
+      const streaming = await socket.call('session.active_list', {})
+      assert.deepEqual(streaming.result.sessions, [{ session_key: 'sess-mock', status: 'streaming' }])
+
+      // An approval is the "needs you" state the list draws as Input.
+      const approval = harness.host.simulateApproval('sess-mock', { command: 'bash', description: 'Run npm test' })
+      await socket.waitFor(frame => frame.method === 'approval')
+      assert.equal(changes(), 2, 'opening a request announces it')
+      const waiting = await socket.call('session.active_list', {})
+      assert.deepEqual(waiting.result.sessions, [{ session_key: 'sess-mock', status: 'waiting' }])
+
+      // Answering it settles the request: the turn is Working again.
+      const answered = await socket.call('approval.respond', {
+        session_id: 'sess-mock', request_id: approval.approval_id, choice: 'once',
+      })
+      assert.equal(answered.result.resolved, 1)
+      assert.equal(changes(), 3, 'settling a request announces it')
+      const resumed = await socket.call('session.active_list', {})
+      assert.deepEqual(resumed.result.sessions, [{ session_key: 'sess-mock', status: 'streaming' }])
+
+      // A clarification is the same card family and the same Input state.
+      harness.host.simulateClarification('sess-mock', { question: 'Which database?' })
+      const card = await socket.waitFor(frame => frame.method === 'clarify')
+      assert.equal(changes(), 4, 'opening a question announces it')
+      const asked = await socket.call('session.active_list', {})
+      assert.deepEqual(asked.result.sessions, [{ session_key: 'sess-mock', status: 'waiting' }])
+
+      const requestAnswer = await socket.call('request.answer', { id: card.id, result: { answer: 'SQLite' } })
+      assert.equal(requestAnswer.result.status, 'ok')
+      assert.equal(changes(), 5, 'answering a question announces it')
+
+      // The turn ends: one more announcement, and the session leaves the list.
+      await socket.waitFor(frame => frame.params?.type === 'message.complete', 8000)
+      const before = changes()
+      const deadline = Date.now() + 2000
+      while (changes() === before && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
+      assert.equal(changes(), 6, 'ending a turn announces it')
+      const finished = await socket.call('session.active_list', {})
+      assert.deepEqual(finished.result, { sessions: [] })
+
+      // The refresh is a live notice, not session history: it takes no
+      // sequence number and is not part of session.events.since.
+      const replay = await socket.call('session.events.since', { session_id: 'sess-mock', last_seen: 0 })
+      assert.equal(replay.result.events.some(event => event.type === 'sessions.changed'), false)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('session.active_list names a promoted draft by its chat id and stored session id', async () => {
+  const harness = await boot()
+  harness.host.setTurnDelay(2000)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const created = await socket.call('session.create', { profile: 'default' })
+      const chatId = created.result.session_id
+      assert.match(chatId, /^dsh-draft-/)
+
+      await socket.call('prompt.submit', { session_id: chatId, text: 'from a draft' })
+      await socket.waitFor(frame => frame.params?.type === 'message.start')
+
+      // The draft's first prompt creates the DSH session. Its row is listed by
+      // that stored id, and the list matches a live state by exactly that key,
+      // while the open chat keeps speaking the draft id it already holds.
+      const list = await socket.call('session.list', { profile: 'default' })
+      const storedId = list.result.sessions.map(row => row.id).find(id => id !== 'sess-mock')
+      assert.ok(typeof storedId === 'string' && storedId.length > 0, 'the draft must have created a session')
+
+      const active = await socket.call('session.active_list', {})
+      assert.deepEqual(active.result.sessions, [
+        { session_key: chatId, status: 'streaming' },
+        { session_key: storedId, status: 'streaming' },
+      ])
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
 
 
 
