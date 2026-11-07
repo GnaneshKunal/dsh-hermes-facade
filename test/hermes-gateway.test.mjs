@@ -638,10 +638,26 @@ test('a new chat moves folder before its first message, and is created there', a
       const draftId = created.result.session_id
       assert.match(draftId, /^dsh-draft-/)
 
-      // The attach a new chat performs has to answer for a session that does not exist yet.
+      // The attach a new chat performs has to answer for a session that does not exist yet,
+      // and the composer's chips start populated from the host's defaults.
       const resumed = await socket.call('session.resume', { session_id: draftId, profile: 'default', omit_messages: true })
       assert.equal(resumed.result.session_id, draftId)
       assert.equal(resumed.result.info.running, false)
+      assert.equal(resumed.result.info.cwd, process.cwd(), 'a new chat starts in DSH current workspace')
+      assert.ok(resumed.result.info.model, 'the model chip has a value')
+      assert.ok(resumed.result.info.reasoning_effort, 'the effort chip has a value')
+
+      // Picks made before the first message are recorded on the draft, never sent
+      // to a session that does not exist.
+      const effort = await socket.call('config.set', {
+        session_id: draftId, profile: 'default', scope: 'session', key: 'reasoning', value: 'medium',
+      })
+      assert.equal(effort.result.value, 'medium')
+      const model = await socket.call('config.set', {
+        session_id: draftId, profile: 'default', scope: 'session', key: 'model',
+        value: 'deepseek-v4-pro --provider deepseek-official --session',
+      })
+      assert.equal(model.result.key, 'model')
 
       const moved = await socket.call('session.workspace.move', {
         profile: 'default', session_key: draftId, cwd: '/tmp/some-project',
@@ -657,6 +673,10 @@ test('a new chat moves folder before its first message, and is created there', a
       const delta = await socket.waitFor(frame => frame.params?.type === 'message.delta')
       assert.equal(delta.params.session_id, draftId)
       await socket.waitFor(frame => frame.params?.type === 'message.complete')
+
+      // The draft's effort was applied to the real session before the turn.
+      const promoted = await socket.call('session.resume', { session_id: draftId, profile: 'default', omit_messages: true })
+      assert.equal(promoted.result.info.reasoning_effort, 'medium')
     } finally {
       socket.ws.close()
     }

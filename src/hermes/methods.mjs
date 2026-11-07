@@ -36,6 +36,8 @@ function rpcError(code, message) {
  */
 export function createMethods({ backend, hub, runner, requests, sessions, logger = console }) {
   const unavailable = new Set()
+  /** Cached catalog/reasoning defaults for chats that have no DSH session yet. */
+  let defaultsCache
 
   /**
    * Fetch one session detail, or throw the host's not-found.
@@ -59,6 +61,73 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
       if (typeof effort === 'string' && effort.length > 0) session.reasoning_effort = effort
     } catch { /* the effort is advisory */ }
     return session
+  }
+
+  /**
+   * The host's defaults for a chat that has no session yet: the catalog's
+   * selected model and the effort a new session runs at, so the composer's chips
+   * are populated instead of empty.
+   * @returns {Promise<{model?: string, provider?: string, effort?: string}>} defaults.
+   */
+  async function defaultState() {
+    if (defaultsCache !== undefined && Date.now() - defaultsCache.at < 5000) return defaultsCache.value
+    const value = {}
+    try {
+      const models = await backend.call('GET', '/api/models')
+      if (typeof models.json?.default_model === 'string' && models.json.default_model.length > 0) {
+        value.model = models.json.default_model
+      }
+      if (typeof models.json?.active_provider === 'string' && models.json.active_provider.length > 0) {
+        value.provider = models.json.active_provider
+      }
+    } catch { /* the catalog is advisory */ }
+    try {
+      const reasoning = await backend.call('GET', '/api/reasoning')
+      const effort = reasoning.json?.effective_effort ?? reasoning.json?.effort
+      if (typeof effort === 'string' && effort.length > 0) value.effort = effort
+    } catch { /* the effort is advisory */ }
+    defaultsCache = { at: Date.now(), value }
+    return value
+  }
+
+  /**
+   * The working folder a new chat starts in: DSH's own current workspace, which
+   * is what the webui host used when the app sent no project with the create.
+   * @returns {Promise<string|undefined>} folder.
+   */
+  async function defaultWorkspace() {
+    try {
+      const reply = await backend.call('GET', '/api/workspaces')
+      const last = reply.json?.last
+      if (typeof last === 'string' && last.length > 0) return last
+      const workspaces = Array.isArray(reply.json?.workspaces) ? reply.json.workspaces : []
+      const path = workspaces[0]?.path
+      if (typeof path === 'string' && path.length > 0) return path
+    } catch { /* fall back to no folder */ }
+    return undefined
+  }
+
+  /**
+   * The info block for a draft (a chat whose DSH session does not exist yet).
+   * @param {object} draft draft record.
+   * @param {object} defaults catalog/reasoning defaults.
+   * @returns {object} info.
+   */
+  function draftInfo(draft, defaults) {
+    const model = typeof draft.model === 'string' && draft.model.length > 0 ? draft.model : defaults.model
+    const provider = typeof draft.provider === 'string' && draft.provider.length > 0 ? draft.provider : defaults.provider
+    const effort = typeof draft.effort === 'string' && draft.effort.length > 0 ? draft.effort : defaults.effort
+    return {
+      session_id: draft.id,
+      running: false,
+      stored_session_id: draft.id,
+      session_key: draft.id,
+      ...(typeof draft.cwd === 'string' && draft.cwd.length > 0 ? { cwd: draft.cwd } : {}),
+      ...(typeof model === 'string' && model.length > 0 ? { model } : {}),
+      ...(typeof provider === 'string' && provider.length > 0 ? { provider } : {}),
+      ...(typeof effort === 'string' && effort.length > 0 ? { reasoning_effort: effort } : {}),
+      yolo: false,
+    }
   }
 
   /**
@@ -100,23 +169,21 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
         // A draft: DSH bakes a session's cwd at creation and validates workspace
         // membership against it, so creating it now would lock the folder before
         // the composer can pick one. promote() creates it on the first prompt.
-        const draft = sessions.createDraft({ cwd: typeof p.cwd === 'string' ? p.cwd : undefined })
-        const id = draft.id
-        if (typeof p.title === 'string' && p.title.length > 0) sessions.noteTitle(id, p.title)
+        const requestedCwd = typeof p.cwd === 'string' && p.cwd.trim().length > 0 ? p.cwd.trim() : undefined
+        const draft = sessions.createDraft({ cwd: requestedCwd ?? await defaultWorkspace() })
+        if (typeof p.title === 'string' && p.title.length > 0) sessions.noteTitle(draft.id, p.title)
+        // /clear opens a chat on its old folder and model; a plain new chat takes
+        // the host's defaults, so the composer's chips start populated.
+        if (typeof p.model === 'string' && p.model.length > 0) draft.model = p.model
+        if (typeof p.provider === 'string' && p.provider.length > 0) draft.provider = p.provider
+        const defaults = await defaultState()
         return {
-          session_id: id,
-          stored_session_id: id,
-          session_key: id,
+          session_id: draft.id,
+          stored_session_id: draft.id,
+          session_key: draft.id,
           message_count: 0,
           messages: [],
-          info: {
-            session_id: id,
-            running: false,
-            stored_session_id: id,
-            session_key: id,
-            ...(typeof draft.cwd === 'string' ? { cwd: draft.cwd } : {}),
-            yolo: false,
-          },
+          info: draftInfo(draft, defaults),
         }
       }
       case 'session.resume': {
@@ -126,13 +193,16 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
         // An unpromoted draft has no DSH session yet: answer from the draft so
         // the attach completes and the composer can still pick a folder.
         if (draft !== undefined && sessions.resolve(sessionId) === sessionId) {
+          const info = draftInfo(draft, await defaultState())
           return {
-            ...resumeReplyOf({
-              session_id: sessionId,
-              message_count: 0,
-              is_streaming: false,
-              ...(typeof draft.cwd === 'string' ? { workspace: draft.cwd } : {}),
-            }),
+            session_id: sessionId,
+            stored_session_id: sessionId,
+            session_key: sessionId,
+            message_count: 0,
+            messages: [],
+            messages_omitted: true,
+            info,
+            running: false,
             open_requests: requests.openFor(sessionId),
           }
         }
@@ -292,6 +362,12 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
           for (let index = 0; index < tokens.length; index += 1) {
             if (tokens[index] === '--provider' && typeof tokens[index + 1] === 'string') provider = tokens[index + 1]
           }
+          const draftModel = sessions.draft(sessionId)
+          if (draftModel !== undefined && sessions.resolve(sessionId) === sessionId) {
+            draftModel.model = model
+            if (provider !== undefined) draftModel.provider = provider
+            return { ok: true, key: 'model', scope: 'session', value, confirm_required: false, deferred: false }
+          }
           const applied = await backend.call('POST', '/api/session/update', {
             body: { session_id: sessionId, model, ...(provider === undefined ? {} : { model_provider: provider }) },
           })
@@ -302,7 +378,12 @@ export function createMethods({ backend, hub, runner, requests, sessions, logger
         }
         if (key === 'reasoning') {
           if (sessionId.length === 0) throw rpcError(-32602, 'session_id required')
-          const applied = await backend.call('POST', '/api/reasoning', { body: { session_id: sessionId, effort: value } })
+          const draftEffort = sessions.draft(sessionId)
+          if (draftEffort !== undefined && sessions.resolve(sessionId) === sessionId) {
+            draftEffort.effort = value
+            return { ok: true, key: 'reasoning', scope: 'session', value, effort: value }
+          }
+          const applied = await backend.call('POST', '/api/reasoning', { body: { session_id: sessions.resolve(sessionId), effort: value } })
           if (applied.status !== 200 || applied.json?.ok !== true) {
             throw rpcError(-32000, String(applied.json?.error ?? 'reasoning change refused'))
           }

@@ -84,13 +84,23 @@ export function createSessionRegistry({ backend, logger = console }) {
     if (entry === undefined) return String(id)
     if (typeof entry.backendId === 'string' && entry.backendId.length > 0) return entry.backendId
     const created = await backend.call('POST', '/api/session/new', {
-      body: { ...(typeof entry.cwd === 'string' && entry.cwd.length > 0 ? { workspace: entry.cwd } : {}) },
+      body: {
+        ...(typeof entry.cwd === 'string' && entry.cwd.length > 0 ? { workspace: entry.cwd } : {}),
+        ...(typeof entry.model === 'string' && entry.model.length > 0 ? { model: entry.model } : {}),
+        ...(typeof entry.provider === 'string' && entry.provider.length > 0 ? { provider: entry.provider } : {}),
+      },
     })
     const backendId = created.json?.session?.session_id
     if (created.status !== 200 || typeof backendId !== 'string' || backendId.length === 0) {
       throw new Error(String(created.json?.error ?? created.json?.detail ?? ('session create failed (HTTP ' + created.status + ')')))
     }
     entry.backendId = backendId
+    // The composer's picks are applied before the first turn, so it runs on them.
+    if (typeof entry.effort === 'string' && entry.effort.length > 0) {
+      await backend.call('POST', '/api/reasoning', {
+        body: { session_id: backendId, effort: entry.effort },
+      }).catch(() => {})
+    }
     if (typeof entry.title === 'string' && entry.title.length > 0) {
       await backend.call('POST', '/api/session/rename', { body: { session_id: backendId, title: entry.title } }).catch(() => {})
     }
