@@ -9,7 +9,7 @@ function assistantWith(messages) {
 
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { detailOf, epochSeconds, messagesOf, normaliseEvent, pageMessages, summaryOf, textOf } from '../src/map.mjs'
+import { detailOf, epochSeconds, messagesOf, modelOf, modelProviderOf, normaliseEvent, pageMessages, summaryOf, textOf, timelineOf } from '../src/map.mjs'
 
 test('epochSeconds converts milliseconds and leaves seconds alone', () => {
   assert.equal(epochSeconds(1700000000000), 1700000000)
@@ -77,6 +77,91 @@ test('detailOf returns messages and offset', () => {
   assert.equal(detail.session_id, 's1')
   assert.equal(detail.messages.length, 1)
   assert.equal(detail.messages_offset, 0)
+})
+
+test('modelOf and modelProviderOf read the DSH {lastUsed,next} projection', () => {
+  const row = {
+    projections: {
+      values: {
+        modelSelection: {
+          lastUsed: { provider: 'deepseek-official', model: 'deepseek-v4-pro', reasoningEffort: 'high' },
+          next: null,
+        },
+      },
+    },
+  }
+  assert.equal(modelOf(row), 'deepseek-v4-pro')
+  assert.equal(modelProviderOf(row), 'deepseek-official')
+  assert.equal(modelOf({ projections: { values: { modelSelection: { provider: 'p', model: 'm' } } } }), 'm')
+  assert.equal(modelOf({ projections: { values: { modelSelection: null } } }), undefined)
+})
+
+test('timelineOf carries tool results as persisted tool calls', () => {
+  const base = 1_800_000_000_000
+  const events = [
+    { type: 'user/message', seq: 0, time: base, data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'list files' }] } },
+    {
+      type: 'assistant/message', seq: 1, time: base + 1000,
+      data: { message: { content: [{ type: 'text', text: 'Running ls' }, { type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{"command":"ls"}' }] } },
+    },
+    { type: 'tool/call', seq: 2, time: base + 1000, data: { callId: 'call-1', name: 'bash', arguments: '{"command":"ls"}' } },
+    {
+      type: 'tool/result', seq: 3, time: base + 2500,
+      data: { message: { toolCallId: 'call-1', content: [{ type: 'tool-result', content: [{ type: 'text', text: 'a.txt' }] }] } },
+    },
+    { type: 'assistant/message', seq: 4, time: base + 3000, data: { message: { content: [{ type: 'text', text: 'Done' }] } } },
+  ]
+
+  const timeline = timelineOf(events)
+  assert.deepEqual(timeline.messages.map(message => message.role), ['user', 'assistant', 'assistant'])
+  assert.equal(timeline.messages.some(message => message.role === 'tool'), false, 'no hidden tool rows')
+  assert.equal(timeline.toolCalls.length, 1, 'assistant content and tool/call are one call')
+
+  const call = timeline.toolCalls[0]
+  assert.equal(call.tid, 'call-1')
+  assert.equal(call.name, 'bash')
+  assert.equal(call.args, undefined, 'args ride on the assistant tool_calls, not the persisted list')
+  assert.equal(call.assistant_msg_idx, 1)
+  assert.equal(call.snippet, 'a.txt')
+  assert.equal(call.is_error, false)
+  assert.equal(call.duration, 1.5)
+})
+
+test('timelineOf keeps an error verdict on a persisted tool call', () => {
+  const base = 1_800_000_000_000
+  const timeline = timelineOf([
+    { type: 'assistant/message', seq: 0, time: base, data: { message: { content: [{ type: 'tool-call', id: 'c2', name: 'bash', arguments: '{}' }] } } },
+    { type: 'tool/result', seq: 1, time: base + 500, data: { message: { toolCallId: 'c2', isError: true, content: [{ type: 'text', text: 'boom' }] } } },
+  ])
+  assert.equal(timeline.toolCalls.length, 1)
+  assert.equal(timeline.toolCalls[0].is_error, true)
+  assert.equal(timeline.toolCalls[0].snippet, 'boom')
+  assert.equal(timeline.toolCalls[0].duration, 0.5)
+})
+
+test('a long tool result is capped to the preview the client renders', () => {
+  const base = 1_800_000_000_000
+  const long = 'x'.repeat(2000)
+  const timeline = timelineOf([
+    { type: 'assistant/message', seq: 0, time: base, data: { message: { content: [{ type: 'tool-call', id: 'c4', name: 'bash', arguments: '{}' }] } } },
+    { type: 'tool/result', seq: 1, time: base + 100, data: { message: { toolCallId: 'c4', content: [{ type: 'text', text: long }] } } },
+  ])
+  assert.equal(timeline.toolCalls[0].snippet.length, 501)
+  assert.ok(timeline.toolCalls[0].snippet.endsWith('…'))
+})
+
+test('a compaction replacement keeps the original tool duration', () => {
+  const base = 1_800_000_000_000
+  const timeline = timelineOf([
+    { type: 'assistant/message', seq: 0, time: base, data: { message: { content: [{ type: 'tool-call', id: 'c3', name: 'bash', arguments: '{}' }] } } },
+    { type: 'tool/result', seq: 1, time: base + 500, data: { message: { toolCallId: 'c3', content: [{ type: 'text', text: 'old' }] } } },
+    {
+      type: 'tool/result', seq: 9, time: base + 9000, surfaceOp: { op: 'replace', startSeq: 1, endSeq: 1 }, sourceEventSeqs: [1],
+      data: { message: { toolCallId: 'c3', content: [{ type: 'text', text: 'current' }] } },
+    },
+  ])
+  assert.equal(timeline.toolCalls[0].duration, 0.5)
+  assert.equal(timeline.toolCalls[0].snippet, 'current')
 })
 
 test('detailOf reports the page cursor, truncation and total', () => {

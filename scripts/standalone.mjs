@@ -187,6 +187,27 @@ export function createMockHost() {
       const projection = record?.projections?.values?.modelSelection
       return projection?.lastUsed ?? undefined
     },
+    async selectModel({ sessionId, model, provider, reasoningEffort }) {
+      const catalog = await this.models()
+      const group = catalog.groups.find(entry => entry.id === (provider ?? catalog.default.provider))
+        ?? catalog.groups.find(entry => entry.models.some(entryModel => entryModel.id === model))
+      const entry = group?.models.find(candidate => candidate.id === model)
+      if (entry === undefined) throw new Error('model "' + model + '" is not available in the model catalog')
+      const record = ensure(sessionId)
+      const selection = {
+        provider: group.id,
+        model: entry.id,
+        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+      }
+      record.projections = {
+        values: {
+          ...record.projections.values,
+          modelSelection: { lastUsed: selection, pending: null },
+        },
+      }
+      this.lastSelectedModel = selection
+      return selection
+    },
     async reasoning({ sessionId }) {
       const catalog = await this.models()
       const selection = sessionId ? await this.modelSelection(sessionId) : undefined

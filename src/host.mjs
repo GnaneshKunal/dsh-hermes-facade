@@ -87,6 +87,29 @@ function coerceEffort(requested, supported) {
 }
 
 /**
+ * Split a client model request into a catalog id and provider route.
+ *
+ * Hermex sends bare catalog ids plus a `model_provider` it parsed from the
+ * picker group, and some hosts send `provider:id` inside the model field for
+ * non-default providers; accept both shapes.
+ * @param {string} model model id from the client.
+ * @param {string|undefined} provider explicit provider from the client.
+ * @returns {{model: string, provider?: string}} normalized request.
+ */
+function parseModelRequest(model, provider) {
+  let requestedModel = String(model ?? '').trim()
+  let requestedProvider = typeof provider === 'string' && provider.trim().length > 0 ? provider.trim() : undefined
+  if (requestedModel.startsWith('@')) {
+    const colon = requestedModel.lastIndexOf(':')
+    if (colon > 1) {
+      requestedProvider = requestedProvider ?? requestedModel.slice(1, colon)
+      requestedModel = requestedModel.slice(colon + 1)
+    }
+  }
+  return { model: requestedModel, ...(requestedProvider === undefined ? {} : { provider: requestedProvider }) }
+}
+
+/**
  * Unwrap the recorded model-selection projection.
  *
  * DSH projects `values.modelSelection = {lastUsed, next|pending}`
@@ -379,6 +402,69 @@ export function createDshHost({ ctx, logger = console }) {
       const rows = await this.listSessions()
       const row = rows.find(entry => String(entry?.sessionId) === String(sessionId))
       return selectionOf(row)
+    },
+
+    /**
+     * Change the model (and keep a compatible reasoning effort) for one session.
+     *
+     * The client's model picker calls `POST /api/session/update`; applying the
+     * pick through `session/selectModel` is what makes the next turn actually
+     * use it. The effort is carried over when the new model offers it, otherwise
+     * the new model's default (or its first level) is used, so switching models
+     * never fails just because the previous effort does not exist there.
+     * @param {object} input request.
+     * @param {string} input.sessionId session to change.
+     * @param {string} input.model model id from the client.
+     * @param {string} [input.provider] provider route from the client.
+     * @returns {Promise<{provider: string, model: string, reasoningEffort?: string}>} accepted selection.
+     */
+    async selectModel({ sessionId, model, provider }) {
+      const requested = parseModelRequest(model, provider)
+      if (requested.model.length === 0) throw new Error('model is required')
+      const current = await this.modelSelection(sessionId).catch(() => undefined)
+      const catalog = await modelCatalog()
+      let match = catalogModel(catalog, requested.provider ?? current?.provider, requested.model)
+      if (match === undefined && requested.provider === undefined) {
+        match = catalogModel(catalog, undefined, requested.model)
+      }
+      if (match === undefined) {
+        throw new Error('model "' + requested.model + '"' +
+          (requested.provider === undefined ? '' : ' for provider "' + requested.provider + '"') +
+          ' is not available in the model catalog')
+      }
+      const offered = effortIdsOf(match.entry)
+      let reasoningEffort
+      if (offered.length > 0) {
+        // Carry the current effort over when the new model offers it (or an
+        // alias); otherwise use the new model's declared default, and only then
+        // its first level. Falling straight to offered[0] would quietly pick
+        // "off"/"low" when the new model declares a higher default.
+        const declaredDefault = typeof match.entry?.reasoning?.defaultEffort === 'string'
+          && offered.includes(match.entry.reasoning.defaultEffort)
+          ? match.entry.reasoning.defaultEffort
+          : undefined
+        const carried = current?.reasoningEffort === undefined
+          ? undefined
+          : coerceEffort(String(current.reasoningEffort), offered)
+        reasoningEffort = carried ?? declaredDefault ?? offered[0]
+      }
+      const value = await invoke('session', 'selectModel', {
+        request: {
+          sessionId,
+          provider: match.provider,
+          model: match.model,
+          ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+        },
+      })
+      const selected = value?.selected ?? {}
+      const acceptedProvider = typeof selected.provider === 'string' ? selected.provider : match.provider
+      const acceptedModel = typeof selected.model === 'string' ? selected.model : match.model
+      const acceptedEffort = typeof selected.reasoningEffort === 'string' ? selected.reasoningEffort : reasoningEffort
+      return {
+        provider: acceptedProvider,
+        model: acceptedModel,
+        ...(acceptedEffort === undefined ? {} : { reasoningEffort: acceptedEffort }),
+      }
     },
 
     /**

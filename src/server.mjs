@@ -14,7 +14,7 @@ import { networkInterfaces } from 'node:os'
 import { join as join_dir } from 'node:path'
 import { COOKIE_NAME, createAuth } from './auth.mjs'
 import { clip, createRequestLog } from './log.mjs'
-import { detailOf, epochSeconds, messagesOf, normaliseEvent, pageMessages, summaryOf } from './map.mjs'
+import { detailOf, epochSeconds, normaliseEvent, pageMessages, summaryOf, timelineOf } from './map.mjs'
 import { openSse } from './sse.mjs'
 import { createStreamRegistry } from './streams.mjs'
 
@@ -202,6 +202,43 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
    */
   function defaultWorkspacePath() {
     return config.defaultWorkspace ?? process.cwd()
+  }
+
+  /**
+   * Apply the model the client named on a create/update/send, when it differs
+   * from what the session already uses.
+   *
+   * Hermex changes models with `POST /api/session/update`, and also repeats the
+   * chosen model on `session/new` and `chat/start`. Before this, the facade
+   * ignored all three, so the chip showed a model the next turn would not use.
+   * @param {string} sessionId session id.
+   * @param {object} body request body (snake_case or camelCase).
+   * @returns {Promise<{provider: string, model: string, reasoningEffort?: string}|undefined>} applied selection.
+   */
+  async function applyRequestedModel(sessionId, body) {
+    const model = typeof body?.model === 'string' ? body.model.trim() : ''
+    if (model.length === 0) return undefined
+    const rawProvider = typeof body?.model_provider === 'string' && body.model_provider.trim().length > 0
+      ? body.model_provider.trim()
+      : (typeof body?.modelProvider === 'string' && body.modelProvider.trim().length > 0 ? body.modelProvider.trim() : undefined)
+    const current = typeof host.modelSelection === 'function'
+      ? await host.modelSelection(sessionId).catch(() => undefined)
+      : undefined
+    // A provider can travel inside the model id ("@provider:model"); compare it
+    // too, or a same-model request would skip selectModel and silently keep the
+    // old provider.
+    const at = model.startsWith('@') ? model.lastIndexOf(':') : -1
+    const providerFromId = at > 1 ? model.slice(1, at) : undefined
+    const bareModel = at > 1 ? model.slice(at + 1) : model
+    const requestedProvider = rawProvider ?? providerFromId
+    const sameModel = current?.model === bareModel
+    const sameProvider = requestedProvider === undefined || current?.provider === requestedProvider
+    if (sameModel && sameProvider) return undefined
+    return await host.selectModel({
+      sessionId,
+      model,
+      ...(rawProvider === undefined ? {} : { provider: rawProvider }),
+    })
   }
 
   /**
@@ -468,6 +505,7 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         sendJson(res, 200, {
           status: 'ok',
           active_streams: registry.activeCount(),
+          features: ['history-paging', 'tool-results', 'model-switch'],
           history: { page: historyPage, window: historyWindow },
         })
         return
@@ -545,11 +583,17 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
           sendJson(res, 404, { error: 'not found', detail: 'Session not found' })
           return
         }
-        const all = messagesOf(snapshot.events)
-        const page = pageMessages(all, { limit, before, initial: historyPage })
+        const timeline = timelineOf(snapshot.events)
+        const page = pageMessages(timeline.messages, { limit, before, initial: historyPage })
         const index = typeof host.workspaceIndex === 'function' ? await host.workspaceIndex() : new Map()
         sendJson(res, 200, {
-          session: detailOf(item ?? { sessionId }, page.messages, index.get(String(sessionId)), page),
+          session: detailOf(
+            item ?? { sessionId },
+            page.messages,
+            index.get(String(sessionId)),
+            page,
+            timeline.toolCalls,
+          ),
         })
         return
       }
@@ -559,10 +603,22 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         const workspace = typeof body.workspace === 'string' && body.workspace.length > 0 ? body.workspace : defaultWorkspacePath()
         const projectId = typeof body.project_id === 'string' && body.project_id.length > 0 ? body.project_id : undefined
         const created = await host.ensureSession(undefined, workspace, projectId)
+        let selected
+        try {
+          selected = await applyRequestedModel(created, body)
+        } catch (error) {
+          sendJson(res, 400, { ok: false, error: String(error?.message ?? error) })
+          return
+        }
         const rows = await host.listSessions()
         const item = rows.find(entry => String(entry?.sessionId) === created)
         const index = typeof host.workspaceIndex === 'function' ? await host.workspaceIndex() : new Map()
-        sendJson(res, 200, { session: detailOf(item ?? { sessionId: created }, [], index.get(String(created))) })
+        const detail = detailOf(item ?? { sessionId: created }, [], index.get(String(created)))
+        if (selected !== undefined) {
+          detail.model = selected.model
+          if (typeof selected.provider === 'string') detail.model_provider = selected.provider
+        }
+        sendJson(res, 200, { session: detail })
         return
       }
 
@@ -632,9 +688,48 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
         return
       }
 
+      // The composer's model picker calls this; the folder picker reuses it with
+      // a workspace. The model is applied through session/selectModel so the
+      // next turn actually uses it; the workspace is adopted as project
+      // membership (DSH cannot change a started session's cwd).
+      if (method === 'POST' && path === '/api/session/update') {
+        const body = await readJson(req)
+        const sessionId = String(body.session_id ?? body.sessionId ?? '')
+        if (!sessionId) { sendJson(res, 400, { ok: false, error: 'session_id required' }); return }
+        let selected
+        try {
+          selected = await applyRequestedModel(sessionId, body)
+        } catch (error) {
+          sendJson(res, 400, { ok: false, error: String(error?.message ?? error) })
+          return
+        }
+        const workspace = typeof body.workspace === 'string' && body.workspace.trim().length > 0
+          ? body.workspace.trim()
+          : undefined
+        if (workspace !== undefined && typeof host.adoptSession === 'function') {
+          try {
+            await host.adoptSession({ sessionId, workspacePath: workspace })
+          } catch (error) {
+            logger.warn?.('hermes-facade: could not adopt session into workspace: ' + String(error?.message ?? error))
+          }
+        }
+        const rows = await host.listSessions()
+        const item = rows.find(row => String(row?.sessionId) === sessionId)
+        if (item === undefined) { sendJson(res, 404, { error: 'not found', detail: 'Session not found' }); return }
+        const index = typeof host.workspaceIndex === 'function' ? await host.workspaceIndex() : new Map()
+        const detail = detailOf(item, [], index.get(sessionId))
+        if (selected !== undefined) {
+          detail.model = selected.model
+          if (typeof selected.provider === 'string') detail.model_provider = selected.provider
+        }
+        if (workspace !== undefined) detail.workspace = workspace
+        sendJson(res, 200, { ok: true, session: detail })
+        return
+      }
+
       // Actions DSH has no equivalent for: answer 200 with an honest error so
       // the app shows a message instead of "the server endpoint was not found".
-      if (method === 'POST' && ['/api/session/delete', '/api/session/duplicate', '/api/session/compress', '/api/session/clear', '/api/session/undo', '/api/session/retry', '/api/session/truncate', '/api/session/move', '/api/session/update', '/api/session/export', '/api/session/import_cli'].includes(path)) {
+      if (method === 'POST' && ['/api/session/delete', '/api/session/duplicate', '/api/session/compress', '/api/session/clear', '/api/session/undo', '/api/session/retry', '/api/session/truncate', '/api/session/move', '/api/session/export', '/api/session/import_cli'].includes(path)) {
         notes.stub = 'session-action'
         sendJson(res, 200, { ok: false, error: 'Not supported by DeepSeek Harness' })
         return
@@ -659,6 +754,14 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
           const workspace = typeof body.workspace === 'string' && body.workspace.length > 0 ? body.workspace : defaultWorkspacePath()
           const projectId = typeof body.project_id === 'string' && body.project_id.length > 0 ? body.project_id : undefined
           sessionId = await host.ensureSession(undefined, workspace, projectId)
+        }
+        // A model chosen before the session existed only ever travels on the
+        // send; apply it (when different) so the run uses what the chip says.
+        try {
+          await applyRequestedModel(sessionId, body)
+        } catch (error) {
+          sendJson(res, 400, { detail: String(error?.message ?? error) })
+          return
         }
         const stream = registry.create({ sessionId })
         const pendingStartedAt = Date.now() / 1000
@@ -830,6 +933,10 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
               groups.push({
                 name: String(group?.name ?? group?.id ?? 'default'),
                 label: String(group?.name ?? group?.id ?? 'default'),
+                // The client fills each option's provider from the group's
+                // provider_id; without it the picker reports its change with no
+                // provider and the facade has to guess the route.
+                provider_id: String(group?.id ?? group?.name ?? 'default'),
                 models: entries,
               })
             }

@@ -3,6 +3,55 @@ import test from 'node:test'
 import { createDshHost } from '../src/host.mjs'
 
 /**
+ * The catalog shape the real host returns, with per-model effort levels.
+ * @returns {object} ModelCatalog.
+ */
+function defaultCatalog() {
+  return {
+    default: { provider: 'p', model: 'm', reasoningEffort: 'medium' },
+    groups: [{
+      id: 'p',
+      name: 'P',
+      models: [{
+        id: 'm',
+        name: 'M',
+        reasoning: {
+          efforts: [{ id: 'off' }, { id: 'low' }, { id: 'medium' }, { id: 'high' }, { id: 'max' }],
+          defaultEffort: 'medium',
+        },
+      }],
+    }],
+    failures: [],
+  }
+}
+
+/**
+ * Two providers, so @provider: parsing and provider resets are exercised.
+ * @returns {object} ModelCatalog.
+ */
+function twoProviderCatalog() {
+  return {
+    default: { provider: 'p', model: 'm', reasoningEffort: 'medium' },
+    groups: [
+      {
+        id: 'p',
+        name: 'P',
+        models: [
+          { id: 'm', name: 'M', reasoning: { efforts: ['off', 'low', 'medium', 'high', 'max'], defaultEffort: 'medium' } },
+          { id: 'm-nodefault', name: 'M2', reasoning: { efforts: ['off', 'low'], defaultEffort: 'max' } },
+        ],
+      },
+      {
+        id: 'q',
+        name: 'Q',
+        models: [{ id: 'm', name: 'M Q', reasoning: { efforts: ['low', 'high'], defaultEffort: 'high' } }],
+      },
+    ],
+    failures: [],
+  }
+}
+
+/**
  * Build a host adapter over a fake gateway.
  * @returns {{host: object, calls: Array<object>}} adapter and recorded calls.
  */
@@ -32,24 +81,9 @@ function build(existingWorkspaces = {}, options = {}) {
       if (request.method === 'create') return { sessionId: 'created-1' }
       if (request.method === 'prompt') return { accepted: true }
       if (request.method === 'cancel') return { accepted: true }
-      if (request.method === 'modelCatalog') {
-        // The shape the real host returns, including the per-model effort levels.
-        return {
-          default: { provider: 'p', model: 'm', reasoningEffort: 'medium' },
-          groups: [{
-            id: 'p',
-            name: 'P',
-            models: [{
-              id: 'm',
-              name: 'M',
-              reasoning: {
-                efforts: [{ id: 'off' }, { id: 'low' }, { id: 'medium' }, { id: 'high' }, { id: 'max' }],
-                defaultEffort: 'medium',
-              },
-            }],
-          }],
-          failures: [],
-        }
+      if (request.method === 'modelCatalog') return options.catalog ?? defaultCatalog()
+      if (request.namespace === 'session' && request.method === 'selectModel') {
+        return { selected: request.args?.request ?? {} }
       }
       return {}
     },
@@ -319,4 +353,57 @@ test('models returns the raw ModelCatalog', async () => {
   const catalog = await host.models()
   assert.equal(catalog.groups[0].models[0].id, 'm')
   assert.equal(catalog.default.model, 'm')
+})
+
+test('selectModel falls back to the new model declared default effort', async () => {
+  const { host, calls } = build({}, {
+    catalog: twoProviderCatalog(),
+    selection: { lastUsed: { provider: 'p', model: 'm', reasoningEffort: 'ultra' }, pending: null },
+  })
+  const selected = await host.selectModel({ sessionId: 's1', model: 'm' })
+  const request = calls.find(entry => entry.method === 'selectModel').args.request
+  assert.equal(request.reasoningEffort, 'medium', 'not offered -> declared default, not the first level')
+  assert.equal(selected.reasoningEffort, 'medium')
+})
+
+test('selectModel carries the current effort over when the new model offers it', async () => {
+  const { host, calls } = build({}, {
+    catalog: twoProviderCatalog(),
+    selection: { lastUsed: { provider: 'p', model: 'm', reasoningEffort: 'low' }, pending: null },
+  })
+  const selected = await host.selectModel({ sessionId: 's1', model: 'm' })
+  assert.equal(calls.find(entry => entry.method === 'selectModel').args.request.reasoningEffort, 'low')
+  assert.equal(selected.reasoningEffort, 'low')
+})
+
+test('selectModel uses the first offered effort when the declared default is not offered', async () => {
+  const { host, calls } = build({}, {
+    catalog: twoProviderCatalog(),
+    selection: { lastUsed: { provider: 'p', model: 'm', reasoningEffort: 'ultra' }, pending: null },
+  })
+  const selected = await host.selectModel({ sessionId: 's1', model: 'm-nodefault' })
+  assert.equal(calls.find(entry => entry.method === 'selectModel').args.request.reasoningEffort, 'off')
+  assert.equal(selected.reasoningEffort, 'off')
+})
+
+test('selectModel splits @provider: ids and switches provider on a shared model name', async () => {
+  const { host, calls } = build({}, {
+    catalog: twoProviderCatalog(),
+    selection: { lastUsed: { provider: 'p', model: 'm', reasoningEffort: 'low' }, pending: null },
+  })
+  const selected = await host.selectModel({ sessionId: 's1', model: '@q:m' })
+  const request = calls.find(entry => entry.method === 'selectModel').args.request
+  assert.equal(request.provider, 'q')
+  assert.equal(request.model, 'm')
+  assert.equal(request.reasoningEffort, 'low')
+  assert.equal(selected.provider, 'q')
+})
+
+test('selectModel reports an unknown model with the catalog error', async () => {
+  const { host, calls } = build()
+  await assert.rejects(
+    () => host.selectModel({ sessionId: 's1', model: 'nope', provider: 'q' }),
+    /model "nope" for provider "q" is not available in the model catalog/,
+  )
+  assert.ok(!calls.some(entry => entry.method === 'selectModel'))
 })
