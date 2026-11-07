@@ -626,7 +626,47 @@ test('session.steer answers the queued/rejected vocabulary', async () => {
 })
 
 
-test('session.workspace.move files the session under the target workspace', async () => {
+test('a new chat moves folder before its first message, and is created there', async () => {
+  const harness = await boot()
+  harness.host.setTurnDelay(5)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const created = await socket.call('session.create', { profile: 'default' })
+      const draftId = created.result.session_id
+      assert.match(draftId, /^dsh-draft-/)
+
+      // The attach a new chat performs has to answer for a session that does not exist yet.
+      const resumed = await socket.call('session.resume', { session_id: draftId, profile: 'default', omit_messages: true })
+      assert.equal(resumed.result.session_id, draftId)
+      assert.equal(resumed.result.info.running, false)
+
+      const moved = await socket.call('session.workspace.move', {
+        profile: 'default', session_key: draftId, cwd: '/tmp/some-project',
+      })
+      assert.equal(moved.result.cwd, '/tmp/some-project')
+      await socket.call('session.title', { session_id: draftId, title: 'moved chat' })
+
+      const submitted = await socket.call('prompt.submit', { session_id: draftId, text: 'hello there' })
+      assert.equal(submitted.result.status, 'streaming')
+      // The DSH session is created at the chosen folder, and the frames the phone
+      // sees still carry the id it holds.
+      assert.equal(harness.host.lastEnsure.workspacePath, '/tmp/some-project')
+      const delta = await socket.waitFor(frame => frame.params?.type === 'message.delta')
+      assert.equal(delta.params.session_id, draftId)
+      await socket.waitFor(frame => frame.params?.type === 'message.complete')
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('moving a chat that already ran is refused instead of silently reverting', async () => {
   const harness = await boot()
   try {
     const cookie = await signIn(harness.base, harness.password)
@@ -636,9 +676,8 @@ test('session.workspace.move files the session under the target workspace', asyn
       const moved = await socket.call('session.workspace.move', {
         profile: 'default', session_key: 'sess-mock', cwd: '/tmp/some-project',
       })
-      assert.equal(moved.result.cwd, process.cwd(), 'answers the folder the session really uses')
-      assert.deepEqual(harness.host.lastAdopt, { sessionId: 'sess-mock', workspacePath: '/tmp/some-project' })
-      assert.equal(moved.result.git_repo_root, null)
+      assert.equal(moved.error.code, -32000)
+      assert.match(String(moved.error.message), /cannot change a session's folder/i)
     } finally {
       socket.ws.close()
     }

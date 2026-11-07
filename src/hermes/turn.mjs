@@ -64,7 +64,14 @@ async function infoPayload(backend, sessionId) {
  * @param {() => number} [options.now] epoch seconds.
  * @returns {object} runner.
  */
-export function createTurnRunner({ backend, hub, requestClient, logger = console, now = () => Math.floor(Date.now() / 1000) }) {
+export function createTurnRunner({
+  backend,
+  hub,
+  requestClient,
+  resolveBackendSession = id => id,
+  logger = console,
+  now = () => Math.floor(Date.now() / 1000),
+}) {
   /** @type {Map<string, {streamId: string, controller: AbortController, startedAt: number, info: object}>} */
   const active = new Map()
   /** Prompts submitted while the session already had a turn, oldest first. */
@@ -98,14 +105,19 @@ export function createTurnRunner({ backend, hub, requestClient, logger = console
       queued.set(sessionId, pending)
       return { status: 'queued', session_id: sessionId, turn_isolation: null }
     }
-    const started = await backend.call('POST', '/api/chat/start', { body: { session_id: sessionId, message: text } })
+    const backendSessionId = resolveBackendSession(sessionId)
+    const started = await backend.call('POST', '/api/chat/start', {
+      body: { session_id: backendSessionId, message: text },
+    })
     const streamId = started.json?.stream_id
     if (started.status !== 200 || typeof streamId !== 'string' || streamId.length === 0) {
       const detail = started.json?.detail ?? started.json?.error ?? ('HTTP ' + started.status)
       throw new Error(String(detail))
     }
     const controller = new AbortController()
-    const info = await infoPayload(backend, sessionId)
+    const info = await infoPayload(backend, backendSessionId)
+    // The phone holds the draft id for this chat; every frame speaks it.
+    info.session_id = sessionId
     const wasRunning = active.has(sessionId)
     active.set(sessionId, { streamId, controller, startedAt: now(), info })
     hub.publish('session.info', { ...info, running: true, turn_started_at: now() }, sessionId)
@@ -320,7 +332,9 @@ export function createTurnRunner({ backend, hub, requestClient, logger = console
    * @returns {Promise<object>} reply.
    */
   async function steer(sessionId, text) {
-    const reply = await backend.call('POST', '/api/chat/steer', { body: { session_id: sessionId, text } })
+    const reply = await backend.call('POST', '/api/chat/steer', {
+      body: { session_id: resolveBackendSession(sessionId), text },
+    })
     // The steer branch of the client's outcome map reads "queued" as guidance
     // accepted and "rejected" as a refusal; anything else is an unknown outcome.
     return { status: reply.json?.accepted === true ? 'queued' : 'rejected', text }
