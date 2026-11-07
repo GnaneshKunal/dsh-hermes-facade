@@ -72,6 +72,9 @@ function build(existingWorkspaces = {}, options = {}) {
     async invoke(request) {
       calls.push(request)
       if (request.method === 'list') return { items: rows }
+      if (request.namespace === 'session' && request.method === 'projections') {
+        return options.projections ?? { values: {} }
+      }
       if (request.method === 'create' && request.namespace === 'workspace') {
         return { workspace: { workspaceId: 'ws-1', path: '/tmp', title: 'tmp', sessionIds: [] }, created: true }
       }
@@ -698,4 +701,27 @@ test('a timed-out clarification is retracted', async t => {
   assert.deepEqual(await answer, { answers: [] }, 'the GUI is asked after the phone card is withdrawn')
   assert.equal(host.pendingClarification('s1'), undefined)
   assert.ok(notices.some(notice => notice.kind === 'clarify-resolved' && notice.reason === 'timeout'))
+})
+
+test('sessionUsage maps token and context projections', async () => {
+  const { host } = build({}, {
+    projections: {
+      values: {
+        tokenUsage: { uncachedInputTokens: 100, cacheReadTokens: 20, cacheWriteTokens: 5, outputTokens: 40 },
+        contextPressure: { contextWindow: 200000, pressureTokens: 5000, projectedTokens: 6000 },
+      },
+    },
+  })
+  assert.deepEqual(await host.sessionUsage('s1'), {
+    input_tokens: 125, output_tokens: 40, context_length: 200000, last_prompt_tokens: 5000,
+  })
+})
+
+test('sessionUsage omits what the projections do not report', async () => {
+  const empty = build({}, { projections: null })
+  assert.deepEqual(await empty.host.sessionUsage('s1'), {})
+  const tokensOnly = build({}, {
+    projections: { values: { tokenUsage: { uncachedInputTokens: 7, outputTokens: 3 } } },
+  })
+  assert.deepEqual(await tokensOnly.host.sessionUsage('s1'), { input_tokens: 7, output_tokens: 3 })
 })

@@ -9,9 +9,10 @@ Hermes host contract, so the same iOS app can be pointed at DeepSeek Harness as
 a native Hermes server. It is additive: port 9120 keeps serving the webui
 contract unchanged.
 
-Status: **v1.5** (2026-11-07). Chat, sessions (including the write fence the
-session list needs and the list's search), approvals, clarifications, models,
-commands, export, the read-only in-chat Files browser and the read-only Git menu.
+Status: **v1.6** (2026-11-07). Chat (with context/token telemetry), sessions
+(including the write fence the session list needs and the list's search),
+approvals, clarifications, models, commands, export, the read-only in-chat Files
+browser and the read-only Git menu.
 The 2026-11-07 audit's wire defects (turn status, stop vocabulary, title read,
 list rows, multi-field PATCH, collection 404s, source matching, `limit=0`,
 capability-gated reverse requests, forwarded-client rate limiting, prompt races,
@@ -153,7 +154,8 @@ session only; sequence gaps make the client rebuild from a snapshot, so the ring
 | `tool.start` | `{name, args, tool_id}` |
 | `tool.complete` | `{name, tool_id, result, is_error?}` |
 | `session.title` | `{session_id, title}` |
-| `message.complete` | `{status: complete|error|interrupted, text}` |
+| `session.usage` | `{usage: {input, output, context_used, context_max}}`; the live context ring, sent with the assistant message and again inside `message.complete`. No `estimated_cost`: DSH has no pricing |
+| `message.complete` | `{status: complete|error|interrupted, text, usage?}`; `usage` is `{input, output, context_used, context_max}` |
 | `request.cancel` | `{id, method, reason}`; withdraws an unanswered card |
 
 Reverse requests: `approval` (`request_id, command, description, choices`) and
@@ -220,14 +222,15 @@ answers `403`, and the all-add fallback runs only for an untracked file.
 ## 6. What the phone shows
 
 - **Works:** chat with tokens, thinking, live tool cards, stop, approvals
-  (once/session/always/deny), clarifications, session list, open, rename, pin,
+  (once/session/always/deny), the context ring (context used/max and input/output
+  tokens; no cost, because DSH has no pricing), clarifications, session list,
+  open, rename, pin,
   archive (the write-fence route above is what lets those three work), branch,
   export, model picker, slash commands, the session list's search, the in-chat
   Files browser (`session.info.terminal_backend:"local"` plus the fenced
   `/api/fs/*` routes) and the read-only Git menu (status, changes, diffs,
   branches).
-- **Partial:** the context ring stays empty (no `usage` on turn events); the
-  session rows carry no `preview`; Fast and yolo are refused, so their controls
+- **Partial:** the session rows carry no `preview`; Fast and yolo are refused, so their controls
   revert instead of showing a false state; Git is read-only (stage/commit/push
   and branch switch answer 400 with a reason).
 - **Empty/absent:** Tasks, Kanban, Skills, Memory, Usage, Bots, Bot
@@ -304,10 +307,10 @@ The full surface state and the plan for the missing screens are
 5. **Protocol drift.** The client pins 0.22.5; the contract at HEAD already has
    more methods. Re-read `/tmp/hermex` (the client source) before chasing a new
    build; do not implement from the 261-method OpenRPC document.
-6. **No usage on the chat wire.** `message.complete` carries no
-   `usage`/`partial`/`persisted_turn`, so the context ring stays empty. (The
-   Files/Git entries now have their `terminal_backend`; Git still needs
-   `fs/git-root`.)
+6. **No persisted-turn receipt and no cost.** `message.complete` now carries
+   `usage` and a live `session.usage` fills the ring, but `partial`/`persisted_turn`
+   are absent (DSH does not expose the saved row ids), and cost is unavailable:
+   DSH has token usage but no pricing, so Usage/Insights stays token-only.
 7. **The Legacy file browser is still unfenced.** The `:9121` Files routes use the
    shared realpath fence (chat folders only, state and secret directories denied),
    but `:9120`'s `/api/{list,file,file/raw,media}` accept any absolute path, as

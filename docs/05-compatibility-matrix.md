@@ -135,7 +135,7 @@ through the durable parent address.
 | Open / attach a chat | `session.resume`, `session.events.since` then `GET /api/sessions/{id}/messages` | **WORKS** | live state without the transcript; the settled rows come over REST | — |
 | Send | `prompt.submit` | **WORKS** | accepted as `streaming`/`queued`; a busy session queues instead of refusing | — |
 | Stream | `message.start/delta/interim`, `reasoning.delta`, `tool.start/tool.complete` | **WORKS** | tokens, thinking, live tool cards with args/result; per-session contiguous `seq` | the tool result is the facade's preview text (no parsed object or `duration_s`) |
-| Turn end | `message.complete`, `session.info {running:false}` | **PARTIAL** | the turn settles with the canonical `status:"complete"`, but no `usage`/`persisted_turn` rides along, so the context ring stays empty | add usage and the turn receipt |
+| Turn end | `message.complete`, `session.usage`, `session.info {running:false}` | **WORKS** (no cost) | the turn settles with the canonical `status:"complete"` and carries `usage` (`context_used`, `context_max`, `input`, `output`); a live `session.usage` frame fills the context ring mid-turn, and the `/api/session` detail carries the same snapshot so it survives the post-turn refresh. No `persisted_turn` receipt, and no cost: DSH reports tokens, not prices | turn receipt needs saved row ids; cost needs a pricing source |
 | Stop | `session.interrupt` | **WORKS** | stops the turn and answers the contract's `interrupted`/`not_interrupted` | — |
 | Steer / queue | `session.steer`, `prompt.submit` while running | **WORKS** | queued/rejected; never `redirected` | — |
 | Edit / regenerate / retry | `prompt.submit` with `truncate_before_row_id` | **PARTIAL** | we ignore the truncation, so the edited prompt is appended instead of rewinding | needs a DSH transcript-truncation primitive |
@@ -256,8 +256,9 @@ session names no model, and Fast/yolo are refused instead of echoed. What remain
 1. **Git is read-only.** The menu shows status, changes, diffs and branches, but stage/unstage/revert/commit/push
    and branch switch answer `400 {"detail":"Git writes are not supported by this DeepSeek Harness host yet"}`.
    The commit-message helper is unavailable too (it is a write-path read), and no pull request is reported.
-2. **No usage anywhere.** `message.complete` carries no `usage`/`partial`/`persisted_turn` and there is no
-   `session.usage` ticker, so the context ring is frozen.
+2. **No persisted-turn receipt and no cost.** `message.complete` now carries `usage` and a live
+   `session.usage` fills the ring, but `partial`/`persisted_turn` are absent (DSH does not expose the saved row ids),
+   and no cost exists anywhere: DSH has token usage but no pricing, so the Usage screen stays token-only.
 3. **Edit / regenerate / retry append instead of rewinding** (`truncate_before_row_id` ignored).
 4. **Session list rows lack `preview`** (the rest of the row shape is now mapped); the WS `session.list` rows are
    the same shape as REST.

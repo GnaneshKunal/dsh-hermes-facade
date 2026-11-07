@@ -54,6 +54,21 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   provenance) honestly matches nothing. Tests cover both shapes, all
   three lanes, the empty query, the limit, the source filters and `/stats`
   staying 404.
+- **Chat telemetry on the Hermes listener (context + tokens, no cost).** A turn
+  now fills the context ring. `host.sessionUsage` reads DSH's `tokenUsage` and
+  `contextPressure` projections through `session/projections`; the facade
+  publishes a live `usage` frame with the assistant message and the
+  authoritative `usage` on its `done` event, and the gateway maps both to the
+  host vocabulary: `session.usage` mid-turn and `usage` on `message.complete`,
+  each `{input, output, context_used, context_max}`. The Legacy SSE
+  `done.usage` is the context-window snapshot (`input_tokens`,
+  `output_tokens`, `context_length`, `last_prompt_tokens`), so both transports
+  fill the same ring. **No cost**: DSH reports tokens, not prices, and the app's
+  Hermes chat snapshot ignores cost even when present — Usage/Insights stays
+  token-only. `partial`/`persisted_turn` remain absent (the saved row ids are
+  not in the turn event). The facade's `/api/session` detail and JSON export
+  carry the same snapshot, so the Legacy ring survives the app's post-turn
+  transcript refresh.
 - **A shared path fence for file surfaces** (`src/hermes/fence.mjs`). Hermex
   sends absolute host paths and its own check is explicitly not a security
   boundary, so a path is served only when its realpath is inside a chat folder

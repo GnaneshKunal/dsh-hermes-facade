@@ -11,6 +11,7 @@
  */
 
 import { TERMINAL_BACKEND } from './protocol.mjs'
+import { usageOf } from './shapes.mjs'
 
 /** How long an approval or question may stay unanswered. */
 const REQUEST_TTL_MS = 10 * 60 * 1000
@@ -211,6 +212,11 @@ export function createTurnRunner({
           if (typeof data.title === 'string' && data.title.length > 0) {
             hub.publish('session.title', { session_id: sessionId, title: data.title }, sessionId)
           }
+        } else if (frame.event === 'usage') {
+          // The facade's Legacy snapshot shape → the host's context-window
+          // vocabulary, which is what the app's ring reads.
+          const usage = usageOf(data)
+          if (Object.keys(usage).length > 0) hub.publish('session.usage', { usage }, sessionId)
         } else if (frame.event === 'approval') {
           if (data.pending === null || data.pending === undefined) requestClient.cancelSession?.(sessionId, 'resolved')
           else await handleApproval(sessionId, data.pending)
@@ -221,7 +227,16 @@ export function createTurnRunner({
           finished = true
           // The contract's literal is "complete"; the client renders anything
           // but interrupted/error as completed, so this only removes drift.
-          hub.publish('message.complete', { status: 'complete', text }, sessionId)
+          // An absent/empty usage is not a measurement: reporting input/output 0
+          // would look authoritative. The ring needs context_max anyway, so only
+          // fields the facade sent are mapped.
+          const measured = data.usage !== null && typeof data.usage === 'object'
+            && Object.keys(data.usage).length > 0
+          hub.publish('message.complete', {
+            status: 'complete',
+            text,
+            ...(measured ? { usage: usageOf(data.usage) } : {}),
+          }, sessionId)
           hub.publish('session.info', { ...info, running: false }, sessionId)
           break
         } else if (frame.event === 'error') {
