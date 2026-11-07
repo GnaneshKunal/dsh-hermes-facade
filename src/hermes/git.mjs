@@ -382,7 +382,9 @@ async function statusRow(root, entry, counts, scan, guard) {
  * @returns {Promise<object|null>} status, null outside a repository.
  */
 export async function repoStatus(root, guard) {
-  const result = await runGit(root, ['status', '--porcelain=v2', '--branch', '-z'])
+  // `-uall` names each untracked file; the default collapses a new directory to
+  // one `dir/` row, which the one-file write guard then refuses.
+  const result = await runGit(root, ['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all'])
   if (result.code !== 0) return null
   const parsed = parseStatus(result.stdout)
   const counts = parseNumstat((await runGit(root, ['diff', '--numstat', 'HEAD'])).stdout)
@@ -442,7 +444,7 @@ export async function reviewList(root, scope, base, guard) {
       rows.push({ path, added, removed, status: 'M', staged: false })
     }
     if (scope === 'lastTurn') {
-      const status = parseStatus((await runGit(root, ['status', '--porcelain=v2', '-z'])).stdout)
+      const status = parseStatus((await runGit(root, ['status', '--porcelain=v2', '-z', '--untracked-files=all'])).stdout)
       const seen = new Set(rows.map(row => row.path))
       const budget = { count: 0 }
       for (const entry of status.entries) {
@@ -456,7 +458,7 @@ export async function reviewList(root, scope, base, guard) {
     return { files: rows.slice(0, ROW_CAP), base: from }
   }
 
-  const parsed = parseStatus((await runGit(root, ['status', '--porcelain=v2', '-z'])).stdout)
+  const parsed = parseStatus((await runGit(root, ['status', '--porcelain=v2', '-z', '--untracked-files=all'])).stdout)
   const staged = parseNumstat((await runGit(root, ['diff', '--numstat', '--cached'])).stdout)
   const worktree = parseNumstat((await runGit(root, ['diff', '--numstat'])).stdout)
   const rows = []
@@ -736,7 +738,33 @@ export async function commitRepo(root, { message, push = false }, guard) {
 }
 
 /**
- * Push the current branch to its upstream, or set origin as the upstream.
+ * The push target configured for one local branch.
+ *
+ * `@{u}` cannot be used here: its short form is `<remote>/<branch>` and a remote
+ * name may itself contain `/` (`team/origin`), so splitting it at the first
+ * slash names the wrong remote. `branch.<name>.remote` and
+ * `branch.<name>.merge` keep the two halves apart.
+ *
+ * @param {string} root repository root.
+ * @param {string} branch local branch name.
+ * @returns {Promise<{remote: string, branch: string, complete: boolean}|null>} target, null when no push remote is configured.
+ */
+async function pushTarget(root, branch) {
+  const remote = (await runGit(root, ['config', '--get', 'branch.' + branch + '.remote'])).stdout.trim()
+  // `.` names the local repository as an upstream; it is not a push remote.
+  if (remote.length === 0 || remote === '.') return null
+  // Config is hand-editable, and a value read as an option would change the
+  // command (`git push --force …`); no legal remote name starts with '-'.
+  if (remote.startsWith('-')) throw new GitRefusal(400, 'invalid push remote in git config')
+  const merge = (await runGit(root, ['config', '--get', 'branch.' + branch + '.merge'])).stdout.trim()
+  const prefix = 'refs/heads/'
+  const upstream = merge.startsWith(prefix) && merge.length > prefix.length ? merge.slice(prefix.length) : null
+  return { remote, branch: upstream ?? branch, complete: upstream !== null }
+}
+
+/**
+ * Push the current branch to its configured upstream, or set origin as the
+ * upstream when the branch has no push remote.
  * @param {string} root repository root.
  * @param {Function} [guard] deny predicate.
  * @returns {Promise<{ok: boolean, message: null, status: object|null}>} push result.
@@ -747,14 +775,13 @@ export async function pushRepo(root, guard) {
   if (before.detached === true) throw new GitRefusal(409, 'Cannot push a detached HEAD')
   const branch = before.branch
   if (typeof branch !== 'string' || branch.length === 0) throw new GitRefusal(409, 'No branch to push')
-  const upstream = await runGit(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
-  const line = upstream.code === 0 ? upstream.stdout.trim() : ''
-  const slash = line.indexOf('/')
-  const remote = slash > 0 ? line.slice(0, slash) : 'origin'
-  const upstreamBranch = slash > 0 ? line.slice(slash + 1) : branch
-  const args = line.length > 0
-    ? ['push', remote, branch + ':' + upstreamBranch]
-    : ['push', '-u', 'origin', branch + ':' + branch]
+  const target = await pushTarget(root, branch)
+  // Always an explicit refspec, so push.default never decides what is sent.
+  // `-u` only completes a missing upstream: no config at all, or a remote
+  // configured without its merge ref.
+  const args = target === null
+    ? ['push', '-u', 'origin', branch + ':' + branch]
+    : ['push', ...(target.complete ? [] : ['-u']), target.remote, branch + ':' + target.branch]
   await gitWriteOut(root, args, 'push')
   return { ok: true, message: null, status: await repoStatus(root, guard) }
 }

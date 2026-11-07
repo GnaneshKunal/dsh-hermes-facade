@@ -10,6 +10,7 @@ import {
   commitRepo,
   pushRepo,
   repoStatus,
+  reviewList,
   revertFile,
   stageFile,
   switchBranch,
@@ -189,6 +190,70 @@ test('switchBranch moves the working tree and commitContext reports the staged d
     git(root, ['add', '-f', '.env'])
     const fenced = await commitContext(root)
     assert.equal(fenced.diff.includes('SECRET=1'), false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('push honours an upstream remote whose name contains a slash', async () => {
+  const root = repository()
+  const remote = mkdtempSync(join(tmpdir(), 'hermes-git-slash-remote-'))
+  try {
+    git(remote, ['init', '-q', '--bare'])
+    git(root, ['remote', 'add', 'team/origin', remote])
+    // Seed and fetch so `@{u}` reads `team/origin/main`; splitting that at the
+    // first slash names the remote `team`, which does not exist.
+    git(root, ['push', remote, 'main:refs/heads/main'])
+    git(root, ['config', 'branch.main.remote', 'team/origin'])
+    git(root, ['config', 'branch.main.merge', 'refs/heads/main'])
+    git(root, ['fetch', '-q', 'team/origin'])
+    assert.equal(git(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']).trim(), 'team/origin/main')
+
+    const pushed = await pushRepo(root)
+    assert.equal(pushed.ok, true)
+    assert.equal(git(remote, ['rev-parse', 'main']).trim(), git(root, ['rev-parse', 'main']).trim())
+    // The configured upstream is kept, not rewritten to a guessed remote.
+    assert.equal(git(root, ['config', '--get', 'branch.main.remote']).trim(), 'team/origin')
+    assert.equal(git(root, ['config', '--get', 'branch.main.merge']).trim(), 'refs/heads/main')
+
+    // A later push sends the new commit to the same slash-named remote.
+    writeFileSync(join(root, 'b.txt'), 'two\n')
+    await stageFile(root, 'b.txt')
+    await commitRepo(root, { message: 'add b' })
+    await pushRepo(root)
+    assert.equal(git(remote, ['rev-parse', 'main']).trim(), git(root, ['rev-parse', 'main']).trim())
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(remote, { recursive: true, force: true })
+  }
+})
+
+test('an untracked directory lists its files, and one of them stages', async () => {
+  const root = repository()
+  try {
+    mkdirSync(join(root, 'notes'))
+    writeFileSync(join(root, 'notes', 'one.txt'), 'one\n')
+    writeFileSync(join(root, 'notes', 'two.txt'), 'two\n')
+    writeFileSync(join(root, 'notes', '.env'), 'SECRET=1\n')
+
+    const status = await repoStatus(root)
+    const paths = status.files.map(file => file.path).sort()
+    // Per-file rows, not the single collapsed `notes/` directory row...
+    assert.deepEqual(paths, ['notes/one.txt', 'notes/two.txt'])
+    assert.equal(status.untracked, 2)
+    // ...and the credential filter still hides a file inside the new directory.
+    assert.equal(paths.some(path => path.includes('.env')), false)
+
+    const changes = await reviewList(root, 'uncommitted')
+    assert.deepEqual(changes.files.map(row => row.path).sort(), ['notes/one.txt', 'notes/two.txt'])
+    assert.equal(changes.files.every(row => row.status === '?'), true)
+
+    // The one-file write guard accepts a row from that list.
+    await stageFile(root, 'notes/one.txt')
+    assert.equal(git(root, ['diff', '--cached', '--name-only']).trim(), 'notes/one.txt')
+    const staged = await repoStatus(root)
+    assert.equal(staged.staged, 1)
+    assert.equal(staged.untracked, 1)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
