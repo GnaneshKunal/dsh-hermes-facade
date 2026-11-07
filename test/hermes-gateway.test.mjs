@@ -1838,7 +1838,7 @@ test('Memory shows the global AGENTS.md read-only', async () => {
     try {
       await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
       const listed = await socket.call('profiles.list', { include_sessions: false })
-      assert.equal(listed.result.profiles[0].path, 'dsh://memory')
+      assert.ok(listed.result.profiles[0].path.startsWith('/'), 'the Profile path is absolute')
     } finally {
       socket.ws.close()
     }

@@ -201,7 +201,7 @@ run opens as its session and there are no host output files or per-run cost. `so
 because DSH stores no session provenance. Tests cover the mapping and the full lifecycle through the gateway and the
 facade.
 
-**Memory (read-only).** The Memory screen now loads: `profiles.list` carries a virtual `dsh://memory` path,
+**Memory (read-only).** The Memory screen now loads: `profiles.list` carries the real, absolute `$DSH_HOME` path,
 `/api/config` turns on only the memory section, `/api/profiles/default/soul` is an empty soul, and
 `/api/files/read` serves `.../memories/MEMORY.md` as the global `$DSH_HOME/AGENTS.md` (a missing file is 404 → an
 empty screen). There is no USER.md (the section is off; DSH has no user-profile file), no soul, and saves answer 400
