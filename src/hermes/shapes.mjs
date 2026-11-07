@@ -60,6 +60,45 @@ export function transcriptRowOf(message, index) {
 }
 
 /**
+ * The newest transcript window, widened to include a visible row when the
+ * requested page holds only tool/reasoning rows.
+ *
+ * Hermex's first history read takes one page and decides it reached the start
+ * when its row ids are empty; a page of tool-only rows has no anchor to render,
+ * so a turn that spent more than a page on tools looked like an empty chat.
+ * Including the most recent visible row gives the projection its anchor while
+ * keeping the page at least `limit` rows so the app still offers older history.
+ *
+ * @param {Array<object>} messages session messages, oldest first.
+ * @param {number} limit requested page size.
+ * @param {number} offset rows before the newest.
+ * @returns {{start: number, end: number}} slice bounds.
+ */
+export function latestTranscriptWindow(messages, limit, offset) {
+  const end = Math.max(0, messages.length - offset)
+  let start = Math.max(0, end - limit)
+  if (offset !== 0 || messages.slice(start, end).some(hasVisibleText)) return { start, end }
+  for (let index = end - 1; index >= 0; index -= 1) {
+    if (!hasVisibleText(messages[index])) continue
+    start = Math.min(start, index)
+    break
+  }
+  return { start, end }
+}
+
+/**
+ * Whether one session row carries text the transcript can anchor on.
+ * @param {object} message session message.
+ * @returns {boolean} visible.
+ */
+function hasVisibleText(message) {
+  const content = message?.content
+  if (typeof content === 'string') return content.trim().length > 0
+  if (!Array.isArray(content)) return false
+  return content.some(part => part?.type === 'text'
+    && typeof part.text === 'string' && part.text.trim().length > 0)
+}
+/**
  * The info block session.resume, session.create and session.info carry.
  * @param {object} detail facade session detail.
  * @param {object} [extra] overrides.

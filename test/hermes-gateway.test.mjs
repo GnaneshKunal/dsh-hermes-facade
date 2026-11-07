@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { createFacadeServer } from '../src/server.mjs'
+import { latestTranscriptWindow } from '../src/hermes/shapes.mjs'
 import { createGatewayServer } from '../src/hermes/server.mjs'
 import { createMockHost } from '../scripts/standalone.mjs'
 
@@ -1753,6 +1754,22 @@ test('the in-chat Git menu reads status, changes, diffs and branches (read-only)
     await harness.gateway.close()
     await harness.facade.close()
   }
+})
+
+test('a tool-only newest page widens to the closest visible row', () => {
+  const messages = Array.from({ length: 120 }, (_, index) => ({
+    role: 'assistant',
+    content: index === 10 ? 'the only text' : (index === 115 ? [{ type: 'image' }] : ''),
+    tool_calls: [{ id: 'call-' + index, type: 'function', function: { name: 'bash', arguments: '{}' } }],
+  }))
+  // The requested newest page is [70,120) and holds only tool/reasoning rows.
+  const window = latestTranscriptWindow(messages, 50, 0)
+  assert.deepEqual(window, { start: 10, end: 120 })
+  assert.equal(messages[window.start].content, 'the only text')
+  // An image-only array is not a text anchor.
+  assert.deepEqual(latestTranscriptWindow(messages, 50, 110), { start: 0, end: 10 })
+  // An older page is unchanged, even when it has no text.
+  assert.deepEqual(latestTranscriptWindow(messages, 50, 70), { start: 0, end: 50 })
 })
 
 test('the Git surface refuses ref injection, symlink escapes and deny trees', async () => {

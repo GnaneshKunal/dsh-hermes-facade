@@ -122,6 +122,17 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   sessions is a real empty state. Tests cover the host aggregation, the
   subagent/window attribution, the cost merge (including cost-only rows) and
   the routes/RPC.
+- **Long tool-heavy turns no longer look like an empty chat.** Hermex's first
+  history read takes one newest page and, with no rows held, treats that page as
+  the start. A page of assistant rows carrying only reasoning/tool calls has no
+  text anchor, so its projection rendered nothing and the chat cleared after the
+  cached transcript (a 774-message session with 482 tool calls was hitting this).
+  The gateway's `GET /api/sessions/{id}/messages` now widens the **newest** page
+  backwards to the closest row with text when the requested window is
+  tool/reasoning-only; the widened page is at least `limit` rows and may be as
+  wide as the history window when the anchor is farther back, so older-history
+  pagination still starts after the returned rows. Older pages are unchanged.
+  Tests cover the widened window and the untouched offset page.
 - **Chat attachments (images and documents).** The Hermes listener now stages
   what the phone attaches. `POST /api/chat/image-upload` validates a base64
   PNG/JPEG/WebP/GIF (≤20 MiB) under its own 32 MiB route cap, derives the leaf

@@ -38,7 +38,7 @@ import {
   createTicketStore,
 } from './protocol.mjs'
 import { createSessionRegistry } from './sessions.mjs'
-import { commandsOf, modelOptionsOf, sessionRowOf, transcriptRowOf } from './shapes.mjs'
+import { commandsOf, latestTranscriptWindow, modelOptionsOf, sessionRowOf, transcriptRowOf } from './shapes.mjs'
 import { createTurnRunner } from './turn.mjs'
 import { acceptUpgrade } from './ws.mjs'
 
@@ -649,9 +649,13 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
     const messages = Array.isArray(reply.json?.session?.messages) ? reply.json.session.messages : []
     // A transcript page is the oldest-first window `limit` rows back from `offset`
     // rows before the newest, so the row ids stay stable while older pages load.
+    // The newest page also reaches the closest visible row: a tool-only page gives
+    // Hermex's history projection no anchor, which used to look like an empty chat.
     const end = order === 'latest' ? Math.max(0, messages.length - offset) : messages.length
-    const start = order === 'latest' ? Math.max(0, end - limit) : offset
-    const slice = messages.slice(start, Math.min(start + limit, end))
+    const start = order === 'latest' ? latestTranscriptWindow(messages, limit, offset).start : offset
+    const slice = order === 'latest'
+      ? messages.slice(start, end)
+      : messages.slice(start, Math.min(start + limit, end))
     return {
       session_id: sessionId,
       profile: 'default',
