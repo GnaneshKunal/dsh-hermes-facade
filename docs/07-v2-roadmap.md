@@ -207,8 +207,10 @@ facade.
 empty screen). There is no USER.md (the section is off; DSH has no user-profile file), no soul, and saves answer 400
 with the reason, so the screen is honestly read-only. `/api/files/read` opens only that allowlisted suffix — every
 other path, including `/etc/passwd`, is 404 — so Memory is not a second file browser and does not bypass the Files
-fence for arbitrary paths. Per-workspace `AGENTS.md` files are not part of this global screen. Tests cover the
-loaded document, the empty state, the 404s and both refused writes.
+fence for arbitrary paths. Per-workspace `AGENTS.md` files are not part of this global screen, and DSH's global
+chain (`$DSH_HOME/AGENTS.md` then `$DSH_AGENTS_HOME/AGENTS.md`) is represented by its first file only; the
+`memory_char_limit` in the config is the editor's ceiling, not a DSH cap, and the read is not size-limited.
+Tests cover the loaded document, the empty state, the 404s and both refused writes.
 
 Verify: `npm run check && npm test` (194 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.

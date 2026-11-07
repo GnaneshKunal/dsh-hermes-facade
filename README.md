@@ -166,7 +166,7 @@ and add it in Hermex as its own server.
 | Memory on the Hermes listener | read-only: the global `$DSH_HOME/AGENTS.md` as MEMORY.md; no USER.md, no soul, saves refused |
 | skills, insights, kanban | stubbed: screens open empty or unavailable |
 | bots, push, Move to Hermes | different transport (Hermes gateway); not served |
-| Hermes host contract (second listener, :9121) | v1.8: chat/streaming with context/token telemetry, sessions incl. the write fence the list actions need and the list's search, approvals, clarifications, models, commands, export, Tasks/cron (local delivery only, no cost), Memory (read-only), the read-only in-chat Files browser (fenced to the chat folder) and the read-only Git menu; Git writes, tasks/skills/memory/usage/kanban/bots and import answer -32601 or 400 (the per-surface state and plan are docs/05 §2 and docs/07) |
+| Hermes host contract (second listener, :9121) | v1.8: chat/streaming with context/token telemetry, sessions incl. the write fence the list actions need and the list's search, approvals, clarifications, models, commands, export, Tasks/cron (local delivery only, no cost), Memory (read-only), the read-only in-chat Files browser (fenced to the chat folder) and the read-only Git menu; Git writes, skills/usage/kanban/bots and import answer -32601 or 400 (the per-surface state and plan are docs/05 §2 and docs/07) |
 
 The verified matrix — every surface, the endpoint behind it, what the phone shows, and whether it is
 bridgeable here — is [docs/05-compatibility-matrix.md](docs/05-compatibility-matrix.md). docs/00 is
