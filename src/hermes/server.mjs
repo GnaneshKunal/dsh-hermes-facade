@@ -830,6 +830,33 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, memoryHome:
       })
       return
     }
+    // Skills: the facade owns the catalogue, and this listener answers with the
+    // bare array the Hermes client decodes rather than the webui {skills} envelope.
+    if (method === 'GET' && path === '/api/skills') {
+      const reply = await backend.call('GET', '/api/skills')
+      if (reply.status !== 200 || !Array.isArray(reply.json?.skills)) {
+        sendJson(res, reply.status === 200 ? 500 : reply.status, reply.json ?? { detail: 'Skill catalogue unavailable' })
+        return
+      }
+      sendJson(res, 200, reply.json.skills.map(row => ({
+        name: row?.name,
+        description: row?.description,
+        ...(typeof row?.category === 'string' ? { category: row.category } : {}),
+        enabled: row?.enabled !== false,
+      })))
+      return
+    }
+    if (method === 'GET' && path === '/api/skills/content') {
+      const reply = await backend.call('GET', '/api/skills/content', { query: Object.fromEntries(url.searchParams) })
+      sendJson(res, reply.status, reply.json ?? { detail: 'Skill not found.' })
+      return
+    }
+    if (method === 'PUT' && path === '/api/skills/toggle') {
+      const body = await readJson(req)
+      const reply = await backend.call('PUT', '/api/skills/toggle', { body })
+      sendJson(res, reply.status, reply.json ?? { detail: 'Skills cannot be disabled on this host.' })
+      return
+    }
     // The Memory screen's managed file routes. Only the two paths its Profile
     // row turns into are served: MEMORY.md is the global AGENTS.md, USER.md is
     // absent. Nothing here opens the requested path, so no other file is reachable.

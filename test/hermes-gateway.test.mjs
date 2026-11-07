@@ -1879,6 +1879,34 @@ test('Memory shows the global AGENTS.md read-only', async () => {
   }
 })
 
+test('the Skills screen lists skills and opens SKILL.md read-only', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const list = await api(harness.base, '/api/skills', { cookie })
+    assert.equal(list.status, 200)
+    assert.ok(Array.isArray(list.json))
+    assert.equal(list.json[0].name, 'demo-skill')
+    assert.equal(list.json[0].enabled, true)
+
+    const detail = await api(harness.base, '/api/skills/content?name=demo-skill', { cookie })
+    assert.equal(detail.status, 200)
+    assert.equal(detail.json.content, '# Demo skill\n')
+    assert.equal(detail.json.path, '/virtual/demo-skill/SKILL.md')
+
+    const missing = await api(harness.base, '/api/skills/content?name=nope', { cookie })
+    assert.equal(missing.status, 404)
+    assert.match(missing.json.detail, /not found/)
+
+    const toggle = await api(harness.base, '/api/skills/toggle', { cookie, method: 'PUT', body: { name: 'demo-skill', enabled: false } })
+    assert.equal(toggle.status, 400)
+    assert.match(toggle.json.detail, /cannot be disabled/)
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
 
 
 

@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { createDshHost } from '../src/host.mjs'
 
@@ -81,6 +84,9 @@ function build(existingWorkspaces = {}, options = {}) {
       if (request.namespace === 'session' && request.method === 'create') return { sessionId: 'created-1' }
       if (request.method === 'prompt') return { accepted: true }
       if (request.method === 'cancel') return { accepted: true }
+      if (request.namespace === 'skills' && request.method === 'list') {
+        return { skills: [{ name: 'demo', description: 'D', path: options.skillPath ?? '/nonexistent/SKILL.md' }] }
+      }
       if (request.namespace === 'schedule') {
         if (request.method === 'list') return { items: [{ id: 's1' }], shown: 1, total: 1, limit: 100, offset: 0 }
         if (request.method === 'create') return { id: 's2', ...request.args?.request }
@@ -746,4 +752,16 @@ test('schedule remotes translate to host calls', async () => {
   assert.deepEqual(scheduleCalls[1].args, { request: { title: 'T', prompt: 'P', timing: { kind: 'every', every_seconds: 300 } } })
   assert.deepEqual(scheduleCalls[2].args, { request: { id: 's1', action: 'update', patch: { active: false } } })
   assert.deepEqual(scheduleCalls[4].args, { request: { id: 's1', limit: 100 } })
+})
+
+test('skills come from the newest session catalog and read only its SKILL.md', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-skill-'))
+  const skillPath = join(dir, 'SKILL.md')
+  writeFileSync(skillPath, '# Demo\n')
+  const { host, calls } = build({}, { skillPath })
+  assert.deepEqual(await host.listSkills(), [{ name: 'demo', description: 'D', path: skillPath }])
+  assert.deepEqual(await host.readSkill('demo'), { name: 'demo', content: '# Demo\n', path: skillPath })
+  assert.equal(await host.readSkill('missing'), null)
+  const call = calls.find(entry => entry.namespace === 'skills' && entry.method === 'list')
+  assert.deepEqual(call.args, { request: { sessionId: 's1' } })
 })

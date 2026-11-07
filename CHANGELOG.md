@@ -97,6 +97,16 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   a second file browser and does not bypass the Files fence for arbitrary paths.
   Per-workspace `AGENTS.md` files are not part of this global screen. Tests cover
   the loaded document, the empty state, the 404s and both refused writes.
+- **Skills (read-only).** The Skills screen now lists DSH's catalogue:
+  `GET /api/skills` maps `skills/list` to the bare array the app decodes, and
+  `GET /api/skills/content` returns the named skill's SKILL.md plus its catalog
+  path (an unknown name is 404). DSH's catalogue is per session composition, so
+  the newest chat supplies the cwd/preset; no sessions means an empty list.
+  `PUT /api/skills/toggle` answers 400 with the reason: DSH has no
+  skill-disable primitive. Linked files are the app's `/api/fs/*` reads from
+  the SKILL.md folder and appear only when that folder is inside a chat's fenced
+  roots. The Skills route is also served on the Legacy listener. Tests cover the
+  list, the content, the 404 and the refused toggle.
 - **A shared path fence for file surfaces** (`src/hermes/fence.mjs`). Hermex
   sends absolute host paths and its own check is explicitly not a security
   boundary, so a path is served only when its realpath is inside a chat folder

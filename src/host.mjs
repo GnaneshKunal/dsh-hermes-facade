@@ -491,6 +491,41 @@ export function createDshHost({ ctx, logger = console }) {
       return (Array.isArray(value?.items) ? value.items : [])
         .filter(item => item?.origin !== 'subagent')
     },
+    /**
+     * List the user-invocable skills for the newest session. DSH's catalog is
+     * per session composition (cwd and preset), while the Skills screen is
+     * profile-wide, so the newest chat is the closest honest view; no
+     * sessions means an empty catalogue.
+     * @returns {Promise<Array<object>>} skill rows.
+     */
+    async listSkills() {
+      const sessions = await this.listSessions()
+      const sessionId = sessions[0]?.sessionId
+      if (typeof sessionId !== 'string' || sessionId.length === 0) return []
+      const value = await invoke('skills', 'list', { request: { sessionId } })
+      return Array.isArray(value?.skills) ? value.skills : []
+    },
+
+    /**
+     * Read one skill's SKILL.md. The path comes from DSH's catalog, never from
+     * the client: the name selects a catalog row and only that row's SKILL.md
+     * is read.
+     * @param {string} name skill name.
+     * @returns {Promise<{name: string, content: string, path: string}|null>} detail.
+     */
+    async readSkill(name) {
+      const wanted = String(name ?? '')
+      if (wanted.length === 0) return null
+      const skills = await this.listSkills()
+      const skill = skills.find(item => item?.name === wanted)
+      if (skill === undefined || typeof skill.path !== 'string' || skill.path.length === 0) return null
+      try {
+        const content = await readFile(skill.path, 'utf8')
+        return { name: wanted, content, path: skill.path }
+      } catch {
+        return null
+      }
+    },
 
     /**
      * Search visible session content without resuming an agent.
