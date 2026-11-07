@@ -152,6 +152,28 @@ export function createMethods({ backend, hub, runner, requests, logger = console
           info: { session_id: created, running: false, session_key: created, yolo: false },
         }
       }
+      case 'session.workspace.move': {
+        // Move to Project / the chat's folder picker. DSH's workspace membership
+        // decides which project lane a session belongs to, and the facade files it
+        // there with session/update; a started session keeps its own cwd (there is
+        // no DSH primitive to change it), so answer the folder it really runs in
+        // rather than the one requested.
+        const sessionId = String(p.session_key ?? p.session_id ?? '')
+        const cwd = String(p.cwd ?? '').trim()
+        if (sessionId.length === 0 || cwd.length === 0) throw rpcError(-32602, 'session_key and cwd required')
+        const updated = await backend.call('POST', '/api/session/update', {
+          body: { session_id: sessionId, workspace: cwd },
+        })
+        if (updated.status !== 200 || updated.json?.ok === false) {
+          throw rpcError(-32000, String(updated.json?.error ?? 'workspace move refused'))
+        }
+        let actual = cwd
+        try {
+          const detail = await detailOf(sessionId)
+          if (typeof detail.workspace === 'string' && detail.workspace.length > 0) actual = detail.workspace
+        } catch { /* answer the requested folder when the read fails */ }
+        return { cwd: actual, branch: null, git_repo_root: null }
+      }
       case 'session.interrupt':
         return runner.interrupt(String(p.session_id ?? ''))
       case 'session.steer':

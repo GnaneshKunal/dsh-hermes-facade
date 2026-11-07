@@ -625,3 +625,26 @@ test('session.steer answers the queued/rejected vocabulary', async () => {
   }
 })
 
+
+test('session.workspace.move files the session under the target workspace', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const moved = await socket.call('session.workspace.move', {
+        profile: 'default', session_key: 'sess-mock', cwd: '/tmp/some-project',
+      })
+      assert.equal(moved.result.cwd, process.cwd(), 'answers the folder the session really uses')
+      assert.deepEqual(harness.host.lastAdopt, { sessionId: 'sess-mock', workspacePath: '/tmp/some-project' })
+      assert.equal(moved.result.git_repo_root, null)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
