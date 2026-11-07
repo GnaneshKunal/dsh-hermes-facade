@@ -162,7 +162,7 @@ query cannot inject a git option, a credential or `.ssh`/`.aws`/`.gnupg`/`.dsh` 
 the all-add fallback runs only for an untracked file. Writes (stage, unstage,
 revert, commit, push, branch switch) are live: stage/unstage/revert take one literal file (unstage also all),
 commit uses the staged index and returns a short sha, push uses the upstream or sets `origin`, and branch switch
-moves the tree. Every write is refused with `409` while any turn is running; a conflict is `409`, a bad path/ref or
+moves the tree. Every write is refused with `409` while a turn on this listener is running; a conflict is `409`, a bad path/ref or
 a `git` failure is `400`, and a credential/symlink path is refused by the same fence. `commit-context` returns the
 staged diff and recent subjects for the app's message helper. `ship-info` answers no pull request. Tests cover a real
 temporary repository: status, changes, patches (tracked and untracked), branches, sha, the fence for a non-root, the
@@ -241,7 +241,7 @@ the figure is the plugin's estimate. `insights.get` answers `{messages:0}` becau
 already marks its Messages total approximate. No sessions in the window is a real empty state. Tests cover the host
 aggregation, both routes and the RPC.
 
-Verify: `npm run check && npm test` (222 tests), then rename a chat from the phone's list, pin it, archive it,
+Verify: `npm run check && npm test` (224 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---

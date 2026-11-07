@@ -127,7 +127,7 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   push the current branch (upstream, or `origin` as its new upstream), and
   switch branches. The app's `:(literal)` file prefix is normalized before the
   shared path fence validates it; a symlink or credential path is still refused.
-  Every write answers `409` while **any** turn is running, a conflict is `409`,
+  Every write answers `409` while a turn on this listener is running, a conflict is `409`,
   an empty index is `409` for commit, and a bad ref/path or git failure is `400`.
   `commit-context` now returns the staged diff and recent subjects for the app's
   message helper, and status carries the `totals` block the client reads.

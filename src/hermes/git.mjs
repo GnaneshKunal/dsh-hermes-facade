@@ -404,6 +404,7 @@ export async function repoStatus(root, guard) {
     staged: count('staged'),
     unstaged: count('unstaged'),
     untracked: count('untracked'),
+    conflicted: count('conflicted'),
     conflicts: count('conflicted'),
   }
   return {
@@ -493,6 +494,9 @@ export async function safeFilePath(root, file, deny) {
   try { info = await lstat(target) } catch { info = undefined }
   // A symlink is the classic way out of a lexical fence; refuse it outright.
   if (info !== undefined && info.isSymbolicLink()) throw new GitRefusal(400, 'symlink paths are not served')
+  // `:(literal)` stops globs but not subtree matching; every route is one file.
+  if (info !== undefined && info.isDirectory()) throw new GitRefusal(400, 'file required, not a directory')
+  if (value === '.git' || value.startsWith('.git/')) throw new GitRefusal(403, 'Access to repository internals is not allowed')
   let real = target
   if (info !== undefined) {
     real = await realpath(target)
@@ -615,6 +619,35 @@ function clientFilePath(file) {
   return value.startsWith(':(literal)') ? value.slice(':(literal)'.length) : value
 }
 /**
+ * Require one path to name exactly one status entry (a deleted file has no
+ * lstat). A directory/subtree is refused by safeFilePath before this.
+ * @param {string} root repository root.
+ * @param {string} literal literal pathspec.
+ * @returns {Promise<string[]>} status records.
+ */
+async function singleStatusRecord(root, literal) {
+  const output = (await runGit(root, ['status', '--porcelain=v2', '-z', '--', literal])).stdout
+  const records = output.split('\0').filter(Boolean)
+  if (records.length > 1) throw new GitRefusal(400, 'path does not name one file')
+  return records
+}
+
+/**
+ * Require one path to be a new/added entry before deleting it (never a tracked,
+ * ignored or clean file).
+ * @param {string} root repository root.
+ * @param {string} literal literal pathspec.
+ * @returns {Promise<void>} resolves when it is new.
+ */
+async function assertNewFile(root, literal) {
+  const records = await singleStatusRecord(root, literal)
+  if (records.length !== 1) throw new GitRefusal(409, 'path is not a new file')
+  const record = records[0]
+  const untracked = record.startsWith('? ')
+  const added = record.startsWith('1 ') && record.slice(2, 4)[0] === 'A'
+  if (!untracked && !added) throw new GitRefusal(409, 'path is not a new file')
+}
+/**
  * Stage one file (the app sends one request per file).
  * @param {string} root repository root.
  * @param {string} file repository-relative path.
@@ -623,6 +656,7 @@ function clientFilePath(file) {
  */
 export async function stageFile(root, file, guard) {
   const { literal, relative } = await safeFilePath(root, clientFilePath(file), guard)
+  await singleStatusRecord(root, literal)
   const conflicts = (await runGit(root, ['diff', '--name-only', '--diff-filter=U', '--', literal])).stdout.trim()
   if (conflicts.length > 0) throw new GitRefusal(409, 'Resolve the conflict before staging this file')
   await gitWriteOut(root, ['add', '--', literal], 'add')
@@ -639,6 +673,7 @@ export async function stageFile(root, file, guard) {
 export async function unstageFile(root, file, guard) {
   const named = typeof file === 'string' && file.length > 0
   const literal = named ? (await safeFilePath(root, clientFilePath(file), guard)).literal : null
+  if (literal !== null) await singleStatusRecord(root, literal)
   const pathspec = literal ?? '.'
   const result = await runGit(root, ['restore', '--staged', '--', pathspec])
   if (result.code !== 0) {
@@ -658,6 +693,7 @@ export async function unstageFile(root, file, guard) {
  */
 export async function revertFile(root, file, guard) {
   const safe = await safeFilePath(root, clientFilePath(file), guard)
+  await singleStatusRecord(root, safe.literal)
   const conflicts = (await runGit(root, ['diff', '--name-only', '--diff-filter=U', '--', safe.literal])).stdout.trim()
   if (conflicts.length > 0) throw new GitRefusal(409, 'Resolve the conflict before reverting this file')
   const atHead = (await runGit(root, ['ls-tree', '--name-only', 'HEAD', '--', safe.literal])).stdout.trim().length > 0
@@ -665,8 +701,10 @@ export async function revertFile(root, file, guard) {
     await gitWriteOut(root, ['restore', '--source=HEAD', '--staged', '--worktree', '--', safe.literal], 'revert')
     return { file: safe.relative }
   }
-  // Not in HEAD: drop any index entry, then delete the working file (a new file).
-  await runGit(root, ['rm', '-r', '--cached', '--ignore-unmatch', '--', safe.literal])
+  // Not in HEAD: only a status row that is untracked/added may be deleted; an
+  // ignored or clean file must never be removed. Drop the index entry first.
+  await assertNewFile(root, safe.literal)
+  await gitWriteOut(root, ['rm', '-r', '--cached', '--ignore-unmatch', '--', safe.literal], 'revert')
   const info = await lstat(safe.target).catch(() => undefined)
   if (info === undefined) return { file: safe.relative }
   if (info.isFile() !== true) throw new GitRefusal(400, 'Only a file can be reverted')
@@ -689,7 +727,7 @@ export async function commitRepo(root, { message, push = false }, guard) {
   if (text.length > 5000) throw new GitRefusal(400, 'commit message is too long')
   const before = await repoStatus(root, guard)
   if (before === null) throw new GitRefusal(400, 'not a git repository')
-  if ((before.conflicted ?? 0) > 0) throw new GitRefusal(409, 'Resolve the conflicts before committing')
+  if ((before.conflicted ?? before.totals?.conflicts ?? 0) > 0) throw new GitRefusal(409, 'Resolve the conflicts before committing')
   if ((before.staged ?? 0) === 0) throw new GitRefusal(409, 'Nothing is staged to commit')
   await gitWriteOut(root, ['commit', '-m', text], 'commit')
   const sha = await revParse(root, 'HEAD')
@@ -710,9 +748,13 @@ export async function pushRepo(root, guard) {
   const branch = before.branch
   if (typeof branch !== 'string' || branch.length === 0) throw new GitRefusal(409, 'No branch to push')
   const upstream = await runGit(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
-  const args = upstream.code === 0 && upstream.stdout.trim().length > 0
-    ? ['push']
-    : ['push', '-u', 'origin', branch]
+  const line = upstream.code === 0 ? upstream.stdout.trim() : ''
+  const slash = line.indexOf('/')
+  const remote = slash > 0 ? line.slice(0, slash) : 'origin'
+  const upstreamBranch = slash > 0 ? line.slice(slash + 1) : branch
+  const args = line.length > 0
+    ? ['push', remote, branch + ':' + upstreamBranch]
+    : ['push', '-u', 'origin', branch + ':' + branch]
   await gitWriteOut(root, args, 'push')
   return { ok: true, message: null, status: await repoStatus(root, guard) }
 }
@@ -737,7 +779,7 @@ export async function switchBranch(root, branch, guard) {
  * @returns {Promise<{diff: string, recent: string, branch: string|null, truncated: boolean}>} context.
  */
 export async function commitContext(root, deny) {
-  const status = await repoStatus(root)
+  const status = await repoStatus(root, deny)
   const names = (await gitOut(root, ['diff', '--cached', '--name-only', '-z'], 'diff')).split('\0').filter(Boolean)
   let full = ''
   for (const file of names) {

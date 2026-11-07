@@ -1857,6 +1857,9 @@ test('Git writes stage and commit through the listener, and refuse while a turn 
   mkdirSync(chatFolder)
   const identity = ['-c', 'user.email=test@example.invalid', '-c', 'user.name=Test', '-c', 'commit.gpgsign=false']
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo })
+  execFileSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: repo })
+  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo })
+  execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: repo })
   writeFileSync(join(repo, 'README.md'), 'one\n')
   execFileSync('git', ['add', '.'], { cwd: repo })
   execFileSync('git', [...identity, 'commit', '-qm', 'initial'], { cwd: repo })
