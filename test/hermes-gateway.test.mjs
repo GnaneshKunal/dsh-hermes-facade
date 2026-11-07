@@ -234,7 +234,9 @@ test('prompt.submit streams a completed turn', async () => {
       await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
       await socket.call('session.create', { profile: 'default' })
       const submitted = await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'hello there' })
-      assert.equal(submitted.result.status, 'accepted')
+      // The client maps "streaming"/"queued" to a started/queued turn; anything
+      // else rolls the optimistic message back into the composer.
+      assert.equal(submitted.result.status, 'streaming')
 
       await socket.waitFor(frame => frame.params?.type === 'message.start')
       const delta = await socket.waitFor(frame => frame.params?.type === 'message.delta')

@@ -95,11 +95,20 @@ export function createTurnRunner({ backend, hub, requestClient, logger = console
     }
     const controller = new AbortController()
     const info = await infoPayload(backend, sessionId)
+    const wasRunning = active.has(sessionId)
     active.set(sessionId, { streamId, controller, startedAt: now(), info })
     hub.publish('session.info', { ...info, running: true, turn_started_at: now() }, sessionId)
     hub.publish('message.start', { role: 'assistant' }, sessionId)
     void pump(sessionId, streamId, controller, info)
-    return { status: 'accepted', session_id: sessionId, turn_isolation: null }
+    // The client turns the reply's status into the send's outcome: only
+    // "streaming" (this send started the turn) and "queued" (a turn was already
+    // running) count as accepted. Anything else rolls the optimistic message
+    // back into the composer and shows an error, while the turn still runs.
+    return {
+      status: wasRunning ? 'queued' : 'streaming',
+      session_id: sessionId,
+      turn_isolation: null,
+    }
   }
 
   /**
@@ -288,7 +297,9 @@ export function createTurnRunner({ backend, hub, requestClient, logger = console
    */
   async function steer(sessionId, text) {
     const reply = await backend.call('POST', '/api/chat/steer', { body: { session_id: sessionId, text } })
-    return { status: reply.json?.accepted === true ? 'accepted' : 'refused', text }
+    // The steer branch of the client's outcome map reads "queued" as guidance
+    // accepted and "rejected" as a refusal; anything else is an unknown outcome.
+    return { status: reply.json?.accepted === true ? 'queued' : 'rejected', text }
   }
 
   /**
