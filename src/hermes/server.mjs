@@ -938,6 +938,19 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, logger = co
       res.end(reply.text)
       return
     }
+    if (path === '/api/cron' || path.startsWith('/api/cron/')) {
+      // Tasks/cron is one mapping, done by the facade (which also serves the
+      // Legacy listener's future callers), so the gateway only forwards it.
+      const query = {}
+      for (const [key, value] of url.searchParams) query[key] = value
+      const body = method === 'GET' || method === 'HEAD' ? undefined : await readJson(req)
+      const reply = await backend.call(method, path, {
+        query,
+        ...(body === undefined ? {} : { body }),
+      })
+      sendJson(res, reply.status, reply.json ?? { detail: 'Task operation failed' })
+      return
+    }
     if (method === 'GET' && path === '/api/sessions/search') {
       // The facade builds the host result rows (id, title, snippet, recency) and
       // the Legacy session rows in one reply; Hermex reads `results`.

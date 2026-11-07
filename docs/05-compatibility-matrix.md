@@ -184,7 +184,7 @@ through the durable parent address.
 
 ### 2.5 The other screens a Hermes host unlocks
 
-The sidebar toggles for Tasks, Skills, Memory, Usage, Git and Kanban are local preferences (on by default), not
+The sidebar toggles for Skills, Memory, Usage and Kanban are local preferences (on by default), not
 capability probes, so an absent backend shows the screen's own error. Kanban is the exception: its
 `/api/plugins/kanban/config` 404 gives the clean "unavailable" state.
 
@@ -192,7 +192,7 @@ capability probes, so an absent backend shows the screen's own error. Kanban is 
 |---|---|---|---|---|
 | Files (in-chat workspace) | `GET /api/fs/list`, `/api/fs/read-text`, `/api/fs/download` + `session.info.terminal_backend:"local"` | **WORKS** (read-only) | the Files link opens a browser for the chat's folder: listing (host caches and credential stores hidden), text previews (first 512 KiB), binary/image downloads. A path outside the chat's folders answers `403`; credential material answers `403` wherever it sits; sources over 64 MiB answer `413`; the facade state and secret directories are never served. Git still has no `fs/git-root`, so its menu stays hidden | — (the shared fence is in place; Git and Memory will reuse it) |
 | Git (in-chat, read-only) | `GET /api/fs/git-root`, `/api/git/status`, `/api/git/review/{list,diff}`, `/api/git/file-diff`, `/api/git/review/rev-parse`, `/api/git/branches` | **WORKS** (read) | the Git menu opens in a repository: branch/ahead/behind, changed files and counts, staged/unstaged/untracked flags, per-file patches, branch list. Writes and branch switch answer `400` with a reason, and no pull request is reported. A credential file is filtered from the rows and its diff answers `403`; reads are limited to the repository holding the chat's folder | writes next: stage/commit/push behind the idle guard |
-| Tasks / cron | `GET /api/cron/jobs`, `/runs`, `POST …/{pause,resume,trigger}`, `DELETE`, `/api/cron/delivery-targets`, `GET /api/sessions?scheduled=1&sources=cron` | **404** | the Tasks screen opens and shows its error; the agenda section is empty | yes: M — DSH `schedule/*` is a near-exact match; delivery targets are sessions only |
+| Tasks / cron | `GET /api/cron/jobs`, `/runs`, `POST /api/cron/jobs`, `PUT /api/cron/jobs/{id}`, `POST …/{pause,resume,trigger}`, `DELETE`, `/api/cron/delivery-targets` | **WORKS** (local delivery) | the Tasks list shows schedules with next/last run and state; create/edit/pause/resume/trigger/delete round-trip; a run's output opens as its session. Delivery is local only, model/provider/skills are refused, run history is the schedule's delivery records (no cost), and `sources=cron` on the agenda is still empty because DSH has no session provenance | — |
 | Skills | `GET /api/skills`, `/api/skills/content`, `PUT /api/skills/toggle` + `/api/fs/*` for linked files | **404** | the Skills screen errors | list/content: S/M (`skills/list`); toggle: L (no write RPC) |
 | Memory | `GET /api/config` `.memory`, `/api/profiles/{name}/soul`, `GET /api/files/read`, `POST /api/files/upload`, `profiles.list[].path` | **404 / PARTIAL** | the Memory screen errors (no profile `path`, no memory block) | possible: M — map to `$DSH_HOME/AGENTS.md` (a real memory the agent reads), with an atomic save; no soul |
 | Usage / Insights | `GET /api/analytics/{usage,models}`, `insights.get` | **-32601 / 404** | the Usage screen errors (503/5017 states are different copy); no cost data exists | possible: M/L — a facade ledger over DSH token usage; cost stays 0 |
@@ -219,7 +219,8 @@ capability probes, so an absent backend shows the screen's own error. Kanban is 
 | Export | works | works |
 | Files browser | **works** (read-only) | **works** (read-only, fenced to the chat folder) |
 | Session search | works | works (REST; the RPC is unused) |
-| Tasks / Skills / Memory / Usage | stub screens | error screens (the real backend is missing) |
+| Tasks | stub (`/api/crons`) | works over `/api/cron/*` (local delivery only) |
+| Skills / Memory / Usage | stub screens | error screens (the real backend is missing) |
 | Git | panel unavailable | read-only: status, changes, diffs, branches; writes refused |
 | Kanban | stub | 404, "unavailable" |
 | Attachments | refused | RPC missing; a send with an attachment fails |

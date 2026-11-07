@@ -544,6 +544,52 @@ export function createDshHost({ ctx, logger = console }) {
     },
 
     /**
+     * List the schedules the Tasks screen shows.
+     * @returns {Promise<object[]>} schedule catalog entries.
+     */
+    async listSchedules() {
+      const value = await invoke('schedule', 'list', { request: { limit: 100 } })
+      return Array.isArray(value?.items) ? value.items : []
+    },
+
+    /**
+     * Create one schedule.
+     * @param {object} request ScheduleCreateRequest.
+     * @returns {Promise<object>} stored schedule catalog entry.
+     */
+    async createSchedule(request) {
+      return invoke('schedule', 'create', { request })
+    },
+
+    /**
+     * Update or delete one schedule.
+     * @param {object} request ScheduleEditRequest.
+     * @returns {Promise<object>} edit result.
+     */
+    async editSchedule(request) {
+      return invoke('schedule', 'edit', { request })
+    },
+
+    /**
+     * Run one schedule now.
+     * @param {string} id schedule id.
+     * @returns {Promise<object>} run result.
+     */
+    async runSchedule(id) {
+      return invoke('schedule', 'run', { request: { id } })
+    },
+
+    /**
+     * One schedule's delivery history.
+     * @param {string} id schedule id.
+     * @param {number} limit rows.
+     * @returns {Promise<object>} history result.
+     */
+    async scheduleHistory(id, limit) {
+      return invoke('schedule', 'history', { request: { id, limit } })
+    },
+
+    /**
      * Read one session with its event history.
      * @param {string} sessionId session id.
      * @param {object} [options] options.

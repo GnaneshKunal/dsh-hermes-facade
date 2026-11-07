@@ -9,16 +9,16 @@ Hermes host contract, so the same iOS app can be pointed at DeepSeek Harness as
 a native Hermes server. It is additive: port 9120 keeps serving the webui
 contract unchanged.
 
-Status: **v1.6** (2026-11-07). Chat (with context/token telemetry), sessions
+Status: **v1.7** (2026-11-07). Chat (with context/token telemetry), sessions
 (including the write fence the session list needs and the list's search),
-approvals, clarifications, models, commands, export, the read-only in-chat Files
-browser and the read-only Git menu.
+approvals, clarifications, models, commands, export, Tasks/cron, the read-only
+in-chat Files browser and the read-only Git menu.
 The 2026-11-07 audit's wire defects (turn status, stop vocabulary, title read,
 list rows, multi-field PATCH, collection 404s, source matching, `limit=0`,
 capability-gated reverse requests, forwarded-client rate limiting, prompt races,
 Fast/yolo honesty) are fixed in the same change.
-Not implemented: session import, files, tasks, skills, memory, kanban, git,
-insights, bots and the bot screen. Those answer `-32601` (socket) or 404
+Not implemented: session import, skills, memory, kanban, insights, bots and
+the bot screen. Those answer `-32601` (socket) or 404
 (REST), which the client degrades on. The full per-surface state, and the plan
 for closing the gaps, are [05-compatibility-matrix.md](05-compatibility-matrix.md)
 §2 and [07-v2-roadmap.md](07-v2-roadmap.md); this document is the listener's own
@@ -185,6 +185,9 @@ with reason `resolved`, like the `approval.respond`/`request.answer` path.
 | `GET /api/sessions/{id}/mutation-snapshot` | `{session_id, exists, runtime_revision}`, the revision the phone reads before every rename/pin/archive. Without it the client rethrows the catch-all 404 and every list action fails. Unknown sessions answer `exists:false` |
 | `GET /api/sessions/{id}/export` | forwards the facade's JSON transcript download |
 | `POST /api/sessions/import` | 400: DSH cannot inject a transcript, so Move to Hermes cannot land here yet |
+| `GET /api/cron/jobs` | a bare array of jobs (`id`, `name`, `prompt`, `schedule`, `schedule_display`, `enabled`, `state`, `next_run_at`, `last_run_at`), one per DSH schedule |
+| `POST /api/cron/jobs`, `PUT /api/cron/jobs/{id}`, `POST …/{pause,resume,trigger}`, `DELETE /api/cron/jobs/{id}` | create/edit/lifecycle against the schedule service. Local delivery only: a non-local `deliver`, or non-empty `model`/`provider`/`skills`, answers 400 with the reason; a trigger whose schedule reports a pending execution answers 409. Schedule text must satisfy DSH: five numeric cron fields, `every` ≥60 s, `daily`/`weekdays`/`weekly` at HH:MM (stored as HH:mm:ss, ISO weekdays), an ISO time with an offset, or DTSTART+RRULE; invalid text or a host `schedule/input-invalid` answers 400 |
+| `GET /api/cron/jobs/{id}/runs`, `GET /api/cron/delivery-targets` | run rows from the schedule's delivery history (`id` is the target session, `started_at`/`ended_at`, `is_active`), and `{targets:[local]}` |
 | `GET /api/profiles/active`, `GET /api/profiles` | the single Profile |
 | `GET /api/config` | `{platform_hints:{}}`; the app's note is advisory |
 | `GET /api/models`, `GET /api/commands` | the catalogs |
@@ -228,12 +231,13 @@ answers `403`, and the all-add fallback runs only for an untracked file.
   archive (the write-fence route above is what lets those three work), branch,
   export, model picker, slash commands, the session list's search, the in-chat
   Files browser (`session.info.terminal_backend:"local"` plus the fenced
-  `/api/fs/*` routes) and the read-only Git menu (status, changes, diffs,
-  branches).
+  `/api/fs/*` routes), the read-only Git menu (status, changes, diffs, branches)
+  and the Tasks screen (list/create/edit/pause/resume/trigger/delete and run
+  history; local delivery only).
 - **Partial:** the session rows carry no `preview`; Fast and yolo are refused, so their controls
   revert instead of showing a false state; Git is read-only (stage/commit/push
   and branch switch answer 400 with a reason).
-- **Empty/absent:** Tasks, Kanban, Skills, Memory, Usage, Bots, Bot
+- **Empty/absent:** Kanban, Skills, Memory, Usage, Bots, Bot
   screen. Those screens exist on a Hermes host; here they have no backend, and
   unimplemented methods make their controls hide rather than error (the sidebar
   toggles for Tasks/Skills/Memory/Usage are local, so those screens show their
@@ -297,9 +301,10 @@ The full surface state and the plan for the missing screens are
 1. **No session import.** Move to Hermes cannot use this host as a destination
    until DSH can accept a transcript. The webui side also refuses
    `/api/profile/switch`, so a move cannot even read its source yet.
-2. **No tasks/skills/memory/kanban/bots.** Each is a separate backend (and DSH
-   has no memory or kanban store at all). Files is read-only, and Git is
-   read-only: writes answer a refusal rather than touching the user's tree.
+2. **No skills/memory/kanban/bots.** Each is a separate backend (and DSH has no
+   memory or kanban store at all). Files and Git are read-only; Tasks writes go
+   to DSH schedules, but delivery is local only, model/provider/skills are
+   refused, and a run is a session/delivery record rather than a host output file.
 3. **One Profile.** Everything is filed under `default`; DSH has agent presets,
    not Profiles.
 4. **Version claim.** We report 0.22.5 to clear the gate, but only implement the

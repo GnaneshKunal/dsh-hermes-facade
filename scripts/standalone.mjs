@@ -59,6 +59,8 @@ export function createMockHost({ cwd = process.cwd() } = {}) {
   const queues = new Map()
   const listeners = new Set()
   let sessionUsageOverride
+  const schedules = new Map()
+  let scheduleSequence = 0
   /** Pending approvals keyed by the id the phone answers with, with display fields. */
   const pendingApprovals = new Map()
   // Registry-global visibility sets, mirroring the real workspace baseline.
@@ -148,6 +150,82 @@ export function createMockHost({ cwd = process.cwd() } = {}) {
       return { input_tokens: 1234, output_tokens: 56, context_length: 200000, last_prompt_tokens: 4321 }
     },
     setSessionUsage(values) { sessionUsageOverride = values },
+    async listSchedules() { return [...schedules.values()] },
+    async createSchedule(request) {
+      if (request?.prompt === 'reject me') {
+        throw Object.assign(new Error('title must be 1-120 characters'), { code: 'schedule/input-invalid' })
+      }
+      const now = new Date()
+      const timing = request?.timing ?? {}
+      const entry = {
+        id: 'sched-' + (++scheduleSequence),
+        kind: timing.kind,
+        title: String(request?.title ?? ''),
+        prompt: String(request?.prompt ?? ''),
+        status: 'active',
+        target: request?.target ?? { kind: 'new' },
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+        scheduledAt: new Date(now.getTime() + 300000).toISOString(),
+      }
+      if (timing.kind === 'every') entry.everySeconds = timing.every_seconds
+      if (timing.kind === 'cron') { entry.expression = timing.cron.expression; entry.timeZone = timing.cron.time_zone }
+      if (timing.kind === 'daily') { entry.time = timing.daily.time; entry.timeZone = timing.daily.time_zone }
+      if (timing.kind === 'at') entry.scheduledAt = timing.at
+      if (timing.kind === 'rrule') entry.rrule = timing.rrule
+      schedules.set(entry.id, entry)
+      return entry
+    },
+    async editSchedule(request) {
+      const entry = schedules.get(String(request?.id ?? ''))
+      if (request?.action === 'delete') {
+        if (entry === undefined) return { id: request?.id, deleted: false, code: 'schedule_not_found' }
+        schedules.delete(entry.id)
+        return { id: entry.id, deleted: true }
+      }
+      if (entry === undefined) return { id: request?.id, code: 'schedule_not_found' }
+      const patch = request?.patch ?? {}
+      if (typeof patch.title === 'string') entry.title = patch.title
+      if (typeof patch.prompt === 'string') entry.prompt = patch.prompt
+      if (patch.active === true) entry.status = 'active'
+      if (patch.active === false) entry.status = 'paused'
+      if (patch.timing !== undefined) {
+        const timing = patch.timing
+        for (const key of ['expression', 'timeZone', 'everySeconds', 'time', 'weekdays', 'rrule', 'afterSeconds']) delete entry[key]
+        entry.kind = timing.kind
+        if (timing.kind === 'every') entry.everySeconds = timing.every_seconds
+        if (timing.kind === 'cron') { entry.expression = timing.cron.expression; entry.timeZone = timing.cron.time_zone }
+        if (timing.kind === 'daily') { entry.time = timing.daily.time; entry.timeZone = timing.daily.time_zone }
+        if (timing.kind === 'at') entry.scheduledAt = timing.at
+        if (timing.kind === 'rrule') entry.rrule = timing.rrule
+      }
+      entry.updatedAt = new Date().toISOString()
+      return entry
+    },
+    async runSchedule(id) {
+      const entry = schedules.get(String(id ?? ''))
+      if (entry === undefined) return { id, code: 'schedule_not_found' }
+      const now = new Date().toISOString()
+      entry.lastDelivery = {
+        scheduledAt: entry.scheduledAt,
+        deliveredAt: now,
+        messageId: 'msg-' + entry.id,
+        targetSessionId: 'sess-mock',
+      }
+      return entry
+    },
+    async scheduleHistory(id, limit) {
+      const entry = schedules.get(String(id ?? ''))
+      if (entry === undefined) return { id, code: 'schedule_not_found' }
+      const records = entry.lastDelivery === undefined ? [] : [entry.lastDelivery]
+      return {
+        id: entry.id,
+        records: records.slice(0, limit),
+        earlierRecordsUnavailable: false,
+        earlierRecordsPruned: false,
+        retention: { days: 7, records: 100 },
+      }
+    },
     async searchSessions(query) {
       const needle = String(query ?? '').toLowerCase()
       const items = []
