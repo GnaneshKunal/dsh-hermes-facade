@@ -190,7 +190,7 @@ capability probes, so an absent backend shows the screen's own error. Kanban is 
 
 | Surface | Endpoint(s) / method(s) | State | What the phone shows | Bridgeable? |
 |---|---|---|---|---|
-| Files (in-chat workspace) | `GET /api/fs/list`, `/api/fs/read-text`, `/api/fs/download`, `/api/fs/git-root` + `session.info.terminal_backend:"local"` | **404** | the Files link is **hidden** (no `terminal_backend`), so today it does not even error | yes: M — DSH `workspaceFiles/*` or the facade's file routes, behind one realpath fence |
+| Files (in-chat workspace) | `GET /api/fs/list`, `/api/fs/read-text`, `/api/fs/download` + `session.info.terminal_backend:"local"` | **WORKS** (read-only) | the Files link opens a browser for the chat's folder: folder listing, text previews (512 KiB), binary/image downloads. A path outside the chat's folders answers `403`; the facade state and secret directories are never served. Git still has no `fs/git-root`, so its menu stays hidden | — (the shared fence is in place; Git and Memory will reuse it) |
 | Git (in-chat) | `GET /api/fs/git-root`, `/api/git/status`, `/api/git/review/{list,diff}`, `/api/git/file-diff`, `/api/git/review/{stage,unstage,revert,commit,push,rev-parse,commit-context}`, `/api/git/branches`, `POST /api/git/branch/switch` | **404** | the Git menu is hidden (it appears only when `fs/git-root` finds a repo) | yes: M — exec `git` in the session folder; writes need an idle guard |
 | Tasks / cron | `GET /api/cron/jobs`, `/runs`, `POST …/{pause,resume,trigger}`, `DELETE`, `/api/cron/delivery-targets`, `GET /api/sessions?scheduled=1&sources=cron` | **404** | the Tasks screen opens and shows its error; the agenda section is empty | yes: M — DSH `schedule/*` is a near-exact match; delivery targets are sessions only |
 | Skills | `GET /api/skills`, `/api/skills/content`, `PUT /api/skills/toggle` + `/api/fs/*` for linked files | **404** | the Skills screen errors | list/content: S/M (`skills/list`); toggle: L (no write RPC) |
@@ -217,7 +217,7 @@ capability probes, so an absent backend shows the screen's own error. Kanban is 
 | Rename / pin / archive | POST routes | PATCH behind the write fence (now works) |
 | Delete / import | refused | refused |
 | Export | works | works |
-| Files browser | **works** (read-only) | **hidden** — parity gap; next |
+| Files browser | **works** (read-only) | **works** (read-only, fenced to the chat folder) |
 | Session search | 404 | 404 (DSH RPC exists) |
 | Tasks / Skills / Memory / Usage | stub screens | error screens (the real backend is missing) |
 | Git / Kanban | stubs | 404, controls hidden or "unavailable" |
@@ -252,8 +252,8 @@ keys on the forwarded client rather than the shared proxy address, an empty prom
 concurrent submits share one session and run in order, `session.info` falls back to the catalog default when the
 session names no model, and Fast/yolo are refused instead of echoed. What remains:
 
-1. **Files and Git never appear** because `session.info` does not report `terminal_backend`. One field, but it must
-   ship with the routes or the tab half-renders.
+1. **Git never appears.** `session.info` now reports `terminal_backend:"local"`, so the Files link opens, but
+   `GET /api/fs/git-root` is still 404 and the Git menu stays hidden (planned: Git read, then writes).
 2. **No usage anywhere.** `message.complete` carries no `usage`/`partial`/`persisted_turn` and there is no
    `session.usage` ticker, so the context ring is frozen.
 3. **Edit / regenerate / retry append instead of rewinding** (`truncate_before_row_id` ignored).
@@ -268,10 +268,11 @@ session names no model, and Fast/yolo are refused instead of echoed. What remain
 
 ### Security (both)
 
-The facade's file routes accept **any absolute path**; `resolvePath` (src/host.mjs) does not fence. The password and
-the tailnet are the boundary today, exactly as for DSH's own GUI. Before any new file/git surface ships on `:9121`,
-add one shared `realpath` fence (inside the session/workspace roots, denying the state directory) — the client's
-own check is explicitly not a security boundary.
+The `:9121` Files routes are fenced: a path is served only when its realpath is inside a chat folder (DSH
+workspaces, known session folders, and a draft's chosen folder), and never when it is inside the facade's state
+directory, `$DSH_HOME` or the usual secret directories; symlinks resolve first, so a link cannot point out. The
+Legacy `:9120` browser still accepts any absolute path, as it always has (same boundary as DSH's own GUI), and the
+client's own path check is explicitly not a security boundary.
 
 ---
 

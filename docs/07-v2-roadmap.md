@@ -34,7 +34,7 @@ The gaps split cleanly:
 | Kind of gap | Examples | What it costs the phone |
 |---|---|---|
 | Chat telemetry | `usage` on turn events, `terminal_backend`, canonical turn status | a frozen context ring; Files/Git tabs never appear |
-| Disabled feature that exists on the other transport | Files browser, YOLO honesty | V2 is worse than V1 for that one feature |
+| Disabled feature that exists on the other transport | YOLO honesty | V2 is worse than V1 for that one feature |
 | Screens with no backend yet | Tasks, Skills, Memory, Usage, Git, Bots, search, attachments | the screen errors (the sidebar toggles are local, not probes) |
 | Silent misbehaviour | edit/regenerate appends, fast/yolo echo | the phone believes something happened that did not |
 
@@ -48,7 +48,7 @@ V1 too, so real parity work is short:
 | # | Surface | V1 | V2 today | Work | Effort |
 |---|---|---|---|---|---|
 | P1 | Rename / pin / archive from the list | works | **broken** (no mutation snapshot → the fence probe throws) | **done in this change**: `GET /api/sessions/{id}/mutation-snapshot` + revision check | S |
-| P2 | Files browser (list, text, image/media download) | works, read-only | hidden (no `terminal_backend`, 404 routes) | `session.info.terminal_backend:"local"` + `/api/fs/{list,read-text,download}` behind one path fence | M |
+| P2 | Files browser (list, text, image/media download) | works, read-only | **done in this change**: `terminal_backend:"local"` + `/api/fs/{list,read-text,download}` behind the shared path fence | Git reuses the fence next | M |
 | P3 | YOLO / approval bypass | POST reports false | **done in this change**: refused with a key-level error, so the switch reverts | wire the approval policy later, or leave it refused | S |
 | P4 | Session list rows | rich rows | the v1 row shape is mapped on both REST and WS; still no `preview` | map `preview` through | S |
 | P5 | Chat transcript fidelity | tool results + verdicts | same over REST; the status is canonical now, but `message.complete` carries no usage/receipt | add `usage` and `persisted_turn` when the row ids are known | S |
@@ -69,7 +69,7 @@ Effort: **S** = one route/method over an existing facade primitive; **M** = new 
 | 1 | Session search | the list's search field 404s today | `GET /api/sessions/search` (REST), `session/search` | `session/search` → `{items:[{sessionId,snippet}],hasMore}` | S | **next** |
 | 2 | Live Working / Needs-you | the live dots are absent | `session.active_list`, `sessions.changed` | the gateway's own runner + session rows | S | **next** |
 | 3 | Chat telemetry | context ring and turn metadata | `usage`/`partial`/`persisted_turn` on `message.complete`, `usage` on `session.info` | `contextUsage`/`tokenUsage` projections | S | **next** |
-| 4 | Files | read code and artifacts from the phone | P2 above | `workspaceFiles/*` or the facade's file routes | M | **next** (fence first) |
+| 4 | Files | read code and artifacts from the phone | **done in this change** (read-only) | the facade's file routes behind the shared fence | M | done |
 | 5 | Tasks / cron | scheduled jobs and history | `/api/cron/jobs`, `/runs`, pause/resume/trigger/delete, delivery-targets, `sources=cron` agenda | `schedule/*` (near-exact) | M | next |
 | 6 | Memory | edit what the agent remembers | `/api/memory`, `files/read`, `files/upload`, `profiles/{n}/soul`, `profiles.list[].path` | `$DSH_HOME/AGENTS.md` + the project AGENTS.md chain (a real memory) | M | next |
 | 7 | Git read | see what changed, diffs | `/api/fs/git-root`, `/api/git/status`, `review/list`, `review/diff`, `file-diff`, `rev-parse`, `commit-context`, `branches` | exec `git` in the session folder | M | next |
@@ -133,34 +133,32 @@ change, each with a test:
 | Fast / yolo | echoed as applied | key-level refusal, so the control reverts |
 | `unread` | 200 that changed nothing | refused with a detail |
 
-Verify: `npm run check && npm test` (175 tests), then rename a chat from the phone's list, pin it, archive it,
-unarchive it, and stop a running turn.
+**The in-chat Files browser (parity).** `session.info` now reports `terminal_backend:"local"` (drafts, resume
+snapshots and live events), and the listener serves the three read routes the phone's workspace browser calls:
+`/api/fs/list`, `/api/fs/read-text` (512 KiB preview, binary tell) and `/api/fs/download` (bytes + content type,
+`session_id` for MEDIA paths). A new shared realpath fence (`src/hermes/fence.mjs`) admits a path only inside a
+chat folder (DSH workspaces, known session folders, a draft's chosen folder) and denies the facade state,
+`$DSH_HOME`, `~/.ssh`, `~/.aws` and `~/.gnupg`; symlinks resolve first. A denied path answers `403` with a detail.
+Git keeps its menu hidden until `fs/git-root` exists. Tests cover listing, text/binary previews, truncation,
+downloads, traversal, the deny list, relative paths and the two roots (draft folder, session folder).
+
+Verify: `npm run check && npm test` (177 tests), then rename a chat from the phone's list, pin it, archive it,
+unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---
 
-## 5. Next three picks, with acceptance criteria
+## 5. Next picks, with acceptance criteria
 
-### Pick 1 — Files (the parity gap), with the fence first
+Files is done (see §4). The next three, in order:
 
-Calls: `session.info.terminal_backend:"local"` (plus the existing `cwd`), then
-`GET /api/fs/list?path=`, `/api/fs/read-text?path=`, `/api/fs/download?path=[&session_id=]`.
-Backing: the facade already lists/reads media for the Legacy browser; DSH also has session-scoped
-`workspaceFiles/{list,read,readBytes}` if a session-scoped implementation is preferred. **The fence is part of the
-task, not a follow-up**: the client sends absolute host paths and its own comment says its check is not a security
-boundary.
-
-Done when: opening Files in a chat lists the folder and previews text; a binary downloads and Quick Look opens it;
-a path outside the allowed roots answers 403 with a detail and no path echoed; `npm test` covers list/read/download
-and the fence; the matrix row moves to **WORKS**.
-
-### Pick 2 — Session search
+### Pick 1 — Session search
 
 Calls: `GET /api/sessions/search?q=&profile=&limit=[&sources=cron&exclude_sources=…]` (the list's search field), and
 the Bot inbox's search. Backing: `session/search({query})` → `{items:[{sessionId,snippet}],hasMore}`, capped at 20.
 Done when: searching returns rows with titles and snippets, an empty query does not 500, results respect the same
 source filters as the list, and a caching/debounce policy keeps keystrokes cheap.
 
-### Pick 3 — Chat telemetry
+### Pick 2 — Chat telemetry
 
 Calls: `usage` on `message.complete` (`{context_used, context_max, input, output}`), `usage` on `session.info`,
 and `persisted_turn` when the facade can name the saved rows. (The canonical `status:"complete"` is already in.)
@@ -169,18 +167,26 @@ Backing:
 Done when: the context ring fills during and after a turn, the turn outcome row is unchanged, and no event grows
 unbounded.
 
+### Pick 3 — Git read
+
+Calls: `GET /api/fs/git-root`, `/api/git/status`, `/api/git/review/{list,diff}` (scope uncommitted/branch/lastTurn),
+`/api/git/file-diff`, `/api/git/review/{rev-parse,commit-context}`, `/api/git/branches`. Backing: exec `git` in the
+chat folder, reusing the Files fence; **read-only first** (stage/commit/push stay hidden until the write guard is
+reviewed). Done when: a chat in a repository shows the Git menu with status, change list and diffs; a non-repo folder
+hides it; every path is fenced and a diff over 512 KiB is flagged.
+
 ---
 
 ## 6. Sequencing and cross-cutting work
 
-Order after this change: **Files (P2) → session search → chat telemetry → Tasks → Memory → Git read → Skills →
-Usage → attachments → goal/btw/background → Bots**.
+Order after this change: **session search → chat telemetry → Git read → Tasks → Memory → Skills → Usage →
+attachments → goal/btw/background → Bots**.
 
 Cross-cutting items that should ride the first task that touches them. The capability gate, the honest refusals,
 the rate-limit key and the prompt-concurrency guards landed in the bugfix pass; these remain:
 
-1. **One path fence** shared by Files, Git and Memory (realpath inside the session/workspace roots; deny the state
-   directory, `~/.ssh`, key material). Today `src/host.mjs resolvePath` accepts any absolute path.
+1. **One path fence** shared by Files, Git and Memory — **done for Files** (`src/hermes/fence.mjs`); Git and
+   Memory must call the same fence. The Legacy `:9120` routes remain unfenced, as before.
 2. **Cache headers** on file reads (ETag from mtime+size) so transcript images and previews do not re-download.
 3. **Event-ring bounds** (per-session bytes + a session cap) and a `forget` on delete/archive.
 4. **Docs discipline**: every shipped row updates `docs/05` §2, `docs/06` where the method/REST table changed, the
