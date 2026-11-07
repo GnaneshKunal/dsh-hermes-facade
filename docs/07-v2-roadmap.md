@@ -34,7 +34,7 @@ The gaps split cleanly:
 
 | Kind of gap | Examples | What it costs the phone |
 |---|---|---|
-| Chat telemetry | `usage` on turn events, `terminal_backend`, canonical turn status | a frozen context ring; Files/Git tabs never appear |
+| Chat telemetry | `usage` on turn events, `terminal_backend`, canonical turn status | the context ring and token counts work (no cost); Files/Git now appear |
 | Disabled feature that exists on the other transport | YOLO honesty | V2 is worse than V1 for that one feature |
 | Screens with no backend yet | Tasks, Skills, Memory, Usage, Git writes, Bots, search, attachments | the screen errors (the sidebar toggles are local, not probes) |
 | Silent misbehaviour | edit/regenerate appends, fast/yolo echo | the phone believes something happened that did not |
@@ -52,7 +52,7 @@ V1 too, so real parity work is short:
 | P2 | Files browser (list, text, image/media download) | works, read-only | **done in this change**: `terminal_backend:"local"` + `/api/fs/{list,read-text,download}` behind the shared path fence | Git reuses the fence next | M |
 | P3 | YOLO / approval bypass | POST reports false | **done in this change**: refused with a key-level error, so the switch reverts | wire the approval policy later, or leave it refused | S |
 | P4 | Session list rows | rich rows | the v1 row shape is mapped on both REST and WS; still no `preview` | map `preview` through | S |
-| P5 | Chat transcript fidelity | tool results + verdicts | same over REST; the status is canonical now, but `message.complete` carries no usage/receipt | add `usage` and `persisted_turn` when the row ids are known | S |
+| P5 | Chat transcript fidelity | tool results + verdicts | same over REST; status is canonical and `message.complete` now carries usage | add `persisted_turn` when the row ids are known | S |
 | P6 | `@path` / file completion | n/a | `complete.path` -32601 | map to directory listing | S |
 
 **Chat attachments are not parity work** — V1 refused them too. They are a Phase-2 item because the V2 contract
@@ -69,7 +69,7 @@ Effort: **S** = one route/method over an existing facade primitive; **M** = new 
 |---|---|---|---|---|---|---|
 | 1 | Session search | the list's search field 404s today | `GET /api/sessions/search` (REST) | `session/search` → `{items:[{sessionId,snippet}],hasMore}` + list rows | S | done |
 | 2 | Live Working / Needs-you | the live dots are absent | `session.active_list`, `sessions.changed` | the gateway's own runner + session rows | S | **next** |
-| 3 | Chat telemetry | context ring and turn metadata | `usage`/`partial`/`persisted_turn` on `message.complete`, `usage` on `session.info` | `contextUsage`/`tokenUsage` projections | S | **next** |
+| 3 | Chat telemetry | context ring and turn metadata | `usage` on `message.complete` + live `session.usage`; `partial`/`persisted_turn` still absent | `tokenUsage`/`contextPressure` projections (`session/projections`) | S | done |
 | 4 | Files | read code and artifacts from the phone | **done in this change** (read-only) | the facade's file routes behind the shared fence | M | done |
 | 5 | Tasks / cron | scheduled jobs and history | `/api/cron/jobs`, `/runs`, pause/resume/trigger/delete, delivery-targets, `sources=cron` agenda | `schedule/*` (near-exact) | M | next |
 | 6 | Memory | edit what the agent remembers | `/api/memory`, `files/read`, `files/upload`, `profiles/{n}/soul`, `profiles.list[].path` | `$DSH_HOME/AGENTS.md` + the project AGENTS.md chain (a real memory) | M | next |
@@ -175,25 +175,27 @@ source filter DSH cannot satisfy (`sources=cron`) honestly matches nothing becau
 Tests cover both shapes, id/content/title lanes, the empty query, the limit, the source filters and `/stats`
 staying 404.
 
-Verify: `npm run check && npm test` (181 tests), then rename a chat from the phone's list, pin it, archive it,
+**Chat telemetry (no cost).** A turn now carries its context and token usage. `host.sessionUsage` reads the
+`tokenUsage` and `contextPressure` projections through `session/projections`; the facade publishes a live `usage`
+frame with the assistant message and the authoritative `usage` on its `done` event, and the gateway maps both to
+the host vocabulary: `session.usage` mid-turn and `usage` on `message.complete`, each `{input, output,
+context_used, context_max}`. Legacy's `done.usage` is the context-window snapshot the app already decodes
+(`input_tokens`, `output_tokens`, `context_length`, `last_prompt_tokens`), so both transports fill the same ring.
+There is **no cost**: DSH reports tokens, not prices, and Hermex's chat snapshot ignores cost even when present —
+Usage/Insights remains a later item and stays token-only. `partial`/`persisted_turn` remain absent because the
+saved row ids are not in the turn event. Tests cover the Legacy SSE usage frame and the done payload, and the
+gateway's live `session.usage` plus `message.complete.usage`.
+
+Verify: `npm run check && npm test` (182 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, and open Files in a chat to browse a folder and preview a file.
 
 ---
 
 ## 5. Next picks, with acceptance criteria
 
-Files, Git read and session search are done (see §4). The next three, in order:
+Files, Git read, session search and chat telemetry are done (see §4). The next three, in order:
 
-### Pick 1 — Chat telemetry
-
-Calls: `usage` on `message.complete` (`{context_used, context_max, input, output}`), `usage` on `session.info`,
-and `persisted_turn` when the facade can name the saved rows. (The canonical `status:"complete"` is already in.)
-Backing:
-`contextUsage`/`tokenUsage` projections (already mapped for the Legacy rows).
-Done when: the context ring fills during and after a turn, the turn outcome row is unchanged, and no event grows
-unbounded.
-
-### Pick 2 — Tasks / cron
+### Pick 1 — Tasks / cron
 
 Calls: `GET /api/cron/jobs`, `/api/cron/runs`, pause/resume/trigger/delete, delivery targets, and
 `sources=cron` on the agenda. Backing: the `schedule/*` projections (near-exact shapes: name, prompt, schedule,
@@ -201,18 +203,26 @@ state, target, last delivery), with a run's history from the schedule's own deli
 screen lists real schedules with next-run times, pause/resume/delete round-trip, an empty list is a real empty state,
 and the list's cron source matches the same rows.
 
-### Pick 3 — Memory
+### Pick 2 — Memory
 
 Calls: `GET /api/memory`, `files/read`, `files/upload`, `profiles/{n}/soul`, and `profiles.list[].path`. Backing:
 `$DSH_HOME/AGENTS.md` plus the project's `AGENTS.md` chain — a real memory the agent already reads, behind the
 shared fence. Done when: the Memory screen shows the files that shape an agent, read-only first, a missing file is
 an honest empty state, and every path is the same fenced one Files and Git use.
 
+### Pick 3 — Skills
+
+Calls: `GET /api/skills`, `/api/skills/content`, the toggle route and a Task's skills picker. Backing:
+`skills/list` (read-only catalogue, already available to the host) plus `workspaceFiles/read` for a skill's files,
+behind the same fence. Done when: the Skills screen lists the host's skills with descriptions, opening one shows
+its file, an empty catalogue is a real empty state, and the toggle is refused with an honest reason (DSH has no
+plugin-disable primitive) instead of a switch that flips back.
+
 ---
 
 ## 6. Sequencing and cross-cutting work
 
-Order after this change: **chat telemetry → Tasks → Memory → Skills → Usage → attachments →
+Order after this change: **Tasks → Memory → Skills → Usage → attachments →
 goal/btw/background → Git write → Bots**.
 
 Cross-cutting items that should ride the first task that touches them. The capability gate, the honest refusals,

@@ -473,12 +473,22 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
   }
 
   /**
+   * The session's usage for the Legacy snapshot, never throwing.
+   * @param {string} sessionId session id.
+   * @returns {Promise<object>} usage `{input_tokens, output_tokens, context_length, last_prompt_tokens}`.
+   */
+  async function usageFor(sessionId) {
+    if (typeof host.sessionUsage !== 'function') return {}
+    try { return await host.sessionUsage(sessionId) } catch { return {} }
+  }
+
+  /**
    * Append one DSH frame to a chat stream, translated to Hermex SSE events.
    * @param {object} stream stream record.
    * @param {object} frame follow frame.
-   * @returns {boolean} whether the turn ended on this frame.
+   * @returns {Promise<boolean>} whether the turn ended on this frame.
    */
-  function applyFrame(stream, frame) {
+  async function applyFrame(stream, frame) {
     if (frame?.type === 'assistant-stream') {
       const inner = frame.frame
       if (inner?.type === 'chunk') {
@@ -516,14 +526,20 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
           tid: String(event.data.callId ?? ''),
         })
         return false
-      case 'assistant/message':
+      case 'assistant/message': {
         // Safety net: if the streaming frames never arrived (or used a chunk
         // type we do not know), still deliver the settled text exactly once.
         if (typeof event.data.text === 'string' && event.data.text.length > 0 && (stream.emittedText ?? 0) === 0) {
           stream.emittedText = event.data.text.length
           registry.publish(stream, 'token', { text: event.data.text })
         }
+        // The provider usage is now in the projections: an `usage` frame lets
+        // both clients fill the context ring before the turn ends (the Legacy
+        // parser ignores an unknown event; the gateway maps it to session.usage).
+        const usage = await usageFor(stream.sessionId)
+        if (Object.keys(usage).length > 0) registry.publish(stream, 'usage', usage)
         return false
+      }
       case 'session/title':
         if (typeof event.data.title === 'string') {
           registry.publish(stream, 'title', { session_id: stream.sessionId, title: event.data.title })
@@ -549,7 +565,10 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
           registry.finish(stream, 'failed')
           return true
         }
-        registry.publish(stream, 'done', { usage: {}, session: { session_id: stream.sessionId } })
+        registry.publish(stream, 'done', {
+          usage: await usageFor(stream.sessionId),
+          session: { session_id: stream.sessionId },
+        })
         registry.publish(stream, 'stream_end', {})
         registry.finish(stream, 'completed')
         return true
@@ -591,11 +610,14 @@ export function createFacadeServer({ config, host, logger = console, auth }) {
       let ended = false
       for await (const frame of host.follow(stream.sessionId, { signal: controller.signal })) {
         if (stream.terminal !== null) break
-        ended = applyFrame(stream, frame)
+        ended = await applyFrame(stream, frame)
         if (ended) break
       }
       if (!ended && stream.terminal === null) {
-        registry.publish(stream, 'done', { usage: {}, session: { session_id: stream.sessionId } })
+        registry.publish(stream, 'done', {
+          usage: await usageFor(stream.sessionId),
+          session: { session_id: stream.sessionId },
+        })
         registry.publish(stream, 'stream_end', {})
         registry.finish(stream, 'completed')
       }

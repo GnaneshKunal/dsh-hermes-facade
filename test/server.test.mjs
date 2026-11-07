@@ -309,8 +309,16 @@ test('chat start streams token, done and stream_end over SSE', async t => {
   assert.match(stream.headers.get('content-type') ?? '', /text\/event-stream/)
   const text = await stream.text()
   assert.match(text, /event: token/)
+  assert.match(text, /event: usage/)
   assert.match(text, /event: done/)
   assert.match(text, /event: stream_end/)
+  // The done event carries the Legacy context-window snapshot: tokens and the
+  // provider's context pressure, from the session projections. No cost: DSH has
+  // no pricing.
+  assert.match(text, /"input_tokens":1234/)
+  assert.match(text, /"output_tokens":56/)
+  assert.match(text, /"context_length":200000/)
+  assert.match(text, /"last_prompt_tokens":4321/)
   assert.doesNotMatch(text, /event: (error|cancel)/, 'a completed turn carries no failure terminal')
   assert.match(text, /"text":"Echo: /)
 

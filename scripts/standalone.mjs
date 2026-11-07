@@ -141,6 +141,10 @@ export function createMockHost({ cwd = process.cwd() } = {}) {
     setClientPredicate() {},
     onInteraction(listener) { listeners.add(listener); return () => listeners.delete(listener) },
     async listSessions() { return [...sessions.values()] },
+    async sessionUsage(sessionId) {
+      if (!sessions.has(sessionId)) return {}
+      return { input_tokens: 1234, output_tokens: 56, context_length: 200000, last_prompt_tokens: 4321 }
+    },
     async searchSessions(query) {
       const needle = String(query ?? '').toLowerCase()
       const items = []

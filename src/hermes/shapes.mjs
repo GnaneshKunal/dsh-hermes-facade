@@ -182,8 +182,13 @@ export function usageOf(usage) {
     : (Number.isFinite(usage?.input) ? usage.input : 0)
   const output = Number.isFinite(usage?.output_tokens) ? usage.output_tokens
     : (Number.isFinite(usage?.output) ? usage.output : 0)
+  // The facade's SSE `done`/live usage is the Legacy snapshot shape
+  // (`context_length`/`last_prompt_tokens`); the host's own vocabulary uses
+  // `context_max`/`context_used`. Accept both.
   const max = Number.isFinite(usage?.context_window) ? usage.context_window
-    : (Number.isFinite(usage?.context_max) ? usage.context_max : 0)
-  const used = Number.isFinite(usage?.context_used) ? usage.context_used : input + output
+    : (Number.isFinite(usage?.context_max) ? usage.context_max
+      : (Number.isFinite(usage?.context_length) ? usage.context_length : 0))
+  const used = Number.isFinite(usage?.context_used) ? usage.context_used
+    : (Number.isFinite(usage?.last_prompt_tokens) ? usage.last_prompt_tokens : input + output)
   return { input, output, ...(max > 0 ? { context_used: used, context_max: max } : {}) }
 }

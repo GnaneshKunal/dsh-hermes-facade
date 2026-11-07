@@ -511,6 +511,37 @@ export function createDshHost({ ctx, logger = console }) {
     },
 
     /**
+     * The session's token and context usage, read from its projections.
+     *
+     * DSH reports provider usage in two places: `tokenUsage` accumulates the
+     * complete log (uncached input, output, cache reads/writes), and
+     * `contextPressure` names the newest request's prompt size and the route's
+     * capacity. There is no price or cost projection anywhere.
+     * @param {string} sessionId session id.
+     * @returns {Promise<{input_tokens?: number, output_tokens?: number, context_length?: number, last_prompt_tokens?: number}>} usage.
+     */
+    async sessionUsage(sessionId) {
+      const value = await invoke('session', 'projections', { request: { sessionId } })
+      const values = value?.values ?? {}
+      const token = values.tokenUsage
+      const pressure = values.contextPressure
+      const input = Number.isFinite(token?.uncachedInputTokens)
+        ? token.uncachedInputTokens + (Number.isFinite(token.cacheReadTokens) ? token.cacheReadTokens : 0)
+          + (Number.isFinite(token.cacheWriteTokens) ? token.cacheWriteTokens : 0)
+        : undefined
+      const output = Number.isFinite(token?.outputTokens) ? token.outputTokens : undefined
+      const max = Number.isFinite(pressure?.contextWindow) ? pressure.contextWindow : undefined
+      const used = Number.isFinite(pressure?.pressureTokens) ? pressure.pressureTokens
+        : (Number.isFinite(pressure?.projectedTokens) ? pressure.projectedTokens : undefined)
+      return {
+        ...(input === undefined ? {} : { input_tokens: input }),
+        ...(output === undefined ? {} : { output_tokens: output }),
+        ...(max === undefined || max <= 0 ? {} : { context_length: max }),
+        ...(used === undefined ? {} : { last_prompt_tokens: used }),
+      }
+    },
+
+    /**
      * Read one session with its event history.
      * @param {string} sessionId session id.
      * @param {object} [options] options.

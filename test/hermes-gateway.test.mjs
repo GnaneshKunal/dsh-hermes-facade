@@ -1702,6 +1702,38 @@ test('session search returns id, content and title matches on both listeners', a
   }
 })
 
+test('a turn publishes context-window and token usage', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const submitted = await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'telemetry please' })
+      assert.equal(submitted.result.status, 'streaming')
+
+      // The live frame arrives with the assistant message, before the turn ends.
+      const live = await socket.waitFor(frame => frame.params?.type === 'session.usage')
+      assert.deepEqual(live.params.payload.usage, {
+        input: 1234, output: 56, context_used: 4321, context_max: 200000,
+      })
+
+      // The authoritative one rides on message.complete.
+      const complete = await socket.waitFor(frame => frame.params?.type === 'message.complete')
+      assert.equal(complete.params.payload.status, 'complete')
+      assert.deepEqual(complete.params.payload.usage, {
+        input: 1234, output: 56, context_used: 4321, context_max: 200000,
+      })
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+
 
 
 
