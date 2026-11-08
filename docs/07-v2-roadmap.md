@@ -88,7 +88,7 @@ Effort: **S** = one route/method over an existing facade primitive; **M** = new 
 The durable "why this is missing" catalogue, including the upstream primitive
 needed for each item, is [08-upstream-gaps.md](08-upstream-gaps.md).
 
-**Non-goals (deliberately not planned):** Kanban (no store or workers in DSH; the client already shows a clean
+**Non-goals (deliberately not planned):** full Kanban parity (no native store or workers in DSH; optional `dsh-kanban-flow` adapter lands board-lite first; the client already shows a clean
 "unavailable" on its config 404), push/Live Activity (`hermex-push` is an external relay + APNs), the bot screen
 (`display.*`/`hermex-screen`), Move-to-Hermes import (DSH cannot inject a transcript — keep the honest 400),
 spoken replies (no TTS primitive), provider quota, dashboard themes, `config/defaults|schema`, `model/info`, and

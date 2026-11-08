@@ -20,6 +20,7 @@ and keep the old evidence in the PR/CHANGELOG rather than deleting it silently.
 | **FACADE** | DSH has the underlying service; this facade still needs a store/mapping/design. This is our work, not an upstream gap. |
 | **NON-GOAL** | Deliberately outside the Hermes host contract (external relay, screen, or client-only feature). |
 | **LIMIT** | Implemented, with a documented bound/provider default rather than a missing primitive. |
+| **PLUGIN** | An optional third-party DSH plugin supplies the board data, but Hermex's contract still needs a facade adapter; it is not out-of-box support. |
 
 ## 2. At a glance
 
@@ -43,7 +44,7 @@ and keep the old evidence in the PR/CHANGELOG rather than deleting it silently.
 | **`@path` completion** | path completion in the composer | no client-visible complete.path RPC | `complete.path` answers `-32601` | **UPSTREAM** | a DSH path-completion RPC |
 | **Usage Messages total** | a message count | no message-count projection | `insights.get` returns `{messages:0}` (labelled approximate) | **UPSTREAM** | a DSH message-count projection |
 | **Git pull-request creation** | "create PR" ship flow | no PR/GitHub primitive; `ship-info` has no PR | `{pr:null}`; no PR is created | **FACADE / external** | a gh/GitHub integration or an explicit non-goal |
-| **Kanban** | boards and cards | no Kanban store/workers | config 404 → clean "unavailable" | **NON-GOAL** | — |
+| **Kanban** | boards and cards | no native store/workers; optional `dsh-kanban-flow` (third-party, MIT) keeps one board per workspace in `.dsh-kanban-flow.json`, exposes `kanbanflow_*` tools and a `/api/kanban-flow` host route | config 404 → clean "unavailable" | **PLUGIN / FACADE** | install + pin the plugin, then a gateway adapter; board/card read-write is feasible, workers/dispatch/comments/dependencies/events are not |
 | **Push notifications / Live Activity** | APNs relay | external `hermex-push` relay + APNs | not served | **NON-GOAL** | — |
 | **Bot screen / `display.*`** | a host-rendered screen | external `hermex-screen` | not served | **NON-GOAL** | — |
 | **Dictation limits** | record/transcribe | STT works, but only canonical 16 kHz mono PCM16 WAV; stock Remote default is 4 MiB/120 s | m4a→WAV via afconvert/ffmpeg; 25 MiB route bound; Remote bound still applies | **LIMIT** | raise/configure the speech Remote default, or stream |
@@ -101,7 +102,45 @@ not an arbitrary user truncation API. Until DSH exposes one, those controls must
 append or refuse; do not implement a local shadow transcript, because it would
 diverge from the session log the agent reads.
 
-### 3.5 Bots are facade work, not an upstream missing primitive
+### 3.5 Kanban can be a plugin adapter, but it is not Hermex Kanban
+
+A real DSH plugin exists: **`dsh-kanban-flow`** (MIT, external) keeps one
+board per workspace in `<workspace>/.dsh-kanban-flow.json`, injects none of the
+session transcript, and registers both agent tools (`kanbanflow_*`) and a host
+HTTP route `POST /api/kanban-flow` (`{method, args}`, `workspaceId` picks the
+board). It is a useful **workflow board** with fixed columns **Backlog → To Do →
+In Progress → Review → Done**, a per-item task session, a status note, and a
+human/agent actor guard. Several `dsh-task-board` variants cover similar ground.
+
+It is **not** the Hermes Kanban bridge. Hermex's `/api/kanban/*` contract also
+has board lifecycle/config, dispatch, worker logs, comments, dependencies,
+assignees/stats, and an events SSE feed. The plugin has none of those as a
+Hermex-shaped API, and its one-board-per-workspace model does not match Hermex's
+board switcher. A proxy can therefore land a **Kanban-lite** surface, not parity:
+
+| Hermex surface | Plugin equivalent | Adapter result |
+|---|---|---|
+| `config`, `boards`, `boards/{slug}`, `switch` | `getMeta` + the DSH workspace list | one board per workspace; no independent board create/archive |
+| `board` snapshot | `get` / `summary` | columns and items map cleanly; fixed five columns |
+| tasks create/edit/move/status | `createItem`/`updateItem`/`moveItem`/`setStatus` | map with actor `human`; `setSession` links the item's session |
+| task detail / open chat | item `sessionId` | open that DSH session; no worker process/log |
+| dispatch, worker log | per-item task session only | open the session; `dispatch`/`log` stay 501/empty |
+| comments, dependencies, events stream, assignees/stats | absent | empty/501; hide or degrade those controls |
+
+The natural seam is the gateway (Hermex talks to `:9121`): add `/api/kanban/*`
+there and call the plugin's `/api/kanban-flow` on the DSH web listener
+(loopback), resolving the DSH workspace id from `/api/workspaces`. Reading the
+JSON file directly is simpler but unsafe while the plugin's in-memory cache is
+active, so it is not the recommended seam. The plugin is third-party code:
+review and pin a commit, and do not make it mandatory for chat to work.
+
+**Recommendation:** scope the first adapter to **read board + create/edit/move
+cards + open the task session**. Keep dispatch/workers/comments/dependencies/
+events out until the plugin (or a facade-owned store) grows those primitives.
+Do not call this full Kanban in docs or UI. A facade-owned full Kanban remains a
+larger alternative if the plugin's workflow model is not acceptable.
+
+### 3.6 Bots are facade work, not an upstream missing primitive
 
 DSH's `agentPresets/*` is read-only and has no writable soul. A Bots screen needs
 a facade-owned profile store and a controlled soul injection. It is a large
@@ -110,10 +149,12 @@ roadmap as such.
 
 ## 4. Non-goals, restated
 
-Kanban, push/Live Activity, the bot screen (`display.*`), Move-to-Hermes import,
+Push/Live Activity, the bot screen (`display.*`), Move-to-Hermes import,
 spoken replies without a DSH TTS primitive, provider quota, dashboard themes,
 `config/defaults|schema`, `model/info`, and session stats/prune are outside the
-host contract. They are not bugs and should not be half-implemented.
+host contract. They are not bugs and should not be half-implemented. Kanban is a
+separate case: it is optional **plugin-adapter** work, not a non-goal, but a
+board-lite adapter must not be presented as Hermex Kanban parity.
 
 ## 5. UI presentation that can look like missing data
 
