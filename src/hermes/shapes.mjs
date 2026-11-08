@@ -231,3 +231,35 @@ export function usageOf(usage) {
     : (Number.isFinite(usage?.last_prompt_tokens) ? usage.last_prompt_tokens : input + output)
   return { input, output, ...(max > 0 ? { context_used: used, context_max: max } : {}) }
 }
+
+/** Goal phase to the status vocabulary the phone's goal controls read. */
+const GOAL_STATUS = { active: 'active', paused: 'paused', blocked: 'blocked', complete: 'done' }
+
+/**
+ * The `session.control.read` snapshot for one session.
+ *
+ * Only the goal is reported: DSH has a goal domain but no loop or heartbeat
+ * domain, so those keys stay absent and the phone offers no Pause/Resume for
+ * them. Field names follow the Hermes control row (`title`, `status`,
+ * `turns_used`, `max_turns`); values DSH has no equivalent for (a verdict, a
+ * pause reason) are omitted rather than invented.
+ *
+ * @param {object|undefined} projection the session's `goal` projection value.
+ * @returns {{control: object}} control snapshot; `{}` when no goal is current.
+ */
+export function controlOf(projection) {
+  const goal = projection?.goal
+  const objective = typeof goal?.objective === 'string' ? goal.objective : ''
+  if (objective.length === 0) return { control: {} }
+  return {
+    control: {
+      goal: {
+        title: objective,
+        ...(typeof goal.phase === 'string' ? { status: GOAL_STATUS[goal.phase] ?? goal.phase } : {}),
+        ...(Number.isSafeInteger(projection.roundsStarted) ? { turns_used: projection.roundsStarted } : {}),
+        ...(Number.isSafeInteger(goal.maxGoalRounds) ? { max_turns: goal.maxGoalRounds } : {}),
+      },
+    },
+  }
+}
+
