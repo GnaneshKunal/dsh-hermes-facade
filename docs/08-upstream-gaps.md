@@ -115,7 +115,29 @@ spoken replies without a DSH TTS primitive, provider quota, dashboard themes,
 `config/defaults|schema`, `model/info`, and session stats/prune are outside the
 host contract. They are not bugs and should not be half-implemented.
 
-## 5. Maintenance
+## 5. UI presentation that can look like missing data
+
+A completed Turn folds its work rows in the Web client's default work-details
+modes. In **Compact**, **Standard** and **Detailed**, the answer stays visible
+and the tool/reasoning/code rows sit behind the Turn control ("Completed in
+…"); **Verbose** never folds them. The live "Deep diving for Ns ···"
+(`RunningStatus`) is a status indicator, not a substitute for the rows. If a
+Turn finished while the screen was away, returning to the session therefore
+shows the answer plus the folded Turn, not a lost transcript.
+
+**Workaround:** Settings → General → **Work details** → **Verbose** (or expand
+the "Completed in …" row / group header). An explicit in-app choice overrides
+a profile's `ui-chat.transcriptView` default, so confirm the row in Settings.
+
+There is one genuine edge defect: when the opening page's 500-message budget
+cuts inside the still-running Turn, its `turn/start` is absent, the Turn is
+classified as historical, and its rows start collapsed — one live header
+("Analyzing the request") plus the clock. The two-line upstream fix is to cut
+at the enclosing `turn/start` for the newest Turn (session-controller history)
+and to group only a `closed` Turn as historical (Web `ChatGroupSeat`). That is
+a DSH fix, not a facade workaround.
+
+## 6. Maintenance
 
 1. When DSH adds a primitive, implement the route/method with tests first.
 2. In the same PR, move the row from the "At a glance" table to the supported
