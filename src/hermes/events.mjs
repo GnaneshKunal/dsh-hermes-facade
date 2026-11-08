@@ -10,7 +10,11 @@
  */
 
 /** Most events kept per session for replay. */
-const DEFAULT_RETAIN = 1000
+// A single long agent turn can emit more than a thousand tool/reasoning
+// frames; a returning client replays from its cursor, so a 1000-event ring
+// loses the start of the turn and rebuilds from a transcript that does not
+// contain the in-flight rows. 5000 covers a typical hour-long turn.
+const DEFAULT_RETAIN = 5000
 
 /**
  * The live-session list refresh event.
