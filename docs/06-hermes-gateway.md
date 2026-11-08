@@ -9,13 +9,15 @@ Hermes host contract, so the same iOS app can be pointed at DeepSeek Harness as
 a native Hermes server. It is additive: port 9120 keeps serving the webui
 contract unchanged.
 
-Status: **v1.14** (2026-11-07). Chat (with context/token telemetry and image/
+Status: **v1.15** (2026-11-08). Chat (with context/token telemetry and image/
 document attachments), sessions (including the write fence the session list needs
-and the list's search), live session state (`session.active_list` and
-`sessions.changed`), approvals, clarifications, models, commands, export,
-Tasks/cron, Memory (read/write), Skills (read-only), Usage/Insights (tokens, and
-cost from `dsh-cost-meter` where installed), dictation over `speech/transcribe`,
-the read-only in-chat Files browser and the in-chat Git menu (reads plus
+and the list's search), live session state (`session.active_list` with
+`starting|streaming|waiting`, and `sessions.changed`), approvals, clarifications,
+models, commands (including the host's `/goal`), the goal snapshot
+(`session.control.read`), export, Tasks/cron, Memory (read/write, including an
+`overwrite:false` conflict), Skills (read-only), Usage/Insights (tokens, and cost
+from `dsh-cost-meter` where installed), dictation over `speech/transcribe`, the
+read-only in-chat Files browser and the in-chat Git menu (reads plus
 stage/unstage/revert, commit, push and branch switch behind an idle-turn guard).
 The 2026-11-07 audit's wire defects (turn status, stop vocabulary, title read,
 list rows, multi-field PATCH, collection 404s, source matching, `limit=0`,
@@ -131,7 +133,9 @@ refusing it withdraws approvals silently.
 | `session.interrupt` | stops the running turn; answers `{status: interrupted|not_interrupted, interrupted}` |
 | `session.steer` | queues a mid-run message |
 | `session.delete` | refused: DSH has no session-delete primitive |
-| `session.active_list` | `{sessions:[{session_key, status}]}` for the live dots: a running turn is `streaming`, an open approval/clarify is `waiting`, idle sessions are omitted. A promoted draft is listed under both its draft id and its stored DSH session id |
+| `session.active_list` | `{sessions:[{session_key, status}]}` for the live dots: an accepted prompt is `starting` until the turn goes live, a running turn is `streaming`, an open approval/clarify is `waiting`, idle sessions are omitted. A promoted draft is listed under both its draft id and its stored DSH session id |
+| `command.dispatch` | executes one host command through `commands/execute`: `{name, argument, session_id}` → `{type:'exec', output}` for a normal command. `/goal` is translated to DSH's grammar (`status`/`show` → status, `done`/`stop` → clear, `pause`/`resume`/`clear` unchanged, any other text an objective; DSH-only `wait`/`gate`/`draft`/`unwait` are refused). A host command error answers `-32000` with the host's wording; there is no `{type:'send'}` kickoff because DSH's own goal driver continues the goal |
+| `session.control.read` | `{control:{goal:{title,status,turns_used,max_turns}}}` or `{control:{}}`; status maps `active|paused|blocked|complete` → `active|paused|blocked|done`. No loop or heartbeat keys are emitted (no DSH primitive), so the phone hides those rows |
 | `session.events.since` | `{latest_seq, epoch, truncated, events}`, contiguous per session |
 | `prompt.submit` | starts a turn and returns `{status: streaming|queued}`; a second submit while one runs is queued, not refused. Each image-upload path inside the facade uploads root (realpath-checked) becomes a native image part; the app's two-line vision reference stays in the user text so Hermex rebuilds the chip after reload |
 | `images` on `/api/chat/start` | only the loopback Hermes listener may name a `path` (or send any image): a cookie request carrying at least one valid image entry answers 400, so the Legacy listener remains attachment-free and no host file can be named from a browser session. An empty array, or one whose entries all fail the mediaType/data/path filter, is ignored and the text still starts |
@@ -248,26 +252,31 @@ answers `403`, and the all-add fallback runs only for an untracked file.
   tokens; no cost, because DSH has no pricing), clarifications, session list,
   open, rename, pin,
   archive (the write-fence route above is what lets those three work), live
-  Working/Needs-you state, branch, export, model picker, slash commands, the
-  session list's search, the in-chat
+  Working/Needs-you state (including the `starting` edge), the goal menu
+  (create/edit/pause/resume/clear through the host's `/goal`, and a goal
+  snapshot; loop/heartbeat are absent), branch, export, model picker, slash
+  commands, the session list's search, the in-chat
   Files browser (`session.info.terminal_backend:"local"` plus the fenced
   `/api/fs/*` routes), the in-chat Git menu (status, changes, diffs, branches
   and the writes above)
   and the Tasks screen (list/create/edit/pause/resume/trigger/delete and run
   history; local delivery only), Memory (the global `$DSH_HOME/AGENTS.md` as
-  MEMORY.md, read and atomically saved), Skills (the DSH catalogue and each
+  MEMORY.md, read and atomically saved; an `overwrite:false` save against an
+  existing file is 409), Skills (the DSH catalogue and each
   skill's SKILL.md; the toggle is refused), dictation over `speech/transcribe`
   (m4a converted to canonical WAV) and Usage/Insights (tokens and sessions, plus
   cost from `dsh-cost-meter` where installed; the Messages total is approximate 0).
 - **Partial:** the session rows carry no `preview`; Fast and yolo are refused, so their controls
-  revert instead of showing a false state. Git writes are wired, but push needs an
-  upstream/`origin` and non-interactive credentials, commit hooks have a 60 s
-  timeout, and the idle guard refuses while a turn started on this listener runs
-  (it cannot see GUI/scheduler turns), not only a turn in that repository. Dictation needs a WAV
+  revert instead of showing a false state. Git writes are wired, but push needs
+  a configured push remote (or `origin`) and non-interactive credentials, commit
+  hooks have a 60 s timeout, and the idle guard refuses while a turn started on
+  this listener runs (it cannot see GUI/scheduler turns), not only a turn in that
+  repository. The goal menu has no loop/heartbeat rows (no DSH primitive) and
+  DSH-only verbs are refused; `session.control` stays unavailable. Dictation needs a WAV
   converter (`afconvert` on macOS, `ffmpeg` elsewhere) and the stock speech
   Remote's 4 MiB/120 s default can refuse a recording the route's own 25 MiB
   bound allows; spoken replies still have no primitive.
-- **Empty/absent:** Kanban, Bots, Bot
+- **Empty/absent:** Kanban, Bots, Bot (the full upstream-blocked catalogue is [docs/08-upstream-gaps.md](08-upstream-gaps.md))
   screen. Those screens exist on a Hermes host; here they have no backend, and
   unimplemented methods make their controls hide rather than error (the sidebar
   toggles for Tasks are local, so that screen shows its

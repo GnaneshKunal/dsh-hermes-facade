@@ -121,7 +121,7 @@ over loopback with an internal token, so sessions, streaming, approvals,
 clarifications and export keep one implementation. It covers chat, sessions,
 approvals, clarifications, models, commands, export and the session write
 fence the list's rename/pin/archive actions read first, the read-only in-chat Files browser and the in-chat Git
-menu (reads plus writes), Tasks/cron, Memory (read/write), Skills (read-only), Usage (tokens + cost from `dsh-cost-meter`), chat
+menu (reads plus writes), Tasks/cron, Memory (read/write), Skills (read-only), goal (read/command; no loop/heartbeat), Usage (tokens + cost from `dsh-cost-meter`), chat
 attachments (images + documents) and in-chat Git writes (stage/unstage/revert, commit, push, branch switch); Bots
 and session import are not implemented and answer `-32601` (the app hides those controls). Details, endpoint table and gaps:
 [docs/06-hermes-gateway.md](docs/06-hermes-gateway.md).
@@ -164,15 +164,16 @@ and add it in Hermex as its own server.
 | session delete / duplicate / compress / clear / undo / retry / truncate / move / update | not implemented (refusals) |
 | projects (one per DSH workspace) | partial: read-only list |
 | Tasks/cron on the Hermes listener (`/api/cron/*`) | full: list/create/edit/pause/resume/trigger/delete, run history; local delivery only, no cost |
-| Memory on the Hermes listener | read/write: the global `$DSH_HOME/AGENTS.md` as MEMORY.md, saved atomically (2 MiB cap); no USER.md, no soul |
-| Live Working / Needs-you on the Hermes listener | `session.active_list` + `sessions.changed`: Working while a turn runs, Needs-you while an approval/clarify is open; idle rows omitted |
+| Memory on the Hermes listener | read/write: the global `$DSH_HOME/AGENTS.md` as MEMORY.md, saved atomically (2 MiB cap); `overwrite=false` is a 409; no USER.md, no soul |
+| Live Working / Needs-you on the Hermes listener | `session.active_list` + `sessions.changed`: starting before a turn goes live, Working while it runs, Needs-you while an approval/clarify is open; idle rows omitted |
+| Goal on the Hermes listener | `/goal` through the host command (`command.dispatch`) and a goal snapshot (`session.control.read`); loop/heartbeat are absent, DSH-only verbs are refused |
 | Dictation on the Hermes listener | `POST /api/audio/transcribe` over DSH `speech/transcribe`: WAV passes through; m4a/mp4/aac is converted to canonical 16 kHz mono WAV (afconvert on macOS, ffmpeg elsewhere); honest 400 when no converter |
 | Skills on the Hermes listener | read-only: DSH's catalogue (newest session) and each skill's body; package-provided skills resolve their `assets/*.md`, pathless ones fall back to the description; the disable toggle is refused |
 | Usage/Insights on the Hermes listener | sessions (archived + subagent), input/output/cache tokens, per-model rows, daily chart; cost from `dsh-cost-meter` (ledger USD), messages ≈0 |
 | Chat attachments on the Hermes listener | images: staged, then sent as a native DSH image part; the app's vision reference stays in the transcript so the chip survives a reload; documents: staged and referenced as `@file:<path>`; both preview through the uploads root |
 | insights (Legacy), kanban | stubbed: screens open empty or unavailable |
 | bots, push, Move to Hermes | different transport (Hermes gateway); not served |
-| Hermes host contract (second listener, :9121) | v1.14: chat/streaming with context/token telemetry and image/document attachments, sessions incl. the write fence the list actions need and the list's search, approvals, clarifications, models, commands, export, Tasks/cron (local delivery only, no cost), Memory (read/write) and Skills (read-only), dictation (STT; m4a→canonical WAV), Live Working / Needs-you, Usage/Insights (tokens + `dsh-cost-meter` cost), the read-only in-chat Files browser (fenced to the chat folder) and the in-chat Git menu (reads plus stage/unstage/revert, commit, push and branch switch behind an idle-turn guard); kanban/bots and import answer -32601 or 400 (the per-surface state and plan are docs/05 §2 and docs/07) |
+| Hermes host contract (second listener, :9121) | v1.15: chat/streaming with context/token telemetry and image/document attachments, sessions incl. the write fence the list actions need and the list's search, approvals, clarifications, models, commands, export, Tasks/cron (local delivery only, no cost), Memory (read/write, overwrite:false 409) and Skills (read-only), dictation (STT; m4a→canonical WAV), Live Working / Needs-you (starting/working/waiting), the goal read/command surface (no loop/heartbeat), Usage/Insights (tokens + `dsh-cost-meter` cost), the read-only in-chat Files browser (fenced to the chat folder) and the in-chat Git menu (reads plus stage/unstage/revert, commit, push and branch switch behind an idle-turn guard); kanban/bots and import answer -32601 or 400 (the per-surface state and plan are docs/05 §2 and docs/07) |
 
 The verified matrix — every surface, the endpoint behind it, what the phone shows, and whether it is
 bridgeable here — is [docs/05-compatibility-matrix.md](docs/05-compatibility-matrix.md). docs/00 is
@@ -273,6 +274,7 @@ throws: a full disk or an unwritable directory cannot break a request.
 * [docs/00-DESIGN.md](docs/00-DESIGN.md): architecture, mapping tables, design snapshot
 * [docs/05-compatibility-matrix.md](docs/05-compatibility-matrix.md): the verified matrix for both transports — Legacy webui (:9120) and Hermes host (:9121)
 * [docs/06-hermes-gateway.md](docs/06-hermes-gateway.md): the Hermes-protocol listener (port 9121), its methods, events and gaps
+* [docs/08-upstream-gaps.md](docs/08-upstream-gaps.md): the durable catalogue of surfaces DSH cannot honestly provide yet, with evidence and the smallest upstream unblock
 * [docs/07-v2-roadmap.md](docs/07-v2-roadmap.md): parity with the Legacy server first, then the V2-only screens, with effort and acceptance criteria
 * docs/01-webui-api-contract.md: hermes-webui server contract
 * docs/02-hermex-client-wire.md: the client decoder, read from Swift
