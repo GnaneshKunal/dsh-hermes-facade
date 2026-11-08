@@ -79,11 +79,14 @@ Effort: **S** = one route/method over an existing facade primitive; **M** = new 
 | 9 | Skills | browse skills and their files | `/api/skills`, `/api/skills/content` | `skills/list` (read-only) + the catalog SKILL.md path | S/M | done (read-only) |
 | 10 | Usage / Insights | token and session usage | `/api/analytics/{usage,models}`, `insights.get` | a facade ledger over the session projections, plus `dsh-cost-meter` cost when installed | M/L | done (tokens + cost) |
 | 11 | Attachments | send a photo or a file | `POST /api/chat/image-upload`, `file.attach` | native `session/prompt` image parts + a facade uploads staging root; the app's vision reference stays in the transcript text; documents stay path-based | M | done (v1.12) |
-| 12 | Goal / loop / heartbeat | the goal menu | `session.control.read`, `session.control` | `goal` projection only; no loop/heartbeat | M/L | later |
+| 12 | Goal / loop / heartbeat | the goal menu | `command.dispatch` (`/goal`), `session.control.read` | DSH's real goal domain + `/goal` command; no loop/heartbeat | M/L | partial: goal works; loop/heartbeat absent |
 | 13 | `/btw`, `/background` | side questions and background runs | `prompt.btw`, `prompt.background` | no DSH primitive | L | later |
 | 14 | Delegated work | follow a subagent | `subagent.list/tail/interrupt` | DSH subagent sessions exist, their events do not | L | later |
 | 15 | Bots | create/configure a bot (a Profile) | `profiles.create/configure/set_asset`, bot chat `session.list {include_hidden,title}` | `agentPresets/*` read-only; create needs a facade store + soul injection | L | later |
 | 16 | Dictation | host STT | `POST /api/audio/transcribe` | `speech/transcribe`; m4a converted to canonical WAV with afconvert/ffmpeg | M | done (STT; TTS still absent) |
+
+The durable "why this is missing" catalogue, including the upstream primitive
+needed for each item, is [08-upstream-gaps.md](08-upstream-gaps.md).
 
 **Non-goals (deliberately not planned):** Kanban (no store or workers in DSH; the client already shows a clean
 "unavailable" on its config 404), push/Live Activity (`hermex-push` is an external relay + APNs), the bot screen
@@ -242,25 +245,28 @@ the figure is the plugin's estimate. `insights.get` answers `{messages:0}` becau
 already marks its Messages total approximate. No sessions in the window is a real empty state. Tests cover the host
 aggregation, both routes and the RPC.
 
-**Live Working / Needs-you, dictation and Git polish (parallel batch).** `session.active_list` reports
-`{session_key,status}` for the list (a run is `streaming`, an open approval/clarify is `waiting`, idle omitted) and
-`sessions.changed` is broadcast on turn/request boundaries; the client renders Working and Input without polling.
-`POST /api/audio/transcribe` calls DSH `speech/transcribe`, converting the phone's m4a to canonical 16 kHz mono WAV
-with afconvert (macOS) or ffmpeg; no converter is an honest 400. Git push reads
-`branch.<name>.remote`/`merge` so remote names containing `/` work, and status uses `--untracked-files=all` so an
-untracked directory lists its files and one can be staged. Tests cover the live statuses/events, the converter
-branches, the memory save, and the Git remote/untracked cases.
+**Live Working, dictation, Git and goal (parallel batches).** `session.active_list` reports
+`{session_key,status}` for the list (`starting` before a turn goes live, `streaming` while it runs, `waiting` for an
+open approval/clarify; idle omitted), and `sessions.changed` broadcasts on turn/request boundaries. `POST`
+`/api/audio/transcribe` calls DSH `speech/transcribe`, converting the phone's m4a to canonical 16 kHz mono WAV
+with afconvert (macOS) or ffmpeg; no converter is an honest 400. Git push prefers
+`branch.<name>.pushRemote`, then `remote.pushDefault`, then `branch.<name>.remote` (refspec explicit), and status
+uses `--untracked-files=all` so an untracked directory lists its files. `/goal` runs through the host command and
+`session.control` exposes the goal only; loop/heartbeat remain absent. Tests cover the live states, converter,
+memory save/overwrite, Git remotes, and goal verbs/read.
 
-Verify: `npm run check && npm test` (251 tests), then rename a chat from the phone's list, pin it, archive it,
-unarchive it, stop a running turn, watch a Working/Needs-you dot settle, edit Memory and re-read it, dictate a
-short recording, and open Files in a chat to browse a folder and preview a file.
+Verify: `npm run check && npm test` (271 tests), then rename a chat from the phone's list, pin it, archive it,
+unarchive it, stop a running turn, watch a starting/Working/Needs-you dot settle, edit Memory and re-read it,
+dictate a short recording, run `/goal` and read its snapshot, push a branch with a slash-named remote, and open
+Files in a chat to browse a folder and preview a file.
 
 ---
 
 ## 5. Next picks, with acceptance criteria
 
 Files, Git read, session search, chat telemetry, Tasks, Memory, Skills, Usage, Attachments, Git writes, Live
-Working / Needs-you, Memory write and Dictation are done (see §4). The next two, in order:
+Working / Needs-you, Memory write, Dictation, the goal surface (partial) and the small polish batch are done
+(see §4 and [08-upstream-gaps.md](08-upstream-gaps.md)). The next two, in order:
 
 ### Pick 1 — Bots
 

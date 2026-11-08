@@ -7,6 +7,37 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **Long-turn replay on reattach.** The gateway's per-session event ring went
+  from 1000 to 5000 events. A Hermex client that returns to a running turn
+  calls `session.events.since`; at 1000 the ring was truncated after about an
+  hour, so the client fell back to the persisted transcript (which lacks the
+  in-flight tool rows) and showed only the live status. 5000 covers the
+  reported ~1300-event turn; a turn longer than that can still truncate.
+- **Live Working `starting` edge.** `session.active_list` reports `starting`
+  between an accepted `prompt.submit` and the turn going live, so a concurrent
+  list read shows Working instead of nothing. The marker is cleared on the
+  active transition, a refusal/failure, and settle; a rejected submit never
+  leaves one behind.
+- **Memory `overwrite:false`.** A save against an existing
+  `$DSH_HOME/AGENTS.md` now answers `409` and leaves the old text intact; a
+  missing file is still created, and absent/true keeps replace semantics.
+- **Full Git push-target parity.** Push prefers `branch.<name>.pushRemote`,
+  then `remote.pushDefault`, then the upstream remote, with an explicit
+  `<branch>:<upstream-branch>` refspec. A remote name containing `/` and a
+  `push.default=matching` config cannot redirect the push; a leading-`-`
+  remote is refused.
+- **Goal surface (partial).** `command.dispatch` runs the host's own `/goal`,
+  translating the webui vocabulary (`status`/`show` -> status, `done`/`stop`
+  -> clear, other text an objective) and refusing DSH-only
+  `wait`/`gate`/`draft`/`unwait` rather than creating goals named after them.
+  `session.control.read` returns the goal snapshot (status/turns) from DSH's
+  projection; loop and heartbeat are absent, so their controls never render and
+  `session.control` stays unavailable.
+- **Durable upstream-gap catalogue.** `docs/08-upstream-gaps.md` records every
+  surface the phone expects but DSH cannot honestly provide (session preview,
+  chat cost on the Hermes path, loop/heartbeat, bots, side tasks, transcript
+  rewind, TTS, etc.), with evidence, the current refusal, and the smallest
+  upstream change. It distinguishes UPSTREAM from CLIENT/FACADE/LIMIT/NON-GOAL.
 - **Live Working / Needs-you on the Hermes listener.** `session.active_list`
   answers `{sessions:[{session_key,status}]}`: a running turn is `streaming`
   (Working), an open approval/clarify is `waiting` (Input / Needs you), and
