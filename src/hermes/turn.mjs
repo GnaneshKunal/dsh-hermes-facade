@@ -98,7 +98,11 @@ export function createTurnRunner({
   const active = new Map()
   /** Prompts submitted while the session already had a turn, oldest first. */
   const queued = new Map()
-  /** Sessions whose start is still in flight, so a second submit cannot race it. */
+  /**
+   * Sessions whose start is in flight: accepted, not yet live. The set both
+   * closes the race two concurrent submits had and is the wire's starting
+   * state, so a status read during the gap draws Working instead of nothing.
+   */
   const starting = new Set()
 
   /**
@@ -108,6 +112,15 @@ export function createTurnRunner({
    */
   function isRunning(sessionId) {
     return active.has(sessionId)
+  }
+
+  /**
+   * Whether a session's turn is being started: accepted, not yet live.
+   * @param {string} sessionId session id.
+   * @returns {boolean} starting.
+   */
+  function isStarting(sessionId) {
+    return starting.has(sessionId)
   }
 
   /**
@@ -270,6 +283,9 @@ export function createTurnRunner({
       }
     } finally {
       active.delete(sessionId)
+      // A settling turn can never still be "starting": drop the state here too,
+      // so a start that somehow outlived its turn cannot leave a stale row.
+      starting.delete(sessionId)
       // The list must stop showing this session as busy the moment its turn
       // ends; a status read after this sees it idle and omits it.
       publishSessionsChanged(hub)
@@ -410,5 +426,5 @@ export function createTurnRunner({
     active.clear()
   }
 
-  return { start, interrupt, steer, isRunning, dispose, active }
+  return { start, interrupt, steer, isRunning, isStarting, dispose, active, starting }
 }
