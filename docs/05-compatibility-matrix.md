@@ -168,7 +168,7 @@ through the durable parent address.
 | Surface | Endpoint(s) / method(s) | State | What the phone shows | Bridgeable? |
 |---|---|---|---|---|
 | List / paging | `GET /api/sessions` | **WORKS** | `order`, `archived`, `limit`, `offset` honoured; rows carry id/title/pinned/archived/timestamps/counts | rows lack `preview`, so the list shows no snippet |
-| One row / transcript | `GET /api/sessions/{id}`, `/messages` | **WORKS** | 500-row pages, latest/oldest, `include_compacted` accepted | bounded by the host's 800-message window |
+| One row / transcript | `GET /api/sessions/{id}`, `/messages` | **WORKS** | 500-row pages, latest/oldest, `include_compacted` accepted; the messages page re-materializes the facade's top-level tool results as `role:"tool"` rows, so a reopened chat keeps its tool cards | bounded by the host's 800-message window |
 | Rename / pin / archive | `PATCH /api/sessions/{id}` behind `GET …/mutation-snapshot` | **WORKS** (since the write fence) | list actions apply; a stale revision answers `409 revision_conflict` and the phone says the chat changed | — |
 | Write fence | `GET /api/sessions/{id}/mutation-snapshot` | **WORKS** | `{exists, runtime_revision}`; without this route every list action used to fail | — |
 | Mark unread | `PATCH … {unread}` | **400** | refused with a detail; DSH has no unread flag | — |

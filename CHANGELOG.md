@@ -7,6 +7,13 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **Persisted tool cards survive a reopen.** The facade folds a tool result
+  into its top-level `tool_calls` array and deliberately emits no
+  `role:"tool"` rows. The gateway's messages page now re-materializes one
+  tool row per call after its assistant row (with `tool_call_id`, `tool_name`,
+  result snippet and `is_error`), so Hermex's canonical transcript projection
+  rebuilds the tool/code cards on a reopened chat instead of showing only the
+  reasoning rows the live turn had already shown.
 - **Goal polish.** `/goal` is now listed in `commands.catalog` with its
   argument hint, and a successful goal command publishes one
   `session.control.update` carrying the same snapshot `session.control.read`

@@ -233,6 +233,41 @@ test('websocket handshake, capabilities and session list', async () => {
   }
 })
 
+test('a reopened transcript pages over display rows, not raw messages', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    for (let index = 1; index <= 8; index += 1) {
+      harness.host.seed('sess-mock', [
+        { type: 'assistant/message', seq: index * 2, time: Date.now(), data: { turn: 1, step: index, message: { role: 'assistant', content: [{ type: 'text', text: 'reply ' + index }] } } },
+        { type: 'tool/call', seq: index * 2 + 1, time: Date.now(), data: { turn: 1, step: index, callId: 'call-page-' + index, name: 'bash', arguments: '{}' } },
+      ])
+    }
+    const all = await api(harness.base, '/api/sessions/sess-mock/messages?order=latest&limit=500&offset=0', { cookie })
+    assert.equal(all.status, 200)
+    assert.equal(all.json.messages.length, 16)
+    assert.equal(all.json.messages.filter(row => row.role === 'tool').length, 8)
+    const first = await api(harness.base, '/api/sessions/sess-mock/messages?order=latest&limit=5&offset=0', { cookie })
+    assert.equal(first.status, 200)
+    assert.equal(first.json.messages.length, 5)
+    const second = await api(harness.base, '/api/sessions/sess-mock/messages?order=latest&limit=5&offset=' + first.json.messages.length, { cookie })
+    assert.equal(second.status, 200)
+    assert.equal(second.json.messages.length, 5)
+    // The app's next offset is the number of display rows it received; the
+    // second page must be the five rows immediately before the first, with no
+    // skipped real message and no duplicate ids.
+    const allIDs = all.json.messages.map(row => row.id)
+    assert.deepEqual(first.json.messages.map(row => row.id), allIDs.slice(-5))
+    assert.deepEqual(second.json.messages.map(row => row.id), allIDs.slice(-10, -5))
+    const union = [...first.json.messages, ...second.json.messages]
+    assert.equal(new Set(union.map(row => row.id)).size, union.length)
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+
 test('sessions REST: list, row, messages and rename', async () => {
   const harness = await boot()
   try {
@@ -242,6 +277,12 @@ test('sessions REST: list, row, messages and rename', async () => {
     assert.equal(listing.json.sessions[0].id, 'sess-mock')
     assert.equal(listing.json.sessions[0].source, 'gui')
 
+    // The facade folds tool results into the top-level `tool_calls` array and
+    // emits no role:"tool" rows; the gateway re-materializes one row per call so
+    // Hermex's canonical transcript projection can rebuild the tool cards.
+    harness.host.seed('sess-mock', [{
+      type: 'tool/call', seq: 1, time: Date.now(), data: { turn: 1, step: 1, callId: 'call-rest-1', name: 'bash', arguments: '{}' },
+    }])
     const row = await api(harness.base, '/api/sessions/sess-mock', { cookie })
     assert.equal(row.status, 200)
     assert.equal(row.json.id, 'sess-mock')
@@ -250,6 +291,10 @@ test('sessions REST: list, row, messages and rename', async () => {
     assert.equal(messages.status, 200)
     assert.equal(messages.json.session_id, 'sess-mock')
     assert.ok(Array.isArray(messages.json.messages))
+    const toolRow = messages.json.messages.find(message => message.role === 'tool')
+    assert.ok(toolRow, 'the transcript carries a tool row for the persisted call')
+    assert.equal(toolRow.tool_call_id, 'call-rest-1')
+    assert.equal(toolRow.tool_name, 'bash')
 
     // The phone reads the mutation snapshot before every write and answers it
     // with expected_revision; a route that 404s makes rename/pin/archive fail.

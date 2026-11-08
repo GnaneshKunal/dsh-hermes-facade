@@ -258,7 +258,7 @@ the event ring pins the turn's first event (up to 20,000) instead of dropping it
 back to the quiet 5000. Tests cover the live states, converter, memory save/overwrite, Git remotes, goal
 verbs/read/update, and the active-turn replay pin.
 
-Verify: `npm run check && npm test` (279 tests), then rename a chat from the phone's list, pin it, archive it,
+Verify: `npm run check && npm test` (280 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, watch a starting/Working/Needs-you dot settle, edit Memory and re-read it,
 dictate a short recording, run `/goal` and read its snapshot, push a branch with a slash-named remote, and open
 Files in a chat to browse a folder and preview a file.

@@ -43,7 +43,7 @@ import {
   createTicketStore,
 } from './protocol.mjs'
 import { createSessionRegistry } from './sessions.mjs'
-import { commandsOf, latestTranscriptWindow, modelOptionsOf, sessionRowOf, transcriptRowOf } from './shapes.mjs'
+import { commandsOf, modelOptionsOf, sessionRowOf, transcriptRowOf } from './shapes.mjs'
 import { createTurnRunner } from './turn.mjs'
 import { acceptUpgrade } from './ws.mjs'
 
@@ -727,6 +727,21 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, host, conve
    * @param {URL} url request url.
    * @returns {Promise<object|null>} body, or null when the session is unknown.
    */
+  /**
+   * Whether a display row carries real text Hermex can anchor a page on. A
+   * synthesized tool row is never the anchor, even when its result has text.
+   * @param {object} row display row.
+   * @returns {boolean} visible.
+   */
+  function hasDisplayText(row) {
+    if (row?.role === 'tool') return false
+    const content = row?.content
+    if (typeof content === 'string') return content.trim().length > 0
+    if (!Array.isArray(content)) return false
+    return content.some(part => part?.type === 'text'
+      && typeof part.text === 'string' && part.text.trim().length > 0)
+  }
+
   async function messagePage(sessionId, url) {
     // A chat the user has not sent in yet has no DSH session; its transcript is
     // empty rather than a 404, which the client would treat as a failed read.
@@ -747,20 +762,66 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, host, conve
     if (reply.status === 404) return null
     if (reply.status !== 200) throw new Error('session read failed (HTTP ' + reply.status + ')')
     const messages = Array.isArray(reply.json?.session?.messages) ? reply.json.session.messages : []
-    // A transcript page is the oldest-first window `limit` rows back from `offset`
-    // rows before the newest, so the row ids stay stable while older pages load.
-    // The newest page also reaches the closest visible row: a tool-only page gives
-    // Hermex's history projection no anchor, which used to look like an empty chat.
-    const end = order === 'latest' ? Math.max(0, messages.length - offset) : messages.length
-    const start = order === 'latest' ? latestTranscriptWindow(messages, limit, offset).start : offset
-    const slice = order === 'latest'
-      ? messages.slice(start, end)
-      : messages.slice(start, Math.min(start + limit, end))
+    // The facade folds a tool result into the top-level `tool_calls` array and
+    // deliberately emits no `role:"tool"` rows. Hermex's canonical transcript
+    // projection builds tool cards only from those rows, so a reopened chat
+    // showed reasoning but no tool/code cards. Re-materialize one tool row per
+    // call after its assistant row; the row carries the result snippet and the
+    // call id the assistant row declared.
+    const persistedCalls = Array.isArray(reply.json?.session?.tool_calls) ? reply.json.session.tool_calls : []
+    const persistedIndex = new Map(persistedCalls.map((entry, index) => [String(entry?.tid ?? ''), index]))
+    // Build the complete display-row list first: real transcript rows plus one
+    // tool row after each assistant call. Hermex pages by *display rows*, not
+    // by real messages, so slicing real messages first and appending tools
+    // would make its next offset skip rows.
+    const display = []
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index]
+      display.push(transcriptRowOf(message, index))
+      if (message?.role !== 'assistant' || !Array.isArray(message.tool_calls)) continue
+      for (const call of message.tool_calls) {
+        const callId = String(call?.id ?? call?.call_id ?? '')
+        if (callId.length === 0) continue
+        const callIndex = persistedIndex.get(callId)
+        const persisted = callIndex === undefined ? undefined : persistedCalls[callIndex]
+        const name = String(persisted?.name ?? call?.function?.name ?? '')
+        let rowId = callIndex === undefined ? 0 : 2_000_000 + callIndex
+        if (rowId === 0) {
+          // A call whose result has not landed yet still gets a stable id.
+          for (let offsetChar = 0; offsetChar < callId.length; offsetChar += 1) {
+            rowId = (rowId * 31 + callId.charCodeAt(offsetChar)) % 900000
+          }
+          rowId += 3_000_000
+        }
+        display.push({
+          role: 'tool',
+          content: String(persisted?.snippet ?? ''),
+          id: rowId,
+          row_id: rowId,
+          timestamp: message.timestamp,
+          tool_call_id: callId,
+          tool_name: name,
+          ...(persisted?.is_error === true ? { is_error: true } : {}),
+        })
+      }
+    }
+    const end = order === 'latest' ? Math.max(0, display.length - offset) : display.length
+    let start = order === 'latest' ? Math.max(0, end - limit) : offset
+    if (order === 'latest' && offset === 0 && !display.slice(start, end).some(hasDisplayText)) {
+      // Keep at least one visible anchor in the newest page; tool rows alone
+      // give Hermex's projection nothing to attach the cards to.
+      for (let index = end - 1; index >= 0; index -= 1) {
+        if (hasDisplayText(display[index])) { start = Math.min(start, index); break }
+      }
+    }
+    const page = order === 'latest'
+      ? display.slice(start, end)
+      : display.slice(start, Math.min(start + limit, display.length))
     return {
       session_id: sessionId,
       profile: 'default',
-      messages: slice.map((message, index) => transcriptRowOf(message, start + index)),
-      pagination: { limit, offset, order, returned: slice.length },
+      messages: page,
+      pagination: { limit, offset, order, returned: page.length },
     }
   }
 
