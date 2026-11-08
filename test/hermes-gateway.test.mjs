@@ -1562,6 +1562,15 @@ test('the in-chat Files surface lists, previews and downloads inside a chat fold
       assert.equal(image.headers.get('content-type'), 'image/png')
       assert.deepEqual([...Buffer.from(await image.arrayBuffer())], [0x89, 0x50, 0x4e, 0x47, 0x00, 0x01])
 
+      // The Hermes app resolves a Markdown image to /api/media and Quick Look
+      // to /api/file/raw on the second listener; both must proxy the same bytes.
+      for (const mediaPath of ['/api/media', '/api/file/raw']) {
+        const media = await fetch(harness.base + mediaPath + '?session_id=sess-mock&path=' + enc(join(folder, 'pic.png')), { headers: { cookie } })
+        assert.equal(media.status, 200)
+        assert.equal(media.headers.get('content-type'), 'image/png')
+        assert.deepEqual([...Buffer.from(await media.arrayBuffer())], [0x89, 0x50, 0x4e, 0x47, 0x00, 0x01])
+      }
+
       // The chat folder is the boundary, and the facade's state is never served.
       const forbidden = await api(harness.base, '/api/fs/list?path=' + enc(outside), { cookie })
       assert.equal(forbidden.status, 403)
