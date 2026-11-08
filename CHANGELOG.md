@@ -7,6 +7,12 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **Cold-open tool rows.** A fresh Hermex launch (cursor 0) cannot replay the
+  active turn, so it rebuilds from `GET /api/sessions/{id}/messages`. While a
+  turn is active, the messages page now also appends tool rows that exist only
+  in the event ring (deduped by `tool_call_id`), so the current step's tool/code
+  cards render before the assistant message settles. Warm reattach remains
+  event-replay based; settled transcripts are unchanged.
 - **Persisted tool cards survive a reopen.** The facade folds a tool result
   into its top-level `tool_calls` array and deliberately emits no
   `role:"tool"` rows. The gateway's messages page now re-materializes one
