@@ -2828,12 +2828,24 @@ test('command.dispatch translates the Hermes goal verbs onto the host grammar', 
       // Anything that is not exactly a control verb is an objective, so a goal
       // whose text starts with one still reaches the host as its own objective.
       await socket.call('command.dispatch', { name: 'goal', arg: 'clear the backlog', session_id: 'sess-mock' })
-      assert.deepEqual(forwarded.map(entry => entry.line), ['/goal', '/goal pause', '/goal clear the backlog'])
-      // A webui-only verb must never silently become a new objective.
-      const unsupported = await socket.call('command.dispatch', { name: 'goal', arg: 'done', session_id: 'sess-mock' })
-      assert.equal(unsupported.error.code, -32000)
-      assert.match(unsupported.error.message, /no \/goal done verb/)
-      assert.equal(forwarded.length, 3, 'the refused verb never reaches the host command')
+      // Hermex ends a goal with done or stop; DSH's own clear is that same end.
+      await socket.call('command.dispatch', { name: 'goal', arg: 'done', session_id: 'sess-mock' })
+      await socket.call('command.dispatch', { name: 'goal', arg: 'stop', session_id: 'sess-mock' })
+      assert.deepEqual(forwarded.map(entry => entry.line), [
+        '/goal',
+        '/goal pause',
+        '/goal clear the backlog',
+        '/goal clear',
+        '/goal clear',
+      ])
+      // Reserved subcommands DSH has no equivalent for are refused both bare and
+      // with arguments, never executed as an objective named after the verb.
+      for (const arg of ['wait', 'wait 123', 'gate add all', 'draft the objective', 'unwait']) {
+        const refused = await socket.call('command.dispatch', { name: 'goal', arg, session_id: 'sess-mock' })
+        assert.equal(refused.error.code, -32000, arg + ' must be refused')
+        assert.match(refused.error.message, /no \/goal (wait|gate|draft|unwait) subcommand/, arg + ' carries the reason')
+      }
+      assert.equal(forwarded.length, 5, 'a refused subcommand never reaches the host command')
     } finally {
       socket.ws.close()
     }

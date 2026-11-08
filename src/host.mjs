@@ -1387,9 +1387,10 @@ export function createDshHost({ ctx, logger = console }) {
      * DSH owns the command grammar and the domain state behind it: `/goal` is
      * registered by its own plugin against the goal service, so a goal verb has
      * to travel through this execution instead of being re-implemented here.
-     * The Remote takes its receiving agent as a lookup identity — the session id
-     * is resolved by the host's own agent lookup (which resumes a cold session),
-     * so the handler acts on exactly the agent that persists the result.
+     * The Remote takes its receiving agent as a lookup identity: the session id
+     * is resolved by the host's own agent registry to that session's live Agent,
+     * so the handler acts on exactly the agent that persists the result. The
+     * facade never resumes a session to find one.
      *
      * @param {object} input input.
      * @param {string} input.sessionId session whose agent receives the command.
