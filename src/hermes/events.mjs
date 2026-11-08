@@ -227,6 +227,15 @@ export function createEventHub({
   }
 
   /**
+   * The first sequence of the turn currently pinned, if any.
+   * @param {string} sessionId session id.
+   * @returns {number|undefined} first seq.
+   */
+  function turnFloor(sessionId) {
+    return turnFloors.get(String(sessionId))
+  }
+
+  /**
    * Forget a session's ring, cursor and turn pin (a deleted session).
    * @param {string} sessionId session id.
    * @returns {void}
@@ -238,5 +247,5 @@ export function createEventHub({
     turnFloors.delete(sessionId)
   }
 
-  return { attach, publish, since, head, beginTurn, endTurn, forget, connections, pendingSince }
+  return { attach, publish, since, head, beginTurn, endTurn, turnFloor, forget, connections, pendingSince }
 }

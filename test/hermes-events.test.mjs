@@ -28,6 +28,7 @@ test('a turn in flight pins its first event so a mid-turn cursor has no hole', (
   for (let seq = 1; seq <= 3; seq += 1) hub.publish('session.info', { running: false }, 'sess')
   hub.beginTurn('sess')
   const turnStart = hub.head('sess') + 1
+  assert.equal(hub.turnFloor('sess'), turnStart, 'the active turn exposes its first seq for scoped reads')
   for (let seq = 0; seq < 20; seq += 1) hub.publish('tool.start', { name: 'bash', tool_id: String(seq) }, 'sess')
 
   // A screen that saw the turn begin and dropped keeps its cursor inside the

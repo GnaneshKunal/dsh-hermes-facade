@@ -3135,6 +3135,50 @@ test('a no-goal read and a clear report an empty control', async () => {
   }
 })
 
+test('a cold open during a turn includes the live tool row', async () => {
+  const harness = await boot({ replayRetain: 40, turnRetain: 400 })
+  harness.host.setTurnDelay(5000)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      const draft = (await socket.call('session.create', { profile: 'default' })).result.session_id
+      await socket.call('prompt.submit', { session_id: draft, text: 'run a tool' })
+      await socket.waitFor(frame => frame.params?.type === 'session.info' && frame.params.payload?.running === true)
+      const active = await socket.call('session.active_list', {})
+      const stored = active.result.sessions.map(row => row.session_key).find(key => key !== draft)
+      assert.ok(stored, 'the promoted draft has a stored session key')
+      const queue = harness.host.follow(stored)
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        queue.push({ type: 'event', event: { type: 'session/title', seq: 1, time: Date.now(), data: { title: 'Cold probe' } } })
+        if (socket.frames.some(frame => frame.params?.type === 'session.title')) break
+        await new Promise(resolve => setTimeout(resolve, 25))
+      }
+      assert.ok(socket.frames.some(frame => frame.params?.type === 'session.title'), 'the turn stream is attached')
+      queue.push({ type: 'event', event: { type: 'tool/call', seq: 1, time: Date.now(), data: { turn: 1, step: 1, callId: 'cold-tool-1', name: 'bash', arguments: '{"command":"echo hi"}' } } })
+      queue.push({ type: 'event', event: { type: 'tool/result', seq: 2, time: Date.now(), data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'cold-tool-1', content: [{ type: 'text', text: 'hi' }] } } } })
+      await socket.waitFor(frame => frame.params?.type === 'tool.complete' && frame.params.payload?.tool_id === 'cold-tool-1')
+      // A fresh client has no replay cursor; its first transcript read is this
+      // page, and the current step's tool row is only in the event ring.
+      // A cold launch opens the stored DSH id from the list, not the draft id
+      // the turn is still running under; the alias must find the same ring.
+      const messages = await api(harness.base, '/api/sessions/' + stored + '/messages?order=latest&limit=50&offset=0', { cookie })
+      assert.equal(messages.status, 200)
+      const tool = messages.json.messages.find(row => row.role === 'tool' && row.tool_call_id === 'cold-tool-1')
+      assert.ok(tool, 'the cold transcript carries the live tool row')
+      assert.equal(tool.tool_name, 'bash')
+      assert.equal(tool.content, 'hi')
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+
 test('a screen reattaching mid-turn replays the active turn instead of a hole', async () => {
   // A small quiet ring makes the reported oversubscription reproducible without
   // streaming thousands of frames; the turn itself is the long part.

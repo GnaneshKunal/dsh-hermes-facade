@@ -728,6 +728,21 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, host, conve
    * @returns {Promise<object|null>} body, or null when the session is unknown.
    */
   /**
+   * The runner key for a session id, including a promoted draft's alias.
+   * A cold launch lists the stored DSH id while the live runner and event ring
+   * still use the draft id the chat was opened with.
+   * @param {string} sessionId requested id.
+   * @returns {string|undefined} active key.
+   */
+  function liveKeyFor(sessionId) {
+    if (runner.active.has(sessionId) || runner.starting.has(sessionId)) return sessionId
+    for (const key of new Set([...runner.active.keys(), ...runner.starting])) {
+      if (sessions.resolve(key) === sessionId) return key
+    }
+    return undefined
+  }
+
+  /**
    * Whether a display row carries real text Hermex can anchor a page on. A
    * synthesized tool row is never the anchor, even when its result has text.
    * @param {object} row display row.
@@ -802,6 +817,49 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, host, conve
           tool_call_id: callId,
           tool_name: name,
           ...(persisted?.is_error === true ? { is_error: true } : {}),
+        })
+      }
+    }
+    // Cold open: the app has no replay cursor, the ring reports truncated, and
+    // it rebuilds from this page instead. The facade's transcript can lag the
+    // live turn (the current step's assistant message is not settled yet), so
+    // append any active-turn tool rows still only in the event ring. Warm
+    // reattach reads the same page after replaying the ring, so this is
+    // idempotent by tool_call_id.
+    const liveKey = liveKeyFor(sessionId)
+    const turnFloor = liveKey === undefined ? undefined : hub.turnFloor(liveKey)
+    if (liveKey !== undefined && turnFloor !== undefined) {
+      const known = new Set(display.filter(row => row.role === 'tool').map(row => row.tool_call_id))
+      const live = new Map()
+      // Only the pinned turn: older tool events in the quiet ring belong to
+      // settled turns and must not be re-attached to the current reply.
+      for (const event of hub.since(liveKey, turnFloor - 1).events) {
+        const payload = event.payload ?? {}
+        const callId = String(payload.tool_id ?? '')
+        if (callId.length === 0) continue
+        if (event.type === 'tool.start') live.set(callId, { name: String(payload.name ?? ''), content: '', isError: false })
+        if (event.type === 'tool.complete') {
+          const entry = live.get(callId) ?? { name: '', content: '', isError: false }
+          entry.content = String(payload.result ?? '')
+          entry.isError = payload.is_error === true
+          live.set(callId, entry)
+        }
+      }
+      for (const [callId, entry] of live) {
+        if (known.has(callId)) continue
+        let rowId = 4_000_000
+        for (let offsetChar = 0; offsetChar < callId.length; offsetChar += 1) {
+          rowId = (rowId * 31 + callId.charCodeAt(offsetChar)) % 900000
+        }
+        display.push({
+          role: 'tool',
+          content: entry.content,
+          id: rowId + 4_000_000,
+          row_id: rowId + 4_000_000,
+          timestamp: 0,
+          tool_call_id: callId,
+          tool_name: entry.name,
+          ...(entry.isError ? { is_error: true } : {}),
         })
       }
     }
