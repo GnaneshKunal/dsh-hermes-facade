@@ -2231,6 +2231,47 @@ test('Memory saves stay on MEMORY.md and refuse bad bodies', async () => {
   }
 })
 
+test('Memory saves honour overwrite:false', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const memoryPath = 'dsh://memory/memories/MEMORY.md'
+    const upload = body => api(harness.base, '/api/files/upload', {
+      cookie,
+      method: 'POST',
+      body: { path: memoryPath, ...body },
+    })
+
+    // A create-only save over an existing file is a conflict and changes nothing.
+    writeFileSync(join(harness.dir, 'AGENTS.md'), 'old memory\n')
+    const refused = await upload({ overwrite: false, data_url: textDataUrl('new memory\n') })
+    assert.equal(refused.status, 409)
+    assert.match(refused.json.detail, /already exists/)
+    assert.equal(readFileSync(join(harness.dir, 'AGENTS.md'), 'utf8'), 'old memory\n')
+
+    // overwrite:true replaces it, and so does an omitted flag (the older
+    // contract, which always replaced).
+    const replaced = await upload({ overwrite: true, data_url: textDataUrl('new memory\n') })
+    assert.equal(replaced.status, 200)
+    assert.deepEqual(replaced.json, { ok: true })
+    assert.equal(readFileSync(join(harness.dir, 'AGENTS.md'), 'utf8'), 'new memory\n')
+    const bare = await upload({ data_url: textDataUrl('no flag\n') })
+    assert.equal(bare.status, 200)
+    assert.equal(readFileSync(join(harness.dir, 'AGENTS.md'), 'utf8'), 'no flag\n')
+
+    // A create-only save with no file writes it, privately.
+    rmSync(join(harness.dir, 'AGENTS.md'))
+    const created = await upload({ overwrite: false, data_url: textDataUrl('first memory\n') })
+    assert.equal(created.status, 200)
+    assert.deepEqual(created.json, { ok: true })
+    assert.equal(readFileSync(join(harness.dir, 'AGENTS.md'), 'utf8'), 'first memory\n')
+    assert.equal(statSync(join(harness.dir, 'AGENTS.md')).mode & 0o777, 0o600)
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
 test('the Usage screen reads token analytics and the message count', async () => {
   const harness = await boot()
   try {
