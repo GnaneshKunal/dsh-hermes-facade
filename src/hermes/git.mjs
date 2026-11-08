@@ -738,28 +738,37 @@ export async function commitRepo(root, { message, push = false }, guard) {
 }
 
 /**
- * The push target configured for one local branch.
+ * The push target configured for one local branch, in git's own order:
+ * `branch.<name>.pushRemote`, then `remote.pushDefault`, then the branch's
+ * `branch.<name>.remote`. The destination branch still comes from
+ * `branch.<name>.merge`, so the refspec stays `<branch>:<upstream-branch>`.
  *
  * `@{u}` cannot be used here: its short form is `<remote>/<branch>` and a remote
  * name may itself contain `/` (`team/origin`), so splitting it at the first
- * slash names the wrong remote. `branch.<name>.remote` and
- * `branch.<name>.merge` keep the two halves apart.
+ * slash names the wrong remote. The config keys keep the two halves apart.
+ * `.` names the local repository and is not a push remote.
  *
  * @param {string} root repository root.
  * @param {string} branch local branch name.
- * @returns {Promise<{remote: string, branch: string, complete: boolean}|null>} target, null when no push remote is configured.
+ * @returns {Promise<{remote: string, branch: string}|null>} target, null when no push remote is configured.
  */
 async function pushTarget(root, branch) {
-  const remote = (await runGit(root, ['config', '--get', 'branch.' + branch + '.remote'])).stdout.trim()
-  // `.` names the local repository as an upstream; it is not a push remote.
-  if (remote.length === 0 || remote === '.') return null
+  const read = async key => (await runGit(root, ['config', '--get', key])).stdout.trim()
+  const [branchRemote, defaultRemote, upstreamRemote, merge] = await Promise.all([
+    read('branch.' + branch + '.pushRemote'),
+    read('remote.pushDefault'),
+    read('branch.' + branch + '.remote'),
+    read('branch.' + branch + '.merge'),
+  ])
+  const remote = [branchRemote, defaultRemote, upstreamRemote]
+    .find(value => value.length > 0 && value !== '.')
+  if (remote === undefined) return null
   // Config is hand-editable, and a value read as an option would change the
   // command (`git push --force …`); no legal remote name starts with '-'.
   if (remote.startsWith('-')) throw new GitRefusal(400, 'invalid push remote in git config')
-  const merge = (await runGit(root, ['config', '--get', 'branch.' + branch + '.merge'])).stdout.trim()
   const prefix = 'refs/heads/'
   const upstream = merge.startsWith(prefix) && merge.length > prefix.length ? merge.slice(prefix.length) : null
-  return { remote, branch: upstream ?? branch, complete: upstream !== null }
+  return { remote, branch: upstream ?? branch }
 }
 
 /**
@@ -777,11 +786,10 @@ export async function pushRepo(root, guard) {
   if (typeof branch !== 'string' || branch.length === 0) throw new GitRefusal(409, 'No branch to push')
   const target = await pushTarget(root, branch)
   // Always an explicit refspec, so push.default never decides what is sent.
-  // `-u` only completes a missing upstream: no config at all, or a remote
-  // configured without its merge ref.
+  // With no configured push remote, origin is the fallback and -u records it.
   const args = target === null
     ? ['push', '-u', 'origin', branch + ':' + branch]
-    : ['push', ...(target.complete ? [] : ['-u']), target.remote, branch + ':' + target.branch]
+    : ['push', target.remote, branch + ':' + target.branch]
   await gitWriteOut(root, args, 'push')
   return { ok: true, message: null, status: await repoStatus(root, guard) }
 }
