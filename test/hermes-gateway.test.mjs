@@ -2987,3 +2987,92 @@ test('command.dispatch translates the Hermes goal verbs onto the host grammar', 
     await harness.facade.close()
   }
 })
+
+test('commands.catalog advertises the host goal command', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      const reply = await socket.call('commands.catalog', { session_id: 'sess-mock' })
+      assert.equal(reply.error, undefined)
+      // A row is [name, description, argument hint]; the phone ignores the third
+      // cell today, but the wire describes how the command takes input.
+      assert.deepEqual(reply.result.pairs, [[
+        '/goal',
+        'Set or view the goal for a long-running task',
+        '[<objective>|clear|edit <objective>|pause|resume]',
+      ]])
+      assert.deepEqual(reply.result.canon, { '/goal': '/goal' })
+      assert.deepEqual(reply.result.skills, [])
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('a goal dispatch publishes one session.control.update with the mapped goal', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    harness.host.executeCommand = async () => ({ commandId: 'cmd-1', result: { kind: 'success', text: 'Goal paused' } })
+    harness.host.sessionGoal = async sessionId => {
+      assert.equal(sessionId, 'sess-mock')
+      return {
+        goal: { id: 'g1', revision: 4, objective: 'Ship the goal polish', phase: 'paused', maxGoalRounds: 6 },
+        roundsStarted: 1,
+        createdAt: 1,
+        updatedAt: 4,
+      }
+    }
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      const reply = await socket.call('command.dispatch', { name: 'goal', arg: 'pause', session_id: 'sess-mock' })
+      assert.equal(reply.error, undefined)
+      const frame = await socket.waitFor(entry => entry.params?.type === 'session.control.update')
+      assert.equal(frame.params.session_id, 'sess-mock')
+      // The snapshot is the read method's shape, applied by the phone's goal
+      // menu; loop and heartbeat have no DSH domain and stay absent.
+      assert.deepEqual(frame.params.payload.control, {
+        goal: { title: 'Ship the goal polish', status: 'paused', turns_used: 1, max_turns: 6 },
+      })
+      assert.equal('loop' in frame.params.payload.control, false)
+      assert.equal('heartbeat' in frame.params.payload.control, false)
+      const updates = socket.frames.filter(entry => entry.params?.type === 'session.control.update')
+      assert.equal(updates.length, 1, 'one command publishes exactly one snapshot')
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('a no-goal read and a clear report an empty control', async () => {
+  const harness = await boot()
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    harness.host.sessionGoal = async () => undefined
+    harness.host.executeCommand = async () => ({ commandId: 'cmd-1', result: { kind: 'success', text: 'Goal cleared.' } })
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      const read = await socket.call('session.control.read', { session_id: 'sess-mock' })
+      assert.equal(read.error, undefined)
+      assert.deepEqual(read.result, { control: {} })
+      await socket.call('command.dispatch', { name: 'goal', arg: 'clear', session_id: 'sess-mock' })
+      const frame = await socket.waitFor(entry => entry.params?.type === 'session.control.update')
+      assert.deepEqual(frame.params.payload, { control: {} })
+      assert.equal('loop' in frame.params.payload.control, false)
+      assert.equal('heartbeat' in frame.params.payload.control, false)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})

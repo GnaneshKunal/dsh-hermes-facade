@@ -14,7 +14,7 @@ import { statSync } from 'node:fs'
 import { mkdir, realpath, writeFile } from 'node:fs/promises'
 import { basename, join, sep } from 'node:path'
 
-import { commandsOf, controlOf, modelOptionsOf, resumeReplyOf, sessionRowOf } from './shapes.mjs'
+import { commandsOf, controlOf, HOST_GOAL_COMMAND, modelOptionsOf, resumeReplyOf, sessionRowOf } from './shapes.mjs'
 import { decodeUpload, imageMediaType, sanitizeUploadName } from './uploads.mjs'
 import { profilesListBody, profileRow, PROFILE_NAME, TERMINAL_BACKEND } from './protocol.mjs'
 
@@ -271,6 +271,30 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
   }
 
   /**
+   * Publish the session's current goal after a successful goal command.
+   *
+   * Hermex applies a `session.control.update` frame to the goal menu it is
+   * showing, so a goal command updates the phone immediately instead of waiting
+   * for the next attach. The snapshot is read back from the same durable goal
+   * projection `session.control.read` uses, so the frame can never disagree
+   * with the next read. Loop and heartbeat stay absent: DSH has no such domain.
+   * A failed read is contained — the command's own answer stands, and the phone
+   * reads the goal again on its next attach.
+   *
+   * @param {string} sessionId session whose goal changed.
+   * @returns {Promise<void>} resolves after the publish, or after an honest skip.
+   */
+  async function publishGoalControl(sessionId) {
+    if (typeof host?.sessionGoal !== 'function') return
+    try {
+      const projection = await host.sessionGoal(sessionId)
+      hub.publish('session.control.update', { control: controlOf(projection).control }, sessionId)
+    } catch (error) {
+      logger.warn?.('hermes-gateway: goal control update failed: ' + String(error?.message ?? error))
+    }
+  }
+
+  /**
    * Dispatch one method.
    * @param {string} method method name.
    * @param {object} params params.
@@ -500,7 +524,10 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
       }
       case 'commands.catalog': {
         const reply = await backend.call('GET', '/api/commands')
-        return commandsOf(reply.json ?? {})
+        // The facade's catalogue is empty (DSH's registry has no webui shape),
+        // so the listener adds the host command it executes itself: the phone's
+        // slash panel needs /goal listed, with its argument hint.
+        return commandsOf(reply.json ?? {}, [HOST_GOAL_COMMAND])
       }
       case 'command.dispatch': {
         // Hermex drives its /goal controls (and skill dispatch) through this
@@ -530,6 +557,9 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
         // A command the host refused is a refusal. Answering "exec" would show
         // the refusal in the transcript as if it had succeeded.
         if (execution.result.kind === 'error') throw rpcError(-32000, text.length > 0 ? text : 'The command was refused.')
+        // A goal command changed (or reported) the goal; push the current
+        // snapshot so the open goal menu updates without a reconnect.
+        if (name === 'goal') await publishGoalControl(sessionId)
         // DSH's command handlers and their domain own the next physical action:
         // /goal creates the goal and the goal round driver continues it, so the
         // phone must not also submit a kickoff prompt ("send").
