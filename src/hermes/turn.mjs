@@ -164,6 +164,11 @@ export function createTurnRunner({
       info.session_id = sessionId
       const wasRunning = active.has(sessionId)
       active.set(sessionId, { streamId, controller, startedAt: now(), info })
+      // Pin the replay ring before the turn's first event: everything this turn
+      // emits then stays replayable, so a screen that reattaches mid-turn finds
+      // the tool, code and reasoning rows it was showing instead of a hole that
+      // makes it rebuild from a transcript without them.
+      hub.beginTurn?.(sessionId)
       hub.publish('session.info', { ...info, running: true, turn_started_at: now() }, sessionId)
       // The session list watches the live set, not this chat: tell it a turn
       // started so its row shows Working without waiting for its poll.
@@ -283,6 +288,9 @@ export function createTurnRunner({
       }
     } finally {
       active.delete(sessionId)
+      // The turn is over, so its rows are durable history now: releasing the pin
+      // returns the ring to its quiet size before a queued prompt pins its own.
+      hub.endTurn?.(sessionId)
       // A settling turn can never still be "starting": drop the state here too,
       // so a start that somehow outlived its turn cannot leave a stale row.
       starting.delete(sessionId)
