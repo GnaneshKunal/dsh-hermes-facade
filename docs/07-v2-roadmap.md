@@ -251,11 +251,14 @@ open approval/clarify; idle omitted), and `sessions.changed` broadcasts on turn/
 `/api/audio/transcribe` calls DSH `speech/transcribe`, converting the phone's m4a to canonical 16 kHz mono WAV
 with afconvert (macOS) or ffmpeg; no converter is an honest 400. Git push prefers
 `branch.<name>.pushRemote`, then `remote.pushDefault`, then `branch.<name>.remote` (refspec explicit), and status
-uses `--untracked-files=all` so an untracked directory lists its files. `/goal` runs through the host command and
-`session.control` exposes the goal only; loop/heartbeat remain absent. Tests cover the live states, converter,
-memory save/overwrite, Git remotes, and goal verbs/read.
+uses `--untracked-files=all` so an untracked directory lists its files. `/goal` is in the slash catalogue and
+runs through the host command; `session.control.read` returns the goal snapshot and a goal command publishes one
+`session.control.update`; loop/heartbeat remain absent. A reattaching client replays the **active turn** because
+the event ring pins the turn's first event (up to 20,000) instead of dropping its start; after settle it trims
+back to the quiet 5000. Tests cover the live states, converter, memory save/overwrite, Git remotes, goal
+verbs/read/update, and the active-turn replay pin.
 
-Verify: `npm run check && npm test` (271 tests), then rename a chat from the phone's list, pin it, archive it,
+Verify: `npm run check && npm test` (279 tests), then rename a chat from the phone's list, pin it, archive it,
 unarchive it, stop a running turn, watch a starting/Working/Needs-you dot settle, edit Memory and re-read it,
 dictate a short recording, run `/goal` and read its snapshot, push a branch with a slash-named remote, and open
 Files in a chat to browse a folder and preview a file.

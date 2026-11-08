@@ -7,6 +7,17 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **Goal polish.** `/goal` is now listed in `commands.catalog` with its
+  argument hint, and a successful goal command publishes one
+  `session.control.update` carrying the same snapshot `session.control.read`
+  returns. A clear publishes `{control:{}}`; loop/heartbeat keys remain absent;
+  `done`/`stop` still map to clear.
+- **Active-turn replay pin.** Reattach hardening: while a turn is in flight its
+  first event is pinned as a replay floor (bounded at 20,000 events), so a
+  Hermex cursor inside the turn replays contiguously and keeps the tool/code/
+  reasoning rows instead of falling back to a transcript that lacks them. After
+  settle the ring trims back to the quiet 5,000; a cursor before the turn start
+  or a cold open still reports `truncated`.
 - **Long-turn replay on reattach.** The gateway's per-session event ring went
   from 1000 to 5000 events. A Hermex client that returns to a running turn
   calls `session.events.since`; at 1000 the ring was truncated after about an

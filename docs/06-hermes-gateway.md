@@ -9,12 +9,13 @@ Hermes host contract, so the same iOS app can be pointed at DeepSeek Harness as
 a native Hermes server. It is additive: port 9120 keeps serving the webui
 contract unchanged.
 
-Status: **v1.15** (2026-11-08). Chat (with context/token telemetry and image/
+Status: **v1.16** (2026-11-08). Chat (with context/token telemetry and image/
 document attachments), sessions (including the write fence the session list needs
 and the list's search), live session state (`session.active_list` with
 `starting|streaming|waiting`, and `sessions.changed`), approvals, clarifications,
-models, commands (including the host's `/goal`), the goal snapshot
-(`session.control.read`), export, Tasks/cron, Memory (read/write, including an
+models, commands (including the host's `/goal`, listed in `commands.catalog`),
+the goal snapshot and live control updates (`session.control.read` /
+`session.control.update`), export, Tasks/cron, Memory (read/write, including an
 `overwrite:false` conflict), Skills (read-only), Usage/Insights (tokens, and cost
 from `dsh-cost-meter` where installed), dictation over `speech/transcribe`, the
 read-only in-chat Files browser and the in-chat Git menu (reads plus
@@ -143,7 +144,7 @@ refusing it withdraws approvals silently.
 | `approval.respond` | `{session_id, request_id, choice: once|session|always|deny}` -> `{resolved}` |
 | `request.answer` / `clarify.lock` | answers a clarification |
 | `model.options` | providers/models from the DSH catalog |
-| `commands.catalog` | slash commands as `pairs` + `canon` |
+| `commands.catalog` | slash commands as `pairs` + `canon`; the host-only `/goal` row includes its argument hint because `command.dispatch` is the one host command the listener executes |
 | `config.set` | `model` and `reasoning` are applied through the facade; `fast`, `yolo`, `personality` and `approvals.mode` answer a key-level error so the control reverts and the rest of the method stays available |
 | anything else | `-32601`, which the client records and uses to hide the control |
 
@@ -152,11 +153,14 @@ refusing it withdraws approvals silently.
 Every event is `{"jsonrpc":"2.0","method":"event","params":{type, seq, session_id, payload}}`
 with **per-session**, contiguous `seq` starting at 1. Screens admit their own
 session only; sequence gaps make the client rebuild from a snapshot, so the ring
-(`src/hermes/events.mjs`) keeps 5000 events per session. That depth matters on a
-reattach: a client replays from its cursor and, on `truncated:true`, rebuilds
-from the persisted transcript, which does not yet contain the in-flight turn's
-tool rows. 5000 covers a normal long turn; a turn longer than that can still
-truncate. The one exception is
+(`src/hermes/events.mjs`) keeps 5000 events per session in the quiet state. An
+**active turn pins its first event** (bounded at 20,000 events), so a cursor
+inside the turn replays contiguously even when the turn is far wider than the
+quiet ring; after settle the ring trims back to 5000. A cursor before the turn
+start, a cold open (cursor 0), or a runtime/epoch change still answers
+`truncated` and the Hermex client rebuilds from the persisted transcript, which
+does not yet contain the in-flight rows. A turn over 20,000 events falls back to
+honest truncation. The one exception is
 `sessions.changed`: it is process-wide (no `session_id`, `seq:0`) and live-only,
 because a screen that missed it re-reads `session.active_list` on reattach.
 
@@ -171,6 +175,7 @@ because a screen that missed it re-reads `session.active_list` on reattach.
 | `tool.complete` | `{name, tool_id, result, is_error?}` |
 | `session.title` | `{session_id, title}` |
 | `sessions.changed` | `{}`; broadcast on turn start/end and request open/settle, no replay |
+| `session.control.update` | `{control:{goal:{title,status,turns_used,max_turns}}}` or `{control:{}}` after a successful `/goal` command; the same snapshot `session.control.read` returns, no loop/heartbeat keys |
 | `session.usage` | `{usage: {input, output, context_used, context_max}}`; the live context ring, sent with the assistant message and again inside `message.complete`. No `estimated_cost`: chat telemetry has no pricing; the Usage screen reads cost from `dsh-cost-meter` instead |
 | `message.complete` | `{status: complete|error|interrupted, text, usage?}`; `usage` is `{input, output, context_used, context_max}` |
 | `request.cancel` | `{id, method, reason}`; withdraws an unanswered card |
