@@ -14,7 +14,7 @@ import { createMockHost } from '../scripts/standalone.mjs'
  * Boot the facade and the gateway on ephemeral ports.
  * @returns {Promise<object>} harness.
  */
-async function boot({ hostCwd, convertAudio } = {}) {
+async function boot({ hostCwd, convertAudio, replayRetain, turnRetain } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'hermes-gateway-'))
   const host = hostCwd === undefined ? createMockHost() : createMockHost({ cwd: hostCwd })
   const config = {
@@ -41,6 +41,8 @@ async function boot({ hostCwd, convertAudio } = {}) {
     ...(convertAudio === undefined ? {} : { convertAudio }),
     memoryHome: dir,
     uploadsDir: dir + '-uploads',
+    ...(replayRetain === undefined ? {} : { replayRetain }),
+    ...(turnRetain === undefined ? {} : { turnRetain }),
   })
   const gatewayAddress = await gateway.listen()
   return {
@@ -2988,6 +2990,17 @@ test('command.dispatch translates the Hermes goal verbs onto the host grammar', 
   }
 })
 
+
+/**
+ * One row of a session.active_list reply, by session key.
+ * @param {Array<{session_key: string, status: string}>} rows list rows.
+ * @param {string} key session key.
+ * @returns {object|undefined} row.
+ */
+function activeRow(rows, key) {
+  return (Array.isArray(rows) ? rows : []).find(row => row.session_key === key)
+}
+
 test('commands.catalog advertises the host goal command', async () => {
   const harness = await boot()
   try {
@@ -3068,6 +3081,85 @@ test('a no-goal read and a clear report an empty control', async () => {
       assert.deepEqual(frame.params.payload, { control: {} })
       assert.equal('loop' in frame.params.payload.control, false)
       assert.equal('heartbeat' in frame.params.payload.control, false)
+    } finally {
+      socket.ws.close()
+    }
+  } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('a screen reattaching mid-turn replays the active turn instead of a hole', async () => {
+  // A small quiet ring makes the reported oversubscription reproducible without
+  // streaming thousands of frames; the turn itself is the long part.
+  const harness = await boot({ replayRetain: 40, turnRetain: 400 })
+  // Keep the turn open until the assertions are done: the canned reply and its
+  // turn/end arrive 2.5 s after the prompt.
+  harness.host.setTurnDelay(2500)
+  try {
+    const cookie = await signIn(harness.base, harness.password)
+    const socket = await openSocket(harness.base, cookie)
+    try {
+      await socket.waitFor(frame => frame.params?.type === 'gateway.ready')
+      await socket.call('session.create', { profile: 'default' })
+      const submitted = await socket.call('prompt.submit', { session_id: 'sess-mock', text: 'run the tests' })
+      assert.equal(submitted.result.status, 'streaming')
+      const opened = await socket.waitFor(frame => frame.params?.type === 'session.info' && frame.params.payload?.running === true)
+      const turnStart = opened.params.seq
+
+      // The gateway's stream connection opens just after chat/start, and a frame
+      // published before it has no channel to reach. Pulse an idempotent title
+      // event until one arrives, which proves the stream is attached, then push
+      // the turn's real frames.
+      const queue = harness.host.follow('sess-mock')
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        queue.push({ type: 'event', event: { type: 'session/title', seq: 1, time: Date.now(), data: { title: 'Reattach probe' } } })
+        if (socket.frames.some(frame => frame.params?.type === 'session.title')) break
+        await new Promise(resolve => setTimeout(resolve, 25))
+      }
+      assert.ok(socket.frames.some(frame => frame.params?.type === 'session.title'), 'the chat stream is attached before the turn frames are pushed')
+
+      // One turn far wider than the quiet ring: exactly the shape a code/search
+      // turn publishes (a running tool row, its result, a long reasoning tail).
+      queue.push({ type: 'event', event: { type: 'tool/call', seq: 1, time: Date.now(), data: { turn: 1, step: 1, callId: 'call-bash-1', name: 'bash', arguments: '{"command":"npm test"}' } } })
+      for (let index = 0; index < 128; index += 1) {
+        queue.push({ type: 'assistant-stream', frame: { type: 'chunk', chunk: { type: 'reasoning-delta', text: 'step ' + index + ' ' } } })
+      }
+      queue.push({ type: 'event', event: { type: 'tool/result', seq: 2, time: Date.now(), data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'call-bash-1', content: [{ type: 'text', text: 'all tests pass' }] } } } })
+      await socket.waitFor(frame => frame.params?.type === 'tool.complete' && frame.params.payload?.tool_id === 'call-bash-1', 10000)
+      // The turn is still the live one when the screen comes back.
+      const live = await socket.call('session.active_list', {})
+      assert.deepEqual(activeRow(live.result.sessions, 'sess-mock'), { session_key: 'sess-mock', status: 'streaming' })
+
+      // Reattach exactly as Hermex does: session.events.since from the cursor it
+      // held inside the turn. A hole here is what makes the app throw its screen
+      // away and rebuild from a transcript without the in-flight rows.
+      const replay = (await socket.call('session.events.since', { session_id: 'sess-mock', last_seen: turnStart - 1 })).result
+      assert.equal(replay.truncated, false, 'the active turn must not report a hole')
+      assert.equal(replay.events[0].seq, turnStart)
+      assert.equal(replay.latest_seq, replay.events.at(-1).seq)
+      // More than the quiet ring: the pin, not the ordinary retention, is what
+      // carried the turn's start to this cursor. The settle assertion below
+      // makes the pair conclusive — the same cursor is truncated once the pin is
+      // released, so the pre-settle answer can only have come from the pin.
+      assert.ok(replay.events.length > 40, 'the replay covers more than the quiet retention')
+      replay.events.forEach((event, index) => assert.equal(event.seq, turnStart + index, 'the replay is contiguous from the cursor'))
+      const types = replay.events.map(event => event.type)
+      assert.ok(types.includes('tool.start'), 'the running tool row replays')
+      assert.ok(types.includes('tool.complete'), 'the tool result replays')
+      assert.equal(types.filter(type => type === 'reasoning.delta').length, 128, 'every reasoning row replays')
+      const toolStart = replay.events.find(event => event.type === 'tool.start')
+      assert.equal(toolStart.payload.name, 'bash')
+      assert.equal(toolStart.payload.args.command, 'npm test')
+
+      // Settling releases the pin: the transcript now carries the turn, so the
+      // ring returns to its quiet window and a cursor inside it is honestly
+      // truncated again rather than held forever.
+      await socket.waitFor(frame => frame.params?.type === 'message.complete', 10000)
+      const settled = (await socket.call('session.events.since', { session_id: 'sess-mock', last_seen: turnStart - 1 })).result
+      assert.equal(settled.truncated, true)
+      assert.ok(settled.events.length <= 40, 'the ring is back to the quiet retention')
     } finally {
       socket.ws.close()
     }

@@ -9,12 +9,26 @@
  * @module dsh-hermes-facade/src/hermes/events
  */
 
-/** Most events kept per session for replay. */
+/** Most events kept per session for replay while no turn is in flight. */
 // A single long agent turn can emit more than a thousand tool/reasoning
-// frames; a returning client replays from its cursor, so a 1000-event ring
-// loses the start of the turn and rebuilds from a transcript that does not
-// contain the in-flight rows. 5000 covers a typical hour-long turn.
+// frames; a returning client replays from its cursor, so a short ring loses
+// the start of the turn, reports `truncated`, and the app throws its screen
+// away and rebuilds from a transcript that does not contain the in-flight
+// rows. 5000 covers a typical hour-long turn in the quiet case.
 const DEFAULT_RETAIN = 5000
+
+/**
+ * Hard ceiling on the events one turn in flight may pin in a session's ring.
+ *
+ * While a turn runs, its first event is pinned and eviction may not pass it,
+ * so any cursor inside the turn replays without a hole however long the turn
+ * is — the app keeps the rows it already drew instead of rebuilding. The pin
+ * is bounded: past this many events the ordinary ring retention applies again
+ * and the replay reports the truth (`truncated`), leaving the app's rebuild
+ * path as the fallback. 20000 events is well past the longest turn reported
+ * (about 1300 frames); the pin is released as soon as the turn settles.
+ */
+const DEFAULT_TURN_RETAIN = 20000
 
 /**
  * The live-session list refresh event.
@@ -72,14 +86,46 @@ export function publishSessionsChanged(hub) {
  * Create the hub.
  * @param {object} [options] options.
  * @param {(sessionId: string) => string} [options.epochOf] per-session replay epoch.
- * @param {number} [options.retain] ring size per session.
+ * @param {number} [options.retain] ring size per session while no turn is in flight.
+ * @param {number} [options.turnRetain] most events one active turn may pin.
  * @returns {object} hub.
  */
-export function createEventHub({ epochOf = () => 'epoch-1', retain = DEFAULT_RETAIN } = {}) {
+export function createEventHub({
+  epochOf = () => 'epoch-1',
+  retain = DEFAULT_RETAIN,
+  turnRetain = DEFAULT_TURN_RETAIN,
+} = {}) {
   const sequences = new Map()
   const pendingSince = new Map()
   const rings = new Map()
   const connections = new Set()
+  /** session id -> first seq of the turn in flight, the replay floor it pins. */
+  const turnFloors = new Map()
+  // A turn ceiling below the quiet window would silently disable the guarantee,
+  // so the pin always keeps at least the ordinary retention.
+  const turnLimit = Math.max(retain, turnRetain)
+
+  /**
+   * Evict the oldest events past the retention the session is allowed while it
+   * is in this state.
+   *
+   * A turn in flight pins its first event: everything from that sequence on is
+   * kept, so a client whose cursor is inside the turn replays without a hole
+   * and keeps the rows it already drew. The pin is bounded by `turnRetain`; a
+   * turn longer than that falls back to the ordinary ring and the replay says
+   * so honestly. No floor keeps the plain `retain` window.
+   *
+   * @param {Array<object>} ring session ring, oldest first.
+   * @param {number} [floor] first seq the ring may not pass while pinned.
+   * @returns {void}
+   */
+  function trim(ring, floor) {
+    while (ring.length > retain) {
+      const oldest = ring[0]
+      if (floor !== undefined && ring.length <= turnLimit && oldest.seq >= floor) return
+      ring.shift()
+    }
+  }
 
   /**
    * Start feeding one connection.
@@ -115,7 +161,7 @@ export function createEventHub({ epochOf = () => 'epoch-1', retain = DEFAULT_RET
     let ring = rings.get(sessionId)
     if (ring === undefined) { ring = []; rings.set(sessionId, ring) }
     ring.push(eventParams(type, seq, payload, sessionId))
-    while (ring.length > retain) ring.shift()
+    trim(ring, turnFloors.get(sessionId))
     for (const connection of connections) {
       try { connection.sendJson(frame) } catch { connections.delete(connection) }
     }
@@ -148,7 +194,40 @@ export function createEventHub({ epochOf = () => 'epoch-1', retain = DEFAULT_RET
   }
 
   /**
-   * Forget a session's ring and cursor (a deleted session).
+   * Pin a session's replay ring at the turn that is about to start.
+   *
+   * Called before the turn publishes its first event, so the floor is that
+   * event's sequence. Everything the turn emits is then retained until
+   * `endTurn`, even past the ordinary `retain` window (bounded by
+   * `turnRetain`), which is what lets a client reattaching mid-turn replay
+   * from its own cursor instead of throwing the screen away.
+   *
+   * @param {string} sessionId session id.
+   * @returns {void}
+   */
+  function beginTurn(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) return
+    turnFloors.set(sessionId, (sequences.get(sessionId) ?? 0) + 1)
+  }
+
+  /**
+   * Release a session's turn pin and trim the ring back to the quiet window.
+   *
+   * A settled turn is durable history: a client that still needs its rows
+   * rebuilds from the transcript, which now contains them, so the extra
+   * retention is not kept.
+   *
+   * @param {string} sessionId session id.
+   * @returns {void}
+   */
+  function endTurn(sessionId) {
+    if (!turnFloors.delete(sessionId)) return
+    const ring = rings.get(sessionId)
+    if (ring !== undefined) trim(ring, undefined)
+  }
+
+  /**
+   * Forget a session's ring, cursor and turn pin (a deleted session).
    * @param {string} sessionId session id.
    * @returns {void}
    */
@@ -156,7 +235,8 @@ export function createEventHub({ epochOf = () => 'epoch-1', retain = DEFAULT_RET
     sequences.delete(sessionId)
     rings.delete(sessionId)
     pendingSince.delete(sessionId)
+    turnFloors.delete(sessionId)
   }
 
-  return { attach, publish, since, head, forget, connections, pendingSince }
+  return { attach, publish, since, head, beginTurn, endTurn, forget, connections, pendingSince }
 }

@@ -214,17 +214,26 @@ async function readJson(req, maxBytes = MAX_BODY_BYTES) {
  *   composition without a host, where those routes refuse honestly.
  * @param {Function} [options.convertAudio] audio transcoder behind dictation;
  *   injectable so tests never need afconvert or ffmpeg on the machine.
+ * @param {number} [options.replayRetain] events kept per session while no turn
+ *   is in flight; the hub's own default when omitted. Tests shrink it so a
+ *   reattach that outgrows the ring is exercisable without streaming thousands
+ *   of frames; a constrained deployment can shrink it for the same reason.
+ * @param {number} [options.turnRetain] most events one active turn may pin.
  * @param {object} [options.logger] logger.
  * @returns {object} gateway.
  */
-export function createGatewayServer({ config, facadeUrl, facadeAuth, host, convertAudio = convertToWav, memoryHome: memoryHomeOverride, uploadsDir, logger = console }) {
+export function createGatewayServer({ config, facadeUrl, facadeAuth, host, convertAudio = convertToWav, memoryHome: memoryHomeOverride, uploadsDir, logger = console, replayRetain, turnRetain }) {
   /** Absolute uploads root shared by image-upload and file.attach. */
   const uploads = uploadsDir ?? join(homedir(), '.hermes-uploads')
   const installId = ensureInstallId(config.dir)
   const replayEpoch = randomUUID()
   const tickets = createTicketStore({ ttlSeconds: TICKET_TTL_SECONDS })
   const backend = createBackend({ baseUrl: facadeUrl, token: config.internalToken })
-  const hub = createEventHub({ epochOf: () => replayEpoch })
+  const hub = createEventHub({
+    epochOf: () => replayEpoch,
+    ...(Number.isSafeInteger(replayRetain) && replayRetain > 0 ? { retain: replayRetain } : {}),
+    ...(Number.isSafeInteger(turnRetain) && turnRetain > 0 ? { turnRetain } : {}),
+  })
   const connections = new Set()
 
   /**
