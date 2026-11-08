@@ -152,7 +152,11 @@ refusing it withdraws approvals silently.
 Every event is `{"jsonrpc":"2.0","method":"event","params":{type, seq, session_id, payload}}`
 with **per-session**, contiguous `seq` starting at 1. Screens admit their own
 session only; sequence gaps make the client rebuild from a snapshot, so the ring
-(`src/hermes/events.mjs`) keeps 1000 events per session. The one exception is
+(`src/hermes/events.mjs`) keeps 5000 events per session. That depth matters on a
+reattach: a client replays from its cursor and, on `truncated:true`, rebuilds
+from the persisted transcript, which does not yet contain the in-flight turn's
+tool rows. 5000 covers a normal long turn; a turn longer than that can still
+truncate. The one exception is
 `sessions.changed`: it is process-wide (no `session_id`, `seq:0`) and live-only,
 because a screen that missed it re-reads `session.active_list` on reattach.
 

@@ -274,7 +274,7 @@ session names no model, and Fast/yolo are refused instead of echoed. What remain
 3. **Edit / regenerate / retry append instead of rewinding** (`truncate_before_row_id` ignored).
 4. **Session list rows lack `preview`** because DSH's session list carries no first-prompt text; the title is a
    different field (see [08-upstream-gaps.md](08-upstream-gaps.md)). The WS `session.list` rows are the same shape as REST.
-5. **Event rings are 1000 per session with no session/byte cap**, and `forget()` is never called.
+5. **Event rings are 5000 per session with no session/byte cap**, and `forget()` is never called. The ring must cover the current turn: a returning Hermex client calls `session.events.since` and rebuilds from the persisted transcript when it sees `truncated`, which does not contain the in-flight tool rows. A turn longer than 5000 events can still truncate.
 6. **`personality` and `approvals.mode`** answer key-level errors by design (DSH has presets, not personalities,
    and no yolo policy); the controls hide/revert rather than lie.
 7. **No `ping`, `gateway.capabilities`, `session.history`, `session.status`, `session.usage`, `approval.pending`,

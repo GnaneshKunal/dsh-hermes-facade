@@ -7,6 +7,12 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **Long-turn replay on reattach.** The gateway's per-session event ring went
+  from 1000 to 5000 events. A Hermex client that returns to a running turn
+  calls `session.events.since`; at 1000 the ring was truncated after about an
+  hour, so the client fell back to the persisted transcript (which lacks the
+  in-flight tool rows) and showed only the live status. 5000 covers the
+  reported ~1300-event turn; a turn longer than that can still truncate.
 - **Live Working `starting` edge.** `session.active_list` reports `starting`
   between an accepted `prompt.submit` and the turn going live, so a concurrent
   list read shows Working instead of nothing. The marker is cleared on the
