@@ -1299,6 +1299,19 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, host, conve
       res.end(reply.bytes)
       return
     }
+    // Hermex's transcript media and Quick Look fetch these two paths directly
+    // (a Markdown image's absolute path becomes /api/media; Quick Look uses
+    // /api/file/raw). The façade has both, but the Hermes listener did not
+    // proxy them, so an image rendered in a live reply disappeared after the
+    // app resolved it through the second port. Reuse the same fenced download
+    // path as the Files browser.
+    if (method === 'GET' && (path === '/api/media' || path === '/api/file/raw')) {
+      const reply = await files.download(url)
+      if (reply.bytes === undefined) { sendJson(res, reply.status, reply.body); return }
+      res.writeHead(reply.status, reply.headers)
+      res.end(reply.bytes)
+      return
+    }
 
     // The in-chat Git menu, read-only. The client resolves the repository root
     // from the chat folder, then names that root on every read.

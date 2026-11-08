@@ -7,6 +7,12 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **Transcript images and Quick Look now work on `:9121`.** Hermex resolves a
+  Markdown image's absolute path through `GET /api/media`, and Quick Look uses
+  `GET /api/file/raw`; the Hermes listener did not proxy either route, so an
+  image could render nowhere after the app asked the second port. Both now use
+  the same fenced download path as the in-chat Files browser, so the phone
+  needs neither the DSH web endpoint nor a Tailscale URL.
 - **Cold-open tool rows.** A fresh Hermex launch (cursor 0) cannot replay the
   active turn, so it rebuilds from `GET /api/sessions/{id}/messages`. While a
   turn is active, the messages page now also appends tool rows that exist only
