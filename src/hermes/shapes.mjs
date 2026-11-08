@@ -188,25 +188,61 @@ export function modelOptionsOf(payload) {
 }
 
 /**
+ * The host command the slash catalogue advertises.
+ *
+ * DSH registers `/goal` through `dsh-command-goal` against its goal domain,
+ * but the command registry is per agent and has no webui shape, so the facade's
+ * `/api/commands` is empty. The listener names this command explicitly: it is
+ * the one `command.dispatch` executes, and the phone's slash panel needs it
+ * listed. The description and argument hint are the host's own registration.
+ */
+export const HOST_GOAL_COMMAND = {
+  name: 'goal',
+  description: 'Set or view the goal for a long-running task',
+  hint: '[<objective>|clear|edit <objective>|pause|resume]',
+}
+
+/**
  * commands.catalog reply from the facade's /api/commands payload.
+ *
+ * A row is `[name, description, hint?]`: the phone reads the first two cells
+ * (its decoder ignores the rest), and the third carries the host's argument
+ * hint so the wire describes how the command takes input.
+ *
  * @param {object} payload facade commands payload.
+ * @param {Array<{name: string, description: string, hint?: string}>} [extra] host commands the facade cannot list.
  * @returns {object} reply.
  */
-export function commandsOf(payload) {
-  const raw = Array.isArray(payload?.commands) ? payload.commands : []
+export function commandsOf(payload, extra = []) {
   const pairs = []
   const canon = {}
-  for (const entry of raw) {
+  /**
+   * Append one catalogue row and its canonical identity.
+   * @param {string} name command name without its slash.
+   * @param {string} description human summary.
+   * @param {string} [hint] argument hint, omitted when absent.
+   * @returns {void}
+   */
+  const add = (name, description, hint) => {
+    pairs.push(['/' + name, description, ...(typeof hint === 'string' && hint.length > 0 ? [hint] : [])])
+    canon['/' + name] = '/' + name
+  }
+  for (const entry of Array.isArray(payload?.commands) ? payload.commands : []) {
     const name = typeof entry === 'string' ? entry : (entry?.name ?? entry?.command ?? '')
     const clean = String(name).replace(/^\/+/, '').trim()
     if (clean.length === 0) continue
     const description = typeof entry === 'string' ? '' : String(entry?.description ?? '')
-    pairs.push(['/' + clean, description])
-    canon['/' + clean] = '/' + clean
+    const hint = typeof entry === 'string' ? undefined : (entry?.args_hint ?? entry?.hint ?? entry?.input?.hint)
+    add(clean, description, typeof hint === 'string' ? hint : undefined)
     for (const alias of Array.isArray(entry?.aliases) ? entry.aliases : []) {
       const cleanAlias = String(alias).replace(/^\/+/, '').trim()
       if (cleanAlias.length > 0) canon['/' + cleanAlias] = '/' + clean
     }
+  }
+  for (const entry of Array.isArray(extra) ? extra : []) {
+    const clean = String(entry?.name ?? '').replace(/^\/+/, '').trim()
+    if (clean.length === 0) continue
+    add(clean, String(entry?.description ?? ''), entry?.hint)
   }
   return { pairs, canon, skills: [] }
 }
