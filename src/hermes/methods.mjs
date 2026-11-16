@@ -17,6 +17,7 @@ import { basename, join, sep } from 'node:path'
 import { commandsOf, controlOf, HOST_GOAL_COMMAND, modelOptionsOf, resumeReplyOf, sessionRowOf } from './shapes.mjs'
 import { decodeUpload, imageMediaType, sanitizeUploadName } from './uploads.mjs'
 import { profilesListBody, profileRow, PROFILE_NAME, TERMINAL_BACKEND } from './protocol.mjs'
+import { PLUGIN_CODES, pluginRowOf, pluginsBodyOf, toggleReplyOf, parseManageParams } from './plugins.mjs'
 
 /**
  * Build an RPC error with an explicit JSON-RPC code.
@@ -658,6 +659,68 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
         // The goal only: DSH has no loop or heartbeat domain, so their keys are
         // absent (never empty objects) and the phone offers no Pause/Resume.
         return controlOf(await host.sessionGoal(sessionId))
+      }
+      case 'plugins.manage': {
+        // Hermex 2.1.0 drives Settings -> Server -> Plugins entirely through this
+        // one method: `list`, `toggle`, and the lifecycle actions (install,
+        // remove, update, settings) it renders as buttons.
+        const parsed = parseManageParams(p)
+        // -32601 is how this facade tells Hermex a method does not exist, and the
+        // app then hides the whole Plugins screen instead of showing a broken one.
+        if (typeof host?.plugins !== 'object' || host.plugins === null) {
+          throw rpcError(-32601, 'plugins.manage is not available on this host')
+        }
+        if (!(await host.plugins.available())) {
+          throw rpcError(-32601, 'plugins.manage is not available on this host')
+        }
+        switch (parsed.action) {
+          case 'list':
+            return pluginsBodyOf(await host.plugins.list())
+          case 'toggle': {
+            const infos = await host.plugins.list()
+            const before = infos.find(info => String(info?.entryId ?? '') === parsed.key)
+            if (before === undefined) throw rpcError(PLUGIN_CODES.missing, 'No plugin on this host has that key')
+            // A row without a patchId is not owned by the profile patch: it is a
+            // shipped/management plugin. DSH's reason is a two-value union, and
+            // both are said in plain words rather than being sent as a code.
+            if (before.patchId === undefined) {
+              const why = before.readOnlyReason === 'management-required'
+                ? ': it is part of the DSH installation, which has to stay enabled.'
+                : before.readOnlyReason === 'unaddressable'
+                  ? ': its loader entry cannot be addressed by the profile patch.'
+                  : '.'
+              throw rpcError(PLUGIN_CODES.refused, 'DSH cannot enable or disable that plugin from here' + why)
+            }
+            const change = await host.plugins.setEnabled(parsed.key, parsed.enable)
+            // A refused change is the host's own answer, so it is forwarded in the
+            // host's words rather than reported as a silent no-op. The host's
+            // ManagementError carries {code, diagnostic} - never a message - so
+            // the diagnostic is what the phone shows, then the code.
+            if (change?.application === 'failed' || change?.application === 'cancelled') {
+              const detail = change?.error?.diagnostic ?? change?.error?.code ?? change?.application
+              throw rpcError(PLUGIN_CODES.refused, String(detail))
+            }
+            // The row is re-read because the reply carries the post-toggle state;
+            // a failed re-read keeps the pre-toggle rows instead of failing a
+            // change the host already applied.
+            const after = await host.plugins.list().catch(() => infos)
+            const row = after.map(pluginRowOf).find(candidate => candidate?.key === parsed.key) ?? null
+            return toggleReplyOf(change ?? {}, row)
+          }
+          case 'install':
+          case 'remove':
+          case 'update':
+          case 'settings':
+            // DSH owns plugin lifecycle: "dsh plugin add|remove|update" is the only
+            // path, and there is no per-plugin settings form to render.
+            throw rpcError(
+              PLUGIN_CODES.refused,
+              'plugins.manage ' + parsed.action + ' cannot be done from the phone: DeepSeek Harness installs, ' +
+                'updates and removes plugins through the "dsh plugin" command, and has no per-plugin settings form.',
+            )
+          default:
+            throw rpcError(4021, 'plugins.manage action "' + String(parsed.action) + '" is not supported')
+        }
       }
       default: {
         if (!unavailable.has(method)) {
