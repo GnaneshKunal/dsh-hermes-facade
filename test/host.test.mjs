@@ -131,6 +131,21 @@ function build(existingWorkspaces = {}, options = {}) {
       if (request.namespace === 'session' && request.method === 'selectModel') {
         return { selected: request.args?.request ?? {} }
       }
+      if (request.namespace === 'pluginManager' && request.method === 'listPlugins') {
+        // 'missing' is the host-capability refusal a stock host without the
+        // Remote answers; 'transient' is a failure that proves nothing about it.
+        if (options.plugins === 'missing') {
+          throw Object.assign(new Error('no active Remote method exports this endpoint'), {
+            code: 'gateway/method-unavailable',
+          })
+        }
+        if (options.plugins === 'transient') throw new Error('inventory read failed')
+        if (options.plugins === 'not-a-list') return { plugins: [] }
+        return options.plugins ?? []
+      }
+      if (request.namespace === 'pluginManager' && request.method === 'setPluginEnabled') {
+        return options.pluginChange ?? { changed: true, application: 'applied', target: request.args?.id }
+      }
       return {}
     },
     // The real gateway resolves to an AsyncIterable: mimic that, including the
@@ -1067,4 +1082,37 @@ test('sessionGoal is absent for a session with no current goal', async () => {
   assert.equal(await build().host.sessionGoal('s1'), undefined)
   const cleared = build({}, { projections: { values: { goal: null } } })
   assert.equal(await cleared.host.sessionGoal('s1'), undefined)
+})
+
+test('the plugin surface reads the inventory and pins the enable call', async () => {
+  const infos = [{ entryId: 'plugins/a.js', moduleName: '@acme/a', enabled: true, patchId: 'a' }]
+  const { host, calls } = build({}, { plugins: infos })
+  assert.equal(await host.plugins.available(), true)
+  assert.deepEqual(await host.plugins.list(), infos)
+  await host.plugins.setEnabled('plugins/a.js', false)
+  // The Remote takes one argument object: a bare (id, enabled) pair reaches it
+  // as an empty request and the toggle silently does nothing.
+  const enable = calls.find(entry => entry.namespace === 'pluginManager' && entry.method === 'setPluginEnabled')
+  assert.deepEqual(enable.args, { id: 'plugins/a.js', enabled: false })
+})
+
+test('a capability refusal is remembered, a transient failure is retried', async () => {
+  const missing = build({}, { plugins: 'missing' })
+  assert.equal(await missing.host.plugins.available(), false)
+  assert.equal(await missing.host.plugins.available(), false)
+  const probes = () => missing.calls.filter(entry => entry.method === 'listPlugins').length
+  assert.equal(probes(), 1, 'a remembered refusal must not be re-probed')
+
+  const transient = build({}, { plugins: 'transient' })
+  await assert.rejects(() => transient.host.plugins.available(), /inventory read failed/)
+  // Nothing was pinned: the next call probes the Remote again instead of
+  // reporting "this host can manage no plugins" for the rest of the process.
+  await assert.rejects(() => transient.host.plugins.available(), /inventory read failed/)
+  assert.equal(transient.calls.filter(entry => entry.method === 'listPlugins').length, 2)
+})
+
+test('a broken inventory reply is an error, never an empty plugin list', async () => {
+  const { host } = build({}, { plugins: 'not-a-list' })
+  await assert.rejects(() => host.plugins.list(), /no plugin list/)
+  await assert.rejects(() => host.plugins.available())
 })

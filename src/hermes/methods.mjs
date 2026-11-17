@@ -665,8 +665,10 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
         // one method: `list`, `toggle`, and the lifecycle actions (install,
         // remove, update, settings) it renders as buttons.
         const parsed = parseManageParams(p)
-        // -32601 is how this facade tells Hermex a method does not exist, and the
-        // app then hides the whole Plugins screen instead of showing a broken one.
+        // -32601 is how this facade tells Hermex a method does not exist. On
+        // Hermex 2.1.0 the Settings row is unconditional and this answer becomes
+        // its "Couldn't Load Plugins" screen, so the host reports that it cannot
+        // manage plugins instead of drawing a broken list.
         if (typeof host?.plugins !== 'object' || host.plugins === null) {
           throw rpcError(-32601, 'plugins.manage is not available on this host')
         }
@@ -700,11 +702,25 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
               const detail = change?.error?.diagnostic ?? change?.error?.code ?? change?.application
               throw rpcError(PLUGIN_CODES.refused, String(detail))
             }
-            // The row is re-read because the reply carries the post-toggle state;
-            // a failed re-read keeps the pre-toggle rows instead of failing a
-            // change the host already applied.
-            const after = await host.plugins.list().catch(() => infos)
-            const row = after.map(pluginRowOf).find(candidate => candidate?.key === parsed.key) ?? null
+            // `overridden` saved the patch but a higher-priority layer keeps the
+            // row in its old state. Answering it as applied would contradict the
+            // row the screen shows, and Hermex has no field for it, so it is a
+            // refusal carrying DSH's own wording.
+            if (change?.application === 'overridden') {
+              const detail = change?.error?.diagnostic ?? change?.error?.code
+              throw rpcError(
+                PLUGIN_CODES.refused,
+                'DSH saved the change, but a higher-priority layer keeps that plugin as it was, so it is not in effect' +
+                  (detail === undefined ? '.' : ': ' + String(detail)),
+              )
+            }
+            // The reply carries the row read back after the change. A failed
+            // re-read answers `plugin: null`, which is what makes the client take
+            // its own read() fallback; reusing the pre-toggle row instead would
+            // show the switch returning to a state the host may no longer be in.
+            const row = await host.plugins.list()
+              .then(list => list.map(pluginRowOf).find(candidate => candidate?.key === parsed.key) ?? null)
+              .catch(() => null)
             return toggleReplyOf(change ?? {}, row)
           }
           case 'install':

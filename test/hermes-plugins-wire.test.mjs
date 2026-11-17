@@ -320,7 +320,6 @@ test('plugins.manage toggle reports a restart only for the result that asks for 
     const cases = [
       { label: 'applied', change: { changed: true, application: 'applied' }, enable: true, restartRequired: false, unchanged: false },
       { label: 'restart-required', change: { changed: true, application: 'restart-required', restartReason: 'no-hmr' }, enable: false, restartRequired: true, unchanged: false },
-      { label: 'overridden', change: { changed: false, application: 'overridden' }, enable: true, restartRequired: false, unchanged: true },
     ]
     for (const entry of cases) {
       stub.setChange(entry.change)
@@ -335,6 +334,47 @@ test('plugins.manage toggle reports a restart only for the result that asks for 
       assert.deepEqual(reply.result.activation, {}, entry.label + ' activation')
       assert.equal(reply.result.name, KEY, entry.label + ' name')
     }
+  })
+})
+
+test('plugins.manage refuses an overridden toggle instead of claiming it applied', async () => {
+  await withSocket(async (socket, harness) => {
+    const stub = pluginStub({ infos: [{ ...WRITABLE, enabled: false }] })
+    harness.host.plugins = stub.surface
+    // DSH saved the patch, but a higher-priority layer keeps the old state, so
+    // the toggle is not in effect even though `changed` is true.
+    stub.setChange({ changed: true, application: 'overridden', error: { code: 'management-required' } })
+    const reply = await socket.call('plugins.manage', { action: 'toggle', profile: 'default', key: KEY, enable: true })
+    assert.equal(reply.result, undefined, 'an overridden change must not answer as applied')
+    assert.equal(reply.error.code, 5026)
+    assert.match(reply.error.message, /higher-priority layer keeps that plugin as it was/)
+    assert.match(reply.error.message, /management-required/)
+    assert.equal(stub.state.setEnabledCalls.length, 1, 'the host was still asked once')
+  })
+})
+
+test('plugins.manage answers plugin:null when the post-toggle read fails', async () => {
+  await withSocket(async (socket, harness) => {
+    const stub = pluginStub({ infos: [{ ...WRITABLE, enabled: false }] })
+    harness.host.plugins = stub.surface
+    // A real ChangeResult names its target, which is what the reply falls back
+    // to for `name` when there is no row to read.
+    stub.setChange({ changed: true, application: 'applied', target: KEY })
+    const realList = stub.surface.list
+    let reads = 0
+    // The first read finds the row; the read-back after the change fails.
+    stub.surface.list = async () => {
+      reads += 1
+      if (reads > 1) throw new Error('inventory read failed')
+      return realList()
+    }
+    const reply = await socket.call('plugins.manage', { action: 'toggle', profile: 'default', key: KEY, enable: true })
+    assert.equal(reply.error, undefined)
+    assert.equal(reply.result.ok, true)
+    assert.equal(reply.result.name, KEY)
+    // A null row is the client's cue to re-read: the pre-toggle row would show
+    // a state the host may no longer be in.
+    assert.equal(reply.result.plugin, null)
   })
 })
 
@@ -435,8 +475,8 @@ test('plugins.manage refuses an unknown action with 4021 and another Profile wit
 test('plugins.manage answers -32601 when the host has no plugin surface', async () => {
   await withSocket(async (socket, harness) => {
     // Strip the surface the DSH adapter adds: a host without a pluginManager is
-    // what an older DSH presents. -32601 is how the app learns to hide the
-    // whole Plugins screen instead of showing a broken one.
+    // what an older DSH presents. -32601 makes Hermex 2.1.0's unconditional
+    // Settings row report that it cannot load plugins from this host.
     delete harness.host.plugins
     const reply = await socket.call('plugins.manage', { action: 'list', profile: 'default' })
     assert.equal(reply.result, undefined)

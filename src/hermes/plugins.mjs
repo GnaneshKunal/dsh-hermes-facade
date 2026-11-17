@@ -121,17 +121,23 @@ export function pluginsBodyOf(infos) {
  * `activation` stays a bare object: the client reads `activation.deferred` and
  * `activation.live_now.mcp_servers`, and both absent mean "nothing deferred and
  * no failed server". `gateway_reloaded` is always false because a plugin
- * toggle never restarts this facade's gateway. A missing or partial result is
- * read as a change that failed to apply.
+ * toggle never restarts this facade's gateway.
+ *
+ * A result with no `application` claims nothing beyond "not cancelled": the
+ * dispatcher refuses a failed, cancelled or overridden change before it builds
+ * this reply, so `ok` is only ever false for a host this facade cannot explain.
  *
  * @param {object|undefined} change `pluginManager/setPluginEnabled` result.
- * @param {object|null|undefined} row the row this toggle was listed as.
+ * @param {object|null|undefined} row the row read back after the change, or
+ *   null when that read failed - the client then takes its own read() fallback.
  * @returns {object} reply.
  */
 export function toggleReplyOf(change, row) {
   const application = change?.application
   return {
-    ok: application !== 'failed' && application !== 'cancelled',
+    // `overridden` saved the patch while a higher-priority layer keeps the old
+    // state, so it is not an applied toggle; the dispatcher refuses it first.
+    ok: application !== 'failed' && application !== 'cancelled' && application !== 'overridden',
     unchanged: change?.changed !== true,
     restart_required: application === 'restart-required',
     gateway_reloaded: false,

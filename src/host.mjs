@@ -206,6 +206,19 @@ function selectionOf(row) {
  * @param {{info: Function, warn: Function}} [options.logger] logger.
  * @returns {object} host surface consumed by the HTTP layer.
  */
+/**
+ * Gateway dispatch codes that mean a Remote is not mounted at all.
+ *
+ * They are a host-capability refusal, never a data failure: only these prove
+ * that this host has no plugin manager. Any other failure is transient.
+ */
+const PLUGIN_SERVICE_MISSING_CODES = new Set([
+  'gateway/invocation-unavailable',
+  'gateway/service-unavailable',
+  'gateway/definition-unavailable',
+  'gateway/method-unavailable',
+])
+
 export function createDshHost({ ctx, logger = console }) {
   let costWarningLogged = false
   const gateway = ctx.typertGateway
@@ -1442,15 +1455,18 @@ export function createDshHost({ ctx, logger = console }) {
      * This is DSH's own plugin inventory: the same rows the desktop Plugins
      * screen shows, read and written through the pluginManager Remote. A row
      * carrying a `patchId` is writable through the profile patch; one without it
-     * is managed by the installation itself and cannot be toggled from here.
+     * is not writable from here.
      */
     plugins: {
       /**
        * Whether this host has the pluginManager Remote.
        *
-       * The probe runs once and its answer is kept, and a failed probe never
-       * throws: the caller turns `false` into a method-not-found refusal so the
-       * phone hides the Plugins screen instead of showing a broken one.
+       * Only a dispatch code that says the Remote is absent is remembered: a
+       * transient invocation failure, or an inventory reply that could not be
+       * read, proves nothing about the host and is retried on the next call. A
+       * remembered `false` makes the caller answer method-not-found, which
+       * Hermex 2.1.0 renders as its "Couldn't Load Plugins" screen - so it must
+       * never be pinned by anything short of a real capability refusal.
        * @returns {Promise<boolean>} availability.
        */
       async available() {
@@ -1458,11 +1474,16 @@ export function createDshHost({ ctx, logger = console }) {
         try {
           await pluginList()
           pluginsAvailable = true
+          return true
         } catch (error) {
+          const code = typeof error?.code === 'string' ? error.code : ''
+          // Anything else is this call's failure, not a fact about the host: let
+          // it propagate so the caller answers a real error the phone can retry.
+          if (!PLUGIN_SERVICE_MISSING_CODES.has(code)) throw error
           pluginsAvailable = false
-          logger.warn?.('hermes-facade: pluginManager/listPlugins failed: ' + String(error?.message ?? error))
+          logger.warn?.('hermes-facade: pluginManager is not mounted: ' + String(error?.message ?? error))
+          return false
         }
-        return pluginsAvailable
       },
 
       /**

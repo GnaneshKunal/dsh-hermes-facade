@@ -220,10 +220,10 @@ test('toggleReplyOf reports a restart-required toggle', () => {
   })
 })
 
-test('toggleReplyOf reports an overridden toggle as applied and unchanged', () => {
+test('toggleReplyOf never reports an overridden toggle as applied', () => {
   const row = pluginRowOf(WRITABLE)
   assert.deepEqual(toggleReplyOf({ application: 'overridden', target: 'plugins/my-plugin.js' }, row), {
-    ok: true,
+    ok: false,
     unchanged: true,
     restart_required: false,
     gateway_reloaded: false,
