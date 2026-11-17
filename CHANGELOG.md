@@ -7,23 +7,33 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 
 ### Added
 
-- **The Plugins screen for Hermex 2.1.0.** The Hermes listener now answers
-  `plugins.manage`, so Settings -> Server -> Plugins appears and lists DSH's
-  own plugins from `pluginManager/listPlugins` for the one Profile, `default`:
-  a row's key is the Loader `entryId`, its name the package's display title
-  (else its module name), its version empty because DSH's inventory carries
-  none, and its source `user` when the profile patch can write the row,
-  `bundled` when it is read-only/shipped. `toggle` applies
-  `pluginManager/setPluginEnabled` and reads the row back; `restart_required`
-  is set when the host defers the change to the next start (HMR applies it
-  live otherwise), `gateway_reloaded` is always false, and a read-only row, an
-  `overridden` change, or a failed/cancelled one is a `5026` refusal, the last
-  two carrying DeepSeek Harness's own wording (an unknown plugin is `4020`, an
-  unknown Profile `4064`). `install`/`remove`/`update`/`settings` are refused
-  `5026`, Discover's plugin catalog stays 404 (that catalogue is Nous's Hermes
-  marketplace, not DSH's npm-based plugins), and a host with no pluginManager
-  service answers `-32601`, which Hermex 2.1.0 renders as its "Couldn't Load
-  Plugins" screen rather than a broken list.
+- **The Plugins screen for Hermex 2.1.0, at package level.** The Hermes
+  listener now answers `plugins.manage` over DSH's plugin bundles, so
+  Settings -> Server -> Plugins lists the plugin packages the profile composes
+  the desktop screen lists (on this deployment 41 where the Loader's internal
+  composition entries gave 264) for the one Profile, `default`: a row's key is the
+  package name, its name the package's display title (else the package name),
+  its version the package version, its description the package manifest's (one
+  line), and its source `user` when the profile installed it, `bundled` when
+  the installation supplies it. `toggle` applies
+  `pluginManager/setBundleEnabled` instead of flipping a Loader entry; `update`
+  now works for registry packages, where DSH lists the newer versions, installs
+  the newest that is still a valid bundle and compatible with this DSH, and
+  answers the toggle's reply shape (nothing newer answers `ok` with
+  `unchanged`). `restart_required` is set when the host defers the change to
+  the next start, `gateway_reloaded` is always false, and the row is read back
+  after a change (`plugin:null` when that read fails, so the client re-reads).
+  A read-only package, a failed, cancelled or `overridden` change, a git-pinned
+  package (it updates to a commit on the host, not from the phone) and one with
+  no update path are `5026` refusals, the DSH-worded ones carrying DeepSeek
+  Harness's own text. `settings` is still refused `5026` (DSH packages declare
+  no settings form), `install`/`remove` are still refused `5026` (the
+  `dsh plugin` command / pnpm is the only path), an unknown package is `4020`,
+  an unknown Profile `4064`, malformed params `4021`, Discover's plugin catalog
+  stays 404 (that catalogue is Nous's Hermes marketplace, not DSH's npm
+  packages), and a host with no pluginManager service answers `-32601`, which
+  Hermex 2.1.0 renders as its "Couldn't Load Plugins" screen rather than a
+  broken list.
 - **Transcript images and Quick Look now work on `:9121`.** Hermex resolves a
   Markdown image's absolute path through `GET /api/media`, and Quick Look uses
   `GET /api/file/raw`; the Hermes listener did not proxy either route, so an

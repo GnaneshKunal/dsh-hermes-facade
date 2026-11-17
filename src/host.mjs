@@ -275,16 +275,16 @@ export function createDshHost({ ctx, logger = console }) {
   }
 
   /**
-   * DSH's installed plugin rows, through the pluginManager Remote.
+   * DSH's plugin bundles, through the pluginManager Remote.
    *
-   * The Remote is declared to return PluginInfo[]; a reply that is not a list
-   * is a broken host reply and throws, because an empty list would read as
-   * "this host has no plugins" instead of a failure.
-   * @returns {Promise<Array<object>>} PluginInfo rows.
+   * The Remote is declared to return BundleInfo[]; a reply that is not a list is
+   * a broken host reply and throws, because an empty list would read as "this
+   * host has no plugins" instead of a failure.
+   * @returns {Promise<Array<object>>} BundleInfo rows.
    */
-  async function pluginList() {
-    const value = await invoke('pluginManager', 'listPlugins', {})
-    if (!Array.isArray(value)) throw new Error('pluginManager/listPlugins returned no plugin list')
+  async function bundleList() {
+    const value = await invoke('pluginManager', 'listBundles', {})
+    if (!Array.isArray(value)) throw new Error('pluginManager/listBundles returned no bundle list')
     return value
   }
 
@@ -1450,20 +1450,20 @@ export function createDshHost({ ctx, logger = console }) {
     },
 
     /**
-     * The host's plugin list and its enable/disable switch.
+     * The host's plugin bundles and the Remotes that change them.
      *
-     * This is DSH's own plugin inventory: the same rows the desktop Plugins
-     * screen shows, read and written through the pluginManager Remote. A row
-     * carrying a `patchId` is writable through the profile patch; one without it
-     * is not writable from here.
+     * These are DSH's plugin PACKAGES - the same rows the desktop Plugins screen
+     * shows - not the Loader's composition entries. A bundle the profile declares
+     * is the user's own install; one the installation ships comes from elsewhere
+     * and only the host's own `readOnlyReason` says whether it may be toggled.
      */
     plugins: {
       /**
        * Whether this host has the pluginManager Remote.
        *
        * Only a dispatch code that says the Remote is absent is remembered: a
-       * transient invocation failure, or an inventory reply that could not be
-       * read, proves nothing about the host and is retried on the next call. A
+       * transient invocation failure, or a bundle reply that could not be read,
+       * proves nothing about the host and is retried on the next call. A
        * remembered `false` makes the caller answer method-not-found, which
        * Hermex 2.1.0 renders as its "Couldn't Load Plugins" screen - so it must
        * never be pinned by anything short of a real capability refusal.
@@ -1472,7 +1472,7 @@ export function createDshHost({ ctx, logger = console }) {
       async available() {
         if (pluginsAvailable !== undefined) return pluginsAvailable
         try {
-          await pluginList()
+          await bundleList()
           pluginsAvailable = true
           return true
         } catch (error) {
@@ -1487,29 +1487,55 @@ export function createDshHost({ ctx, logger = console }) {
       },
 
       /**
-       * The host's plugin rows.
+       * The host's plugin bundles.
        *
        * A known-unavailable service is refused locally rather than sent a call
        * that cannot succeed; a failure of the Remote itself propagates, so the
        * caller reports an error instead of an empty list that would read as
        * "this host has no plugins".
-       * @returns {Promise<Array<object>>} PluginInfo rows.
+       * @returns {Promise<Array<object>>} BundleInfo rows.
        */
-      async list() {
+      async listBundles() {
         if (pluginsAvailable === false) throw new Error('pluginManager is not available on this host')
-        return pluginList()
+        return bundleList()
       },
 
       /**
-       * Enable or disable one plugin through the profile patch.
-       * @param {string} id plugin entry id.
+       * Enable or disable one bundle through the profile manifest.
+       * @param {string} name bundle package name.
        * @param {boolean} enabled desired state.
        * @returns {Promise<object>} ChangeResult: `application` says whether the
        *   change took effect now, needs a restart, is overridden, or failed, and
        *   `error`/`warnings` carry the host's own wording when it did not.
        */
-      async setEnabled(id, enabled) {
-        return invoke('pluginManager', 'setPluginEnabled', { id, enabled })
+      async setBundleEnabled(name, enabled) {
+        return invoke('pluginManager', 'setBundleEnabled', { name, enabled })
+      },
+
+      /**
+       * The versions one bundle could be updated to.
+       *
+       * The host answers a PluginVersionList: `listed` with the registry that
+       * answered and the versions newer than the install, newest first, or
+       * `refused` with its own reason when the package cannot be looked up.
+       * @param {string} name bundle package name.
+       * @returns {Promise<object>} PluginVersionList.
+       */
+      async listVersions(name) {
+        return invoke('pluginManager', 'listVersions', { name })
+      },
+
+      /**
+       * Replace one bundle with another version.
+       * @param {string} name bundle package name.
+       * @param {string} version version to install.
+       * @param {{registry: string|null}} options the registry that answered the
+       *   version list; null lets the host choose its own.
+       * @returns {Promise<object>} PluginUpdateResult: `result` is the
+       *   ChangeResult of the step that ran, `restore` an undone update.
+       */
+      async updateBundle(name, version, options) {
+        return invoke('pluginManager', 'updateBundle', { name, version, options })
       },
     },
 

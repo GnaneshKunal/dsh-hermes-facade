@@ -131,7 +131,7 @@ function build(existingWorkspaces = {}, options = {}) {
       if (request.namespace === 'session' && request.method === 'selectModel') {
         return { selected: request.args?.request ?? {} }
       }
-      if (request.namespace === 'pluginManager' && request.method === 'listPlugins') {
+      if (request.namespace === 'pluginManager' && request.method === 'listBundles') {
         // 'missing' is the host-capability refusal a stock host without the
         // Remote answers; 'transient' is a failure that proves nothing about it.
         if (options.plugins === 'missing') {
@@ -139,12 +139,30 @@ function build(existingWorkspaces = {}, options = {}) {
             code: 'gateway/method-unavailable',
           })
         }
-        if (options.plugins === 'transient') throw new Error('inventory read failed')
-        if (options.plugins === 'not-a-list') return { plugins: [] }
+        if (options.plugins === 'transient') throw new Error('bundle read failed')
+        if (options.plugins === 'not-a-list') return { bundles: [] }
         return options.plugins ?? []
       }
-      if (request.namespace === 'pluginManager' && request.method === 'setPluginEnabled') {
-        return options.pluginChange ?? { changed: true, application: 'applied', target: request.args?.id }
+      if (request.namespace === 'pluginManager' && request.method === 'setBundleEnabled') {
+        return options.pluginChange ?? { changed: true, application: 'applied', target: request.args?.name }
+      }
+      if (request.namespace === 'pluginManager' && request.method === 'listVersions') {
+        return options.versions ?? {
+          status: 'listed',
+          installed: '1.2.0',
+          registry: 'https://registry.npmjs.org',
+          attempts: [],
+          versions: [],
+          omitted: 0,
+        }
+      }
+      if (request.namespace === 'pluginManager' && request.method === 'updateBundle') {
+        return options.update ?? {
+          from: '1.2.0',
+          to: request.args?.version,
+          step: 'install',
+          result: { changed: true, application: 'applied', stage: 'install', target: request.args?.name, enabled: true },
+        }
       }
       return {}
     },
@@ -1084,35 +1102,61 @@ test('sessionGoal is absent for a session with no current goal', async () => {
   assert.equal(await cleared.host.sessionGoal('s1'), undefined)
 })
 
-test('the plugin surface reads the inventory and pins the enable call', async () => {
-  const infos = [{ entryId: 'plugins/a.js', moduleName: '@acme/a', enabled: true, patchId: 'a' }]
-  const { host, calls } = build({}, { plugins: infos })
+test('the plugin surface reads bundles and pins every remote call', async () => {
+  const bundles = [{
+    name: '@acme/dsh-terminal',
+    official: false,
+    availability: 'profile',
+    version: '1.2.0',
+    enabled: true,
+    installed: true,
+    optional: true,
+    removable: true,
+    update: 'registry',
+    rows: [],
+    overrides: [],
+  }]
+  const { host, calls } = build({}, { plugins: bundles })
   assert.equal(await host.plugins.available(), true)
-  assert.deepEqual(await host.plugins.list(), infos)
-  await host.plugins.setEnabled('plugins/a.js', false)
-  // The Remote takes one argument object, so a bare (id, enabled) pair is a
+  assert.deepEqual(await host.plugins.listBundles(), bundles)
+  await host.plugins.setBundleEnabled('@acme/dsh-terminal', false)
+  const versions = await host.plugins.listVersions('@acme/dsh-terminal')
+  assert.equal(versions.status, 'listed')
+  const updated = await host.plugins.updateBundle('@acme/dsh-terminal', '1.3.0', { registry: versions.registry })
+  assert.equal(updated.to, '1.3.0')
+  // Every Remote takes ONE argument object, so a bare (name, enabled) pair is a
   // mismatched-argument refusal rather than a toggle.
-  const enable = calls.find(entry => entry.namespace === 'pluginManager' && entry.method === 'setPluginEnabled')
-  assert.deepEqual(enable.args, { id: 'plugins/a.js', enabled: false })
+  const pluginCalls = calls.filter(entry => entry.namespace === 'pluginManager')
+  assert.deepEqual(
+    pluginCalls.map(entry => entry.method),
+    ['listBundles', 'listBundles', 'setBundleEnabled', 'listVersions', 'updateBundle'],
+  )
+  assert.deepEqual(pluginCalls[2].args, { name: '@acme/dsh-terminal', enabled: false })
+  assert.deepEqual(pluginCalls[3].args, { name: '@acme/dsh-terminal' })
+  assert.deepEqual(pluginCalls[4].args, {
+    name: '@acme/dsh-terminal',
+    version: '1.3.0',
+    options: { registry: 'https://registry.npmjs.org' },
+  })
 })
 
 test('a capability refusal is remembered, a transient failure is retried', async () => {
   const missing = build({}, { plugins: 'missing' })
   assert.equal(await missing.host.plugins.available(), false)
   assert.equal(await missing.host.plugins.available(), false)
-  const probes = () => missing.calls.filter(entry => entry.method === 'listPlugins').length
+  const probes = () => missing.calls.filter(entry => entry.method === 'listBundles').length
   assert.equal(probes(), 1, 'a remembered refusal must not be re-probed')
 
   const transient = build({}, { plugins: 'transient' })
-  await assert.rejects(() => transient.host.plugins.available(), /inventory read failed/)
+  await assert.rejects(() => transient.host.plugins.available(), /bundle read failed/)
   // Nothing was pinned: the next call probes the Remote again instead of
   // reporting "this host can manage no plugins" for the rest of the process.
-  await assert.rejects(() => transient.host.plugins.available(), /inventory read failed/)
-  assert.equal(transient.calls.filter(entry => entry.method === 'listPlugins').length, 2)
+  await assert.rejects(() => transient.host.plugins.available(), /bundle read failed/)
+  assert.equal(transient.calls.filter(entry => entry.method === 'listBundles').length, 2)
 })
 
-test('a broken inventory reply is an error, never an empty plugin list', async () => {
+test('a broken bundle reply is an error, never an empty bundle list', async () => {
   const { host } = build({}, { plugins: 'not-a-list' })
-  await assert.rejects(() => host.plugins.list(), /no plugin list/)
+  await assert.rejects(() => host.plugins.listBundles(), /no bundle list/)
   await assert.rejects(() => host.plugins.available())
 })
