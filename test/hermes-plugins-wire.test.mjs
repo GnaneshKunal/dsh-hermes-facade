@@ -148,17 +148,6 @@ const INSTALL_ROW = row({
   update_available: false,
 })
 
-/** The row the phone shows for CATALOG_BUNDLE. */
-const CATALOG_ROW = row({
-  key: '@acme/dsh-catalog',
-  name: '@acme/dsh-catalog',
-  version: '2.0.0',
-  description: '@acme catalog bundle built for on-demand install',
-  source: 'bundled',
-  status: 'disabled',
-  update_available: false,
-})
-
 /** The row the phone shows for GIT_BUNDLE. */
 const GIT_ROW = row({
   key: '@acme/dsh-git',
