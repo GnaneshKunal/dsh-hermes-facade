@@ -17,7 +17,7 @@ import { basename, join, sep } from 'node:path'
 import { commandsOf, controlOf, HOST_GOAL_COMMAND, modelOptionsOf, resumeReplyOf, sessionRowOf } from './shapes.mjs'
 import { decodeUpload, imageMediaType, sanitizeUploadName } from './uploads.mjs'
 import { profilesListBody, profileRow, PROFILE_NAME, TERMINAL_BACKEND } from './protocol.mjs'
-import { PLUGIN_CODES, pluginRowOf, pluginsBodyOf, toggleReplyOf, updateReplyOf, parseManageParams } from './plugins.mjs'
+import { PLUGIN_CODES, listableBundle, pluginRowOf, pluginsBodyOf, toggleReplyOf, updateReplyOf, parseManageParams } from './plugins.mjs'
 
 /**
  * Build an RPC error with an explicit JSON-RPC code.
@@ -702,17 +702,32 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
             const bundles = await host.plugins.listBundles()
             const before = bundles.find(bundle => String(bundle?.name ?? '') === parsed.key)
             if (before === undefined) throw rpcError(PLUGIN_CODES.missing, 'No plugin on this host has that key')
+            // A package the phone is not shown must not be switchable by a crafted
+            // key. The desktop hides launch-mode and missing bundles for a reason:
+            // selecting one on a live profile can leave the next start in a mode
+            // this profile cannot compose.
+            if (!listableBundle(before)) {
+              throw rpcError(
+                PLUGIN_CODES.refused,
+                'That package is not a plugin this host manages from the phone: it is part of the installation, ' +
+                  'or nothing is installed under that name.',
+              )
+            }
             // A bundle carrying a read-only reason belongs to the installation
             // or cannot be addressed by the profile patch. DSH's reason is a
             // two-value union, and both are said in plain words rather than being
             // sent as a code.
             if (before.readOnlyReason !== undefined) {
-              const why = before.readOnlyReason === 'management-required'
-                ? ': it is part of the DSH installation, which has to stay enabled.'
-                : before.readOnlyReason === 'unaddressable'
-                  ? ': its rows cannot be addressed by the profile patch.'
-                  : '.'
-              throw rpcError(PLUGIN_CODES.refused, 'DSH cannot enable or disable that plugin from here' + why)
+              // listBundles only reports 'management-required' for a bundle, so the
+              // named case is the whole story; an unknown future reason still reads
+              // as a plain refusal rather than a code.
+              throw rpcError(
+                PLUGIN_CODES.refused,
+                'DSH cannot enable or disable that plugin from here' +
+                  (before.readOnlyReason === 'management-required'
+                    ? ': it is part of the DSH installation, which has to stay enabled.'
+                    : '.'),
+              )
             }
             const change = await host.plugins.setBundleEnabled(parsed.key, parsed.enable)
             // A refused change is the host's own answer, so it is forwarded in the
@@ -749,11 +764,18 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
             const bundles = await host.plugins.listBundles()
             const before = bundles.find(bundle => String(bundle?.name ?? '') === parsed.key)
             if (before === undefined) throw rpcError(PLUGIN_CODES.missing, 'No plugin on this host has that key')
+            if (!listableBundle(before)) {
+              throw rpcError(
+                PLUGIN_CODES.refused,
+                'That package is not a plugin this host manages from the phone: it is part of the installation, ' +
+                  'or nothing is installed under that name.',
+              )
+            }
             if (before.update === undefined) {
               throw rpcError(
                 PLUGIN_CODES.refused,
-                'That plugin has no update from the phone: the DSH installation supplies it, or it was installed ' +
-                  'from a path rather than a package registry.',
+                'That plugin has no update from the phone: the DSH installation supplies it, it was installed from ' +
+                  'a path or an alias, its version is not semver, or DSH manages it as part of the installation.',
               )
             }
             // A git-pinned copy updates to another commit of the host's repository
@@ -776,10 +798,16 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
                 String(versions?.reason ?? 'DSH could not read a version list for that plugin'),
               )
             }
-            // The list is newest first, and only a version that still declares a
-            // bundle and accepts this DSH build can replace the installed one.
+            // The list is newest first. The candidate is DSH's own: the newest
+            // version that still declares a bundle, accepts this DSH build, and is
+            // neither deprecated nor a prerelease. The phone has no version chooser
+            // and no confirmation - one tap installs - so taking a prerelease or a
+            // deprecated release here would install what the desktop would skip.
             const eligible = (versions.versions ?? []).find(
-              version => version?.bundle === true && version?.incompatible === undefined,
+              version => version?.bundle === true &&
+                version?.incompatible === undefined &&
+                version?.deprecated === undefined &&
+                version?.prerelease !== true,
             )
             if (eligible === undefined) {
               // Nothing newer to install: the unchanged form of the toggle reply

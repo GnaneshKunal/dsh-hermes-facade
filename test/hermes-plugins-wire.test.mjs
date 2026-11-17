@@ -167,7 +167,9 @@ const GIT_ROW = row({
   description: '',
   source: 'user',
   status: 'enabled',
-  update_available: true,
+  // Registry-only: a git-pinned bundle updates on the host, so the phone offers
+  // no Update button for it.
+  update_available: false,
 })
 
 /** The row the phone shows for LOCAL_BUNDLE. */
@@ -436,16 +438,36 @@ async function withSocket(body) {
 test('plugins.manage list answers the bundle inventory as Hermex rows', async () => {
   await withSocket(async (socket, harness) => {
     harness.host.plugins = bundleStub({
-      bundles: [INSTALL_BUNDLE, NAMELESS_BUNDLE, PROFILE_BUNDLE, CATALOG_BUNDLE, GIT_BUNDLE, LOCAL_BUNDLE],
+      bundles: [
+        INSTALL_BUNDLE,
+        NAMELESS_BUNDLE,
+        PROFILE_BUNDLE,
+        CATALOG_BUNDLE,
+        GIT_BUNDLE,
+        LOCAL_BUNDLE,
+        // A launch-mode bundle the desktop hides, and one the installation holds
+        // back until the profile selects it: neither may reach the phone.
+        { ...PROFILE_BUNDLE, name: '@deepseek-ai/dsh-headless', enabled: true },
+        {
+          ...PROFILE_BUNDLE,
+          name: '@acme/dsh-held-back',
+          availability: 'installation',
+          listedByDefault: false,
+          enabled: false,
+          installed: false,
+        },
+      ],
     }).surface
     const reply = await socket.call('plugins.manage', { action: 'list', profile: 'default' })
     assert.equal(reply.error, undefined)
-    // One row per bundle, in the host's order: the nameless bundle is dropped
-    // instead of becoming an unaddressable row, and both counts travel.
+    // One row per manageable bundle, in the host's order. The nameless bundle,
+    // the hidden launch-mode bundle, the held-back one and the on-demand catalog
+    // entry (nothing installed under it) are all dropped rather than offered as
+    // rows the screen could never act on, and both counts travel.
     assert.deepEqual(reply.result, {
-      plugins: [INSTALL_ROW, PROFILE_ROW, CATALOG_ROW, GIT_ROW, LOCAL_ROW],
+      plugins: [INSTALL_ROW, PROFILE_ROW, GIT_ROW, LOCAL_ROW],
       user_count: 3,
-      bundled_count: 2,
+      bundled_count: 1,
     })
     // Hermex has no catalog tier, version or name for a plugin; sending them
     // would leave the screen rendering fields DSH never fills.
@@ -546,6 +568,28 @@ test('plugins.manage answers plugin:null when the post-toggle read fails', async
   })
 })
 
+test('plugins.manage never acts on a package the phone is not shown', async () => {
+  await withSocket(async (socket, harness) => {
+    // A launch-mode bundle is real and even enabled, but the desktop hides it and
+    // the phone must not be able to switch it: selecting one on a live profile can
+    // leave the next start in a mode this profile cannot compose.
+    const hidden = { ...PROFILE_BUNDLE, name: '@deepseek-ai/dsh-headless', enabled: true }
+    const stub = bundleStub({ bundles: [hidden] })
+    harness.host.plugins = stub.surface
+
+    const toggle = await socket.call('plugins.manage', { action: 'toggle', profile: 'default', key: '@deepseek-ai/dsh-headless', enable: false })
+    assert.equal(toggle.result, undefined)
+    assert.equal(toggle.error.code, 5026)
+    assert.match(toggle.error.message, /not a plugin this host manages from the phone/)
+    assert.deepEqual(stub.state.setBundleEnabledCalls, [], 'a hidden bundle must never reach the switch')
+
+    const update = await socket.call('plugins.manage', { action: 'update', profile: 'default', key: '@deepseek-ai/dsh-headless' })
+    assert.equal(update.result, undefined)
+    assert.equal(update.error.code, 5026)
+    assert.deepEqual(stub.state.listVersionsCalls, [], 'and it is never asked for a version list')
+  })
+})
+
 test('plugins.manage refuses an unknown plugin key with 4020 before writing', async () => {
   await withSocket(async (socket, harness) => {
     const stub = bundleStub({ bundles: [structuredClone(PROFILE_BUNDLE)] })
@@ -613,11 +657,15 @@ test('plugins.manage update installs the newest eligible version and answers the
   await withSocket(async (socket, harness) => {
     const stub = bundleStub({
       bundles: [structuredClone(PROFILE_BUNDLE)],
-      // Newest first: 2.0.0 rejects this DSH build and 1.9.0 declares no bundle,
-      // so 1.5.0 is the first version that may replace the install.
+      // Newest first: 2.0.0 rejects this DSH build, 1.9.0 declares no bundle,
+      // 1.7.0 is a prerelease and 1.6.0 is deprecated, so 1.5.0 is the first
+      // version DSH's own update candidate would take. The phone has no version
+      // chooser and no confirmation, so it must not install either of those.
       versions: listedVersions([
         { version: '2.0.0', tags: [], prerelease: false, bundle: true, incompatible: { name: KEY, version: '2.0.0', runtimeVersion: '0.9.0', requirements: ['engines.dsh'] } },
         { version: '1.9.0', tags: [], prerelease: false, bundle: false },
+        { version: '1.7.0', tags: [], prerelease: true, bundle: true },
+        { version: '1.6.0', tags: [], prerelease: false, bundle: true, deprecated: 'superseded by 1.7.0' },
         { version: '1.5.0', tags: ['latest'], publishedAt: '2026-11-01T00:00:00.000Z', prerelease: false, bundle: true },
         { version: '1.4.1', tags: [], prerelease: false, bundle: true },
       ]),

@@ -71,19 +71,68 @@ function descriptionOf(value) {
 }
 
 /**
- * One BundleInfo as the row Hermex decodes.
+ * The bundles DSH's own Plugins screen never lists.
  *
- * A bundle with no `name` cannot be addressed by key, so it is dropped instead
- * of being listed as a plugin the screen could never toggle. The row's key is
- * the package name itself - the same string `setBundleEnabled`, `listVersions`
- * and `updateBundle` take.
+ * A copy of `HIDDEN_BUNDLES` from `@deepseek-ai/dsh-official-bundles`: the
+ * launch-mode and profile bundles (`dsh-base`, `dsh-web-app`, `dsh-headless`,
+ * the SDK and ACP profiles, the terminal and worktree bundles) are plumbing a
+ * person does not switch on and off. Mirroring the list here rather than
+ * depending on that package keeps this plugin installable on a host that does
+ * not ship it; a name DSH adds later is caught by the same rule below, because
+ * an unselected `listedByDefault:false` bundle is dropped too.
+ */
+const HIDDEN_BUNDLES = new Set([
+  '@deepseek-ai/dsh-base',
+  '@deepseek-ai/dsh-web-app',
+  '@deepseek-ai/dsh-headless',
+  '@deepseek-ai/dsh-sdk-app',
+  '@deepseek-ai/dsh-acp-app',
+  '@deepseek-ai/dsh-sdk-minimal',
+  '@deepseek-ai/dsh-experimental-terminal-bundle',
+  '@deepseek-ai/dsh-experimental-tool-worktree',
+])
+
+/**
+ * Whether the phone should offer this bundle at all.
+ *
+ * It mirrors the desktop Plugin Manager's own filter, minus the rows only this
+ * facade cannot act on: a shipped or profile bundle the screen hides, a bundle
+ * whose files are absent (`availability:"missing"`, an on-demand catalogue entry
+ * nothing has installed) has nothing to toggle or update, and an unselected
+ * bundle the installation holds back (`listedByDefault:false`) is not offered
+ * until the profile selects it. Without this the phone would offer launch-mode
+ * bundles as switchable plugins, and switching one off on a running profile is
+ * not a recoverable mistake.
  *
  * @param {object} bundle `pluginManager/listBundles` entry.
- * @returns {object|null} row, or null when the bundle cannot be addressed.
+ * @returns {boolean} true when the row belongs on the phone's list.
+ */
+export function listableBundle(bundle) {
+  const name = String(bundle?.name ?? '')
+  if (name.length === 0) return false
+  if (HIDDEN_BUNDLES.has(name)) return false
+  // Nothing is installed under a missing bundle: there is no copy to enable and
+  // no version to replace, and installing is not something the phone can do.
+  if (bundle?.availability === 'missing') return false
+  if (bundle?.listedByDefault === false && bundle?.enabled !== true && bundle?.installed !== true) return false
+  return true
+}
+
+/**
+ * One BundleInfo as the row Hermex decodes.
+ *
+ * A bundle with no `name` cannot be addressed by key, and one the desktop screen
+ * hides is not a plugin a person manages, so both are dropped instead of being
+ * listed as rows the screen could never act on. The row's key is the package
+ * name itself - the same string `setBundleEnabled`, `listVersions` and
+ * `updateBundle` take.
+ *
+ * @param {object} bundle `pluginManager/listBundles` entry.
+ * @returns {object|null} row, or null when the bundle is not one this surface lists.
  */
 export function pluginRowOf(bundle) {
-  const key = String(bundle?.name ?? '')
-  if (key.length === 0) return null
+  if (!listableBundle(bundle)) return null
+  const key = String(bundle.name)
   const meta = bundle?.meta
   const listed = bundle?.version
   const installTarget = bundle?.installTarget?.version
@@ -102,9 +151,11 @@ export function pluginRowOf(bundle) {
     // else comes with the installation and is read-only through `plugins.manage`.
     source: bundle?.availability === 'profile' ? 'user' : 'bundled',
     status: bundle?.enabled === true ? 'enabled' : 'disabled',
-    // `update` is how updateBundle can replace the bundle, and is absent
-    // exactly when it cannot.
-    update_available: bundle?.update === 'registry' || bundle?.update === 'git',
+    // Registry-only on purpose: `plugins.manage update` replaces a package from
+    // a registry, while a git-pinned copy updates to another commit on the host
+    // and is refused. Advertising an Update button for it would offer an action
+    // that cannot succeed.
+    update_available: bundle?.update === 'registry',
     // DSH has no per-plugin settings form, so the app renders no settings row.
     settings_schema: [],
   }

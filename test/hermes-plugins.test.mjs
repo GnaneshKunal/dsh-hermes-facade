@@ -143,8 +143,28 @@ test('pluginRowOf falls back to the package name when meta is missing', () => {
 test('pluginRowOf marks a profile bundle as user and everything else as bundled', () => {
   assert.equal(pluginRowOf(USER_BUNDLE).source, 'user')
   assert.equal(pluginRowOf(SHIPPED_BUNDLE).source, 'bundled')
-  assert.equal(pluginRowOf({ ...USER_BUNDLE, availability: 'missing' }).source, 'bundled')
   assert.equal(pluginRowOf({ ...USER_BUNDLE, availability: undefined }).source, 'bundled')
+})
+
+test('pluginRowOf drops a bundle the phone must not offer', () => {
+  // A launch-mode bundle the desktop Plugins screen hides: selecting one on a
+  // live profile can leave the next start in a mode this profile cannot compose.
+  assert.equal(pluginRowOf({ ...USER_BUNDLE, name: '@deepseek-ai/dsh-headless' }), null)
+  assert.equal(pluginRowOf({ ...USER_BUNDLE, name: '@deepseek-ai/dsh-web-app' }), null)
+  // Nothing is installed under a missing bundle, so there is nothing to toggle
+  // and no installed version to replace.
+  assert.equal(pluginRowOf({ ...USER_BUNDLE, availability: 'missing' }), null)
+  // A bundle the installation holds back and nothing installed or selected.
+  assert.equal(
+    pluginRowOf({ ...SHIPPED_BUNDLE, listedByDefault: false, enabled: false, installed: false }),
+    null,
+  )
+  // A selected one, or one the profile installed, stays: the desktop keeps it too.
+  assert.notEqual(pluginRowOf({ ...SHIPPED_BUNDLE, listedByDefault: false, enabled: true, installed: false }), null)
+  assert.notEqual(pluginRowOf({ ...USER_BUNDLE, listedByDefault: false }), null)
+  // The ordinary cases stay listed.
+  assert.notEqual(pluginRowOf(USER_BUNDLE), null)
+  assert.notEqual(pluginRowOf(SHIPPED_BUNDLE), null)
 })
 
 test('pluginRowOf reads anything but true as disabled', () => {
@@ -156,7 +176,9 @@ test('pluginRowOf reads anything but true as disabled', () => {
 
 test('pluginRowOf offers an update only when the host can replace the bundle', () => {
   assert.equal(pluginRowOf(USER_BUNDLE).update_available, true)
-  assert.equal(pluginRowOf(GIT_BUNDLE).update_available, true, 'a git-pinned bundle updates to another commit')
+  // Registry-only: a git-pinned bundle updates to another commit on the host,
+  // so advertising an Update button for it would offer an action that cannot run.
+  assert.equal(pluginRowOf(GIT_BUNDLE).update_available, false)
   assert.equal(pluginRowOf(SHIPPED_BUNDLE).update_available, false)
   assert.equal(pluginRowOf({ ...USER_BUNDLE, update: undefined }).update_available, false)
 })

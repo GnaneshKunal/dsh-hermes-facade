@@ -146,28 +146,40 @@ refusing it withdraws approvals silently.
 | `model.options` | providers/models from the DSH catalog |
 | `commands.catalog` | slash commands as `pairs` + `canon`; the host-only `/goal` row includes its argument hint because `command.dispatch` is the one host command the listener executes |
 | `config.set` | `model` and `reasoning` are applied through the facade; `fast`, `yolo`, `personality` and `approvals.mode` answer a key-level error so the control reverts and the rest of the method stays available |
-| `plugins.manage` | Hermex 2.1.0's Settings -> Server -> Plugins, answered over DSH's plugin **bundles**. `list {profile}` answers `{plugins, user_count, bundled_count}`, one row per plugin package (about 34 in a typical profile): `key` the package name, `name` its display title (else the package name), `version` the package version, `description` the display description (else the package manifest's, one line), `source` `user` when the profile installed it and `bundled` when the installation supplies it, `status` from whether the profile selects it, `update_available` when DSH can replace it (a registry or git source). `toggle {profile, key, enable}` applies `pluginManager/setBundleEnabled`; `update {profile, key}` lists the newer versions, installs the newest valid bundle compatible with this DSH, and answers the same shape; both answer `{ok, unchanged, restart_required, gateway_reloaded, activation, name, plugin}`, `plugin` being the row read back after the change (`null` when that read fails). A read-only package, a failed or cancelled change, an overridden one, a git-pinned package and one with no update path are refused `5026`; `settings`, `install` and `remove` are refused `5026` |
+| `plugins.manage` | Hermex 2.1.0's Settings -> Server -> Plugins, answered over DSH's plugin **bundles**. `list {profile}` answers `{plugins, user_count, bundled_count}`, one row per manageable plugin package (the desktop screen's own filter, so launch-mode bundles and packages nothing is installed under are not listed, and `toggle`/`update` refuse them): `key` the package name, `name` its display title (else the package name), `version` the package version, `description` the display description (else the package manifest's, one line), `source` `user` when the profile installed it and `bundled` when the installation supplies it, `status` from whether the profile selects it, `update_available` when DSH can replace it from a registry (a git-pinned package updates on the host). `toggle {profile, key, enable}` applies `pluginManager/setBundleEnabled`; `update {profile, key}` lists the newer versions, installs the newest valid bundle compatible with this DSH, and answers the same shape; both answer `{ok, unchanged, restart_required, gateway_reloaded, activation, name, plugin}`, `plugin` being the row read back after the change (`null` when that read fails). A read-only package, a failed or cancelled change, an overridden one, a git-pinned package and one with no update path are refused `5026`; `settings`, `install` and `remove` are refused `5026` |
 | anything else | `-32601`, which the client records and uses to hide the control |
 
 ### Plugins (`plugins.manage`)
 
 Hermex 2.1.0's Settings -> Server -> Plugins screen is driven by this one
 method, answered here for the single Profile `default` over DSH's plugin
-**bundles**: the plugin packages the profile composes (about 34 in a typical
-profile), not the Loader's composition entries that the earlier entry-level view
-listed (about 264 internal rows such as `include:llm`).
+**bundles**: the plugin packages the profile composes, filtered the way the
+desktop Plugins screen filters them (41 rows on this deployment, where the
+earlier entry-level view listed 264 Loader composition entries such as
+`include:llm`).
 
-`list` reads `pluginManager/listBundles {}` and returns one row per package in the
-client's shape, with `user_count`/`bundled_count` counted from each row's `source`.
+`list` reads `pluginManager/listBundles {}` and returns one row per package in
+the client's shape, with `user_count`/`bundled_count` counted from each row's
+`source`. It drops what the desktop hides: the launch-mode and profile bundles
+(`dsh-base`, `dsh-web-app`, `dsh-headless`, the SDK and ACP profiles, the
+terminal and worktree bundles), a bundle nothing is installed under
+(`availability:"missing"`, an on-demand catalogue entry), an unselected bundle
+the installation holds back (`listedByDefault:false` with neither `enabled` nor
+`installed`), and one with no name. `toggle` and `update` refuse a package
+outside that set, so no crafted key can switch a launch-mode bundle on a live
+profile.
+
 The row is `BundleInfo` mapped as: `key` the package name (`BundleInfo.name`),
 `name` its display title (`meta.title`, else the package name), `version` the
-package version (else the install target's), `description` its display description
-(`meta.description`, else the bundle's own, flattened to one line), `source` `user`
-when `availability` is `profile` (the profile installed it) and `bundled` when the
-installation supplies it, `status` `enabled`/`disabled` from `BundleInfo.enabled`,
-`update_available` true exactly when `BundleInfo.update` is `registry` or `git`
-(absent when DSH cannot replace the package), and `settings_schema` empty because
-DSH packages declare no settings form. A bundle with an empty name is dropped.
+package version (else the install target's), `description` its display
+description (`meta.description`, else the bundle's own, flattened to one line),
+`source` `user` when `availability` is `profile` (the profile installed it) and
+`bundled` when the installation supplies it, `status` `enabled`/`disabled` from
+`BundleInfo.enabled`, `update_available` true exactly when `BundleInfo.update`
+is `registry` (a git-pinned package updates to a commit on the host, so it
+advertises no Update button; the field is absent when DSH cannot replace the
+package at all), and `settings_schema` empty because DSH packages declare no
+settings form.
 
 `toggle` finds the package by name and applies `pluginManager/setBundleEnabled`
 with `{name, enabled}`. It answers `unchanged` as `!changed`; `restart_required` is

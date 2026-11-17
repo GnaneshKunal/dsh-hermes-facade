@@ -10,8 +10,8 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 - **The Plugins screen for Hermex 2.1.0, at package level.** The Hermes
   listener now answers `plugins.manage` over DSH's plugin bundles, so
   Settings -> Server -> Plugins lists the plugin packages the profile composes
-  (about 34 in a typical profile) instead of the Loader's internal composition
-  entries (about 264 rows), for the one Profile, `default`: a row's key is the
+  the desktop screen lists (on this deployment 41 where the Loader's internal
+  composition entries gave 264) for the one Profile, `default`: a row's key is the
   package name, its name the package's display title (else the package name),
   its version the package version, its description the package manifest's (one
   line), and its source `user` when the profile installed it, `bundled` when
