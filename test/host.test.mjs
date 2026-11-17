@@ -1090,8 +1090,8 @@ test('the plugin surface reads the inventory and pins the enable call', async ()
   assert.equal(await host.plugins.available(), true)
   assert.deepEqual(await host.plugins.list(), infos)
   await host.plugins.setEnabled('plugins/a.js', false)
-  // The Remote takes one argument object: a bare (id, enabled) pair reaches it
-  // as an empty request and the toggle silently does nothing.
+  // The Remote takes one argument object, so a bare (id, enabled) pair is a
+  // mismatched-argument refusal rather than a toggle.
   const enable = calls.find(entry => entry.namespace === 'pluginManager' && entry.method === 'setPluginEnabled')
   assert.deepEqual(enable.args, { id: 'plugins/a.js', enabled: false })
 })
