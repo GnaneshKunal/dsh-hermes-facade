@@ -200,13 +200,6 @@ function selectionOf(row) {
 }
 
 /**
- * Create the host adapter.
- * @param {object} options options.
- * @param {object} options.ctx cordis host context.
- * @param {{info: Function, warn: Function}} [options.logger] logger.
- * @returns {object} host surface consumed by the HTTP layer.
- */
-/**
  * Gateway dispatch codes that mean a Remote is not mounted at all.
  *
  * They are a host-capability refusal, never a data failure: only these prove
@@ -219,6 +212,13 @@ const PLUGIN_SERVICE_MISSING_CODES = new Set([
   'gateway/method-unavailable',
 ])
 
+/**
+ * Create the host adapter.
+ * @param {object} options options.
+ * @param {object} options.ctx cordis host context.
+ * @param {{info: Function, warn: Function}} [options.logger] logger.
+ * @returns {object} host surface consumed by the HTTP layer.
+ */
 export function createDshHost({ ctx, logger = console }) {
   let costWarningLogged = false
   const gateway = ctx.typertGateway
