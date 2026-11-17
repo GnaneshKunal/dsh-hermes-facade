@@ -610,7 +610,10 @@ test('plugins.manage refuses a read-only bundle with 5026 in DSH wording', async
   await withSocket(async (socket, harness) => {
     const cases = [
       { label: 'management-required', reason: 'management-required', phrase: /part of the DSH installation/ },
-      { label: 'unaddressable', reason: 'unaddressable', phrase: /cannot be addressed by the profile patch/ },
+      // listBundles reports only 'management-required' for a bundle today, so the
+      // union's other value never reaches here; a reason this facade does not know
+      // still refuses in plain words rather than sending a code to the phone.
+      { label: 'an unknown reason', reason: 'some-future-reason', phrase: /^DSH cannot enable or disable that plugin from here\.$/ },
     ]
     for (const entry of cases) {
       const stub = bundleStub({ bundles: [{ ...structuredClone(INSTALL_BUNDLE), readOnlyReason: entry.reason }] })
