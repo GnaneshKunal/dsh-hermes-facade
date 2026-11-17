@@ -206,6 +206,19 @@ function selectionOf(row) {
  * @param {{info: Function, warn: Function}} [options.logger] logger.
  * @returns {object} host surface consumed by the HTTP layer.
  */
+/**
+ * Gateway dispatch codes that mean a Remote is not mounted at all.
+ *
+ * They are a host-capability refusal, never a data failure: only these prove
+ * that this host has no plugin manager. Any other failure is transient.
+ */
+const PLUGIN_SERVICE_MISSING_CODES = new Set([
+  'gateway/invocation-unavailable',
+  'gateway/service-unavailable',
+  'gateway/definition-unavailable',
+  'gateway/method-unavailable',
+])
+
 export function createDshHost({ ctx, logger = console }) {
   let costWarningLogged = false
   const gateway = ctx.typertGateway
@@ -223,6 +236,12 @@ export function createDshHost({ ctx, logger = console }) {
   let catalogCacheAt = 0
   /** Lower-cased asset stem -> SKILL.md-like path, for package-provided skills. */
   let skillAssetCache
+  /**
+   * Whether this host has the pluginManager Remote, probed once per process.
+   * A `false` answer is final: a host without the service does not grow one
+   * while the process runs, so the probe is never repeated.
+   */
+  let pluginsAvailable
 
   /**
    * Model catalog, cached briefly so a composer open does not query every
@@ -253,6 +272,20 @@ export function createDshHost({ ctx, logger = console }) {
    */
   function invoke(namespace, method, args, signal) {
     return gateway.invoke({ namespace, method, args, peer, ...(signal ? { signal } : {}) })
+  }
+
+  /**
+   * DSH's installed plugin rows, through the pluginManager Remote.
+   *
+   * The Remote is declared to return PluginInfo[]; a reply that is not a list
+   * is a broken host reply and throws, because an empty list would read as
+   * "this host has no plugins" instead of a failure.
+   * @returns {Promise<Array<object>>} PluginInfo rows.
+   */
+  async function pluginList() {
+    const value = await invoke('pluginManager', 'listPlugins', {})
+    if (!Array.isArray(value)) throw new Error('pluginManager/listPlugins returned no plugin list')
+    return value
   }
 
   /**
@@ -1414,6 +1447,70 @@ export function createDshHost({ ctx, logger = console }) {
         commandId: typeof value.commandId === 'string' ? value.commandId : '',
         result: { kind: result.kind, ...(typeof result.text === 'string' ? { text: result.text } : {}) },
       }
+    },
+
+    /**
+     * The host's plugin list and its enable/disable switch.
+     *
+     * This is DSH's own plugin inventory: the same rows the desktop Plugins
+     * screen shows, read and written through the pluginManager Remote. A row
+     * carrying a `patchId` is writable through the profile patch; one without it
+     * is not writable from here.
+     */
+    plugins: {
+      /**
+       * Whether this host has the pluginManager Remote.
+       *
+       * Only a dispatch code that says the Remote is absent is remembered: a
+       * transient invocation failure, or an inventory reply that could not be
+       * read, proves nothing about the host and is retried on the next call. A
+       * remembered `false` makes the caller answer method-not-found, which
+       * Hermex 2.1.0 renders as its "Couldn't Load Plugins" screen - so it must
+       * never be pinned by anything short of a real capability refusal.
+       * @returns {Promise<boolean>} availability.
+       */
+      async available() {
+        if (pluginsAvailable !== undefined) return pluginsAvailable
+        try {
+          await pluginList()
+          pluginsAvailable = true
+          return true
+        } catch (error) {
+          const code = typeof error?.code === 'string' ? error.code : ''
+          // Anything else is this call's failure, not a fact about the host: let
+          // it propagate so the caller answers a real error the phone can retry.
+          if (!PLUGIN_SERVICE_MISSING_CODES.has(code)) throw error
+          pluginsAvailable = false
+          logger.warn?.('hermes-facade: pluginManager is not mounted: ' + String(error?.message ?? error))
+          return false
+        }
+      },
+
+      /**
+       * The host's plugin rows.
+       *
+       * A known-unavailable service is refused locally rather than sent a call
+       * that cannot succeed; a failure of the Remote itself propagates, so the
+       * caller reports an error instead of an empty list that would read as
+       * "this host has no plugins".
+       * @returns {Promise<Array<object>>} PluginInfo rows.
+       */
+      async list() {
+        if (pluginsAvailable === false) throw new Error('pluginManager is not available on this host')
+        return pluginList()
+      },
+
+      /**
+       * Enable or disable one plugin through the profile patch.
+       * @param {string} id plugin entry id.
+       * @param {boolean} enabled desired state.
+       * @returns {Promise<object>} ChangeResult: `application` says whether the
+       *   change took effect now, needs a restart, is overridden, or failed, and
+       *   `error`/`warnings` carry the host's own wording when it did not.
+       */
+      async setEnabled(id, enabled) {
+        return invoke('pluginManager', 'setPluginEnabled', { id, enabled })
+      },
     },
 
     /**

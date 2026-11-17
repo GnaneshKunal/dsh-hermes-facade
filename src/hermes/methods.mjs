@@ -17,6 +17,7 @@ import { basename, join, sep } from 'node:path'
 import { commandsOf, controlOf, HOST_GOAL_COMMAND, modelOptionsOf, resumeReplyOf, sessionRowOf } from './shapes.mjs'
 import { decodeUpload, imageMediaType, sanitizeUploadName } from './uploads.mjs'
 import { profilesListBody, profileRow, PROFILE_NAME, TERMINAL_BACKEND } from './protocol.mjs'
+import { PLUGIN_CODES, pluginRowOf, pluginsBodyOf, toggleReplyOf, parseManageParams } from './plugins.mjs'
 
 /**
  * Build an RPC error with an explicit JSON-RPC code.
@@ -658,6 +659,84 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
         // The goal only: DSH has no loop or heartbeat domain, so their keys are
         // absent (never empty objects) and the phone offers no Pause/Resume.
         return controlOf(await host.sessionGoal(sessionId))
+      }
+      case 'plugins.manage': {
+        // Hermex 2.1.0 drives Settings -> Server -> Plugins entirely through this
+        // one method: `list`, `toggle`, and the lifecycle actions (install,
+        // remove, update, settings) it renders as buttons.
+        const parsed = parseManageParams(p)
+        // -32601 is how this facade tells Hermex a method does not exist. On
+        // Hermex 2.1.0 the Settings row is unconditional and this answer becomes
+        // its "Couldn't Load Plugins" screen, so the host reports that it cannot
+        // manage plugins instead of drawing a broken list.
+        if (typeof host?.plugins !== 'object' || host.plugins === null) {
+          throw rpcError(-32601, 'plugins.manage is not available on this host')
+        }
+        if (!(await host.plugins.available())) {
+          throw rpcError(-32601, 'plugins.manage is not available on this host')
+        }
+        switch (parsed.action) {
+          case 'list':
+            return pluginsBodyOf(await host.plugins.list())
+          case 'toggle': {
+            const infos = await host.plugins.list()
+            const before = infos.find(info => String(info?.entryId ?? '') === parsed.key)
+            if (before === undefined) throw rpcError(PLUGIN_CODES.missing, 'No plugin on this host has that key')
+            // A row without a patchId is not owned by the profile patch: it is a
+            // shipped/management plugin. DSH's reason is a two-value union, and
+            // both are said in plain words rather than being sent as a code.
+            if (before.patchId === undefined) {
+              const why = before.readOnlyReason === 'management-required'
+                ? ': it is part of the DSH installation, which has to stay enabled.'
+                : before.readOnlyReason === 'unaddressable'
+                  ? ': its loader entry cannot be addressed by the profile patch.'
+                  : '.'
+              throw rpcError(PLUGIN_CODES.refused, 'DSH cannot enable or disable that plugin from here' + why)
+            }
+            const change = await host.plugins.setEnabled(parsed.key, parsed.enable)
+            // A refused change is the host's own answer, so it is forwarded in the
+            // host's words rather than reported as a silent no-op. The host's
+            // ManagementError carries {code, diagnostic} - never a message - so
+            // the diagnostic is what the phone shows, then the code.
+            if (change?.application === 'failed' || change?.application === 'cancelled') {
+              const detail = change?.error?.diagnostic ?? change?.error?.code ?? change?.application
+              throw rpcError(PLUGIN_CODES.refused, String(detail))
+            }
+            // `overridden` saved the patch but a higher-priority layer keeps the
+            // row in its old state. Answering it as applied would contradict the
+            // row the screen shows, and Hermex has no field for it, so it is a
+            // refusal carrying DSH's own wording.
+            if (change?.application === 'overridden') {
+              const detail = change?.error?.diagnostic ?? change?.error?.code
+              throw rpcError(
+                PLUGIN_CODES.refused,
+                'DSH saved the change, but a higher-priority layer keeps that plugin as it was, so it is not in effect' +
+                  (detail === undefined ? '.' : ': ' + String(detail)),
+              )
+            }
+            // The reply carries the row read back after the change. A failed
+            // re-read answers `plugin: null`, which is what makes the client take
+            // its own read() fallback; reusing the pre-toggle row instead would
+            // show the switch returning to a state the host may no longer be in.
+            const row = await host.plugins.list()
+              .then(list => list.map(pluginRowOf).find(candidate => candidate?.key === parsed.key) ?? null)
+              .catch(() => null)
+            return toggleReplyOf(change ?? {}, row)
+          }
+          case 'install':
+          case 'remove':
+          case 'update':
+          case 'settings':
+            // DSH owns plugin lifecycle: "dsh plugin add|remove|update" is the only
+            // path, and there is no per-plugin settings form to render.
+            throw rpcError(
+              PLUGIN_CODES.refused,
+              'plugins.manage ' + parsed.action + ' cannot be done from the phone: DeepSeek Harness installs, ' +
+                'updates and removes plugins through the "dsh plugin" command, and has no per-plugin settings form.',
+            )
+          default:
+            throw rpcError(4021, 'plugins.manage action "' + String(parsed.action) + '" is not supported')
+        }
       }
       default: {
         if (!unavailable.has(method)) {

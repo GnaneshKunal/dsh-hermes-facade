@@ -7,6 +7,23 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **The Plugins screen for Hermex 2.1.0.** The Hermes listener now answers
+  `plugins.manage`, so Settings -> Server -> Plugins appears and lists DSH's
+  own plugins from `pluginManager/listPlugins` for the one Profile, `default`:
+  a row's key is the Loader `entryId`, its name the package's display title
+  (else its module name), its version empty because DSH's inventory carries
+  none, and its source `user` when the profile patch can write the row,
+  `bundled` when it is read-only/shipped. `toggle` applies
+  `pluginManager/setPluginEnabled` and reads the row back; `restart_required`
+  is set when the host defers the change to the next start (HMR applies it
+  live otherwise), `gateway_reloaded` is always false, and a read-only row, an
+  `overridden` change, or a failed/cancelled one is a `5026` refusal, the last
+  two carrying DeepSeek Harness's own wording (an unknown plugin is `4020`, an
+  unknown Profile `4064`). `install`/`remove`/`update`/`settings` are refused
+  `5026`, Discover's plugin catalog stays 404 (that catalogue is Nous's Hermes
+  marketplace, not DSH's npm-based plugins), and a host with no pluginManager
+  service answers `-32601`, which Hermex 2.1.0 renders as its "Couldn't Load
+  Plugins" screen rather than a broken list.
 - **Transcript images and Quick Look now work on `:9121`.** Hermex resolves a
   Markdown image's absolute path through `GET /api/media`, and Quick Look uses
   `GET /api/file/raw`; the Hermes listener did not proxy either route, so an
