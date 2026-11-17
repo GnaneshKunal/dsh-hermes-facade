@@ -146,12 +146,66 @@ refusing it withdraws approvals silently.
 | `model.options` | providers/models from the DSH catalog |
 | `commands.catalog` | slash commands as `pairs` + `canon`; the host-only `/goal` row includes its argument hint because `command.dispatch` is the one host command the listener executes |
 | `config.set` | `model` and `reasoning` are applied through the facade; `fast`, `yolo`, `personality` and `approvals.mode` answer a key-level error so the control reverts and the rest of the method stays available |
-| `plugins.manage` | Hermex 2.1.0's Settings -> Server -> Plugins. `list {profile}` answers `{plugins, user_count, bundled_count}`; `toggle {profile, key, enable}` applies `pluginManager/setPluginEnabled` and answers `{ok, unchanged, restart_required, gateway_reloaded, activation, name, plugin}`, `plugin` being the row read back after the change. Rows are DSH's inventory: `key` is the Loader `entryId`, `version` is empty, `source` is `user` when the profile patch can write the row and `bundled` otherwise, `update_available` false and `settings_schema` empty. `install`/`remove`/`update`/`settings` are refused `5026` |
+| `plugins.manage` | Hermex 2.1.0's Settings -> Server -> Plugins, answered over DSH's plugin **bundles**. `list {profile}` answers `{plugins, user_count, bundled_count}`, one row per plugin package (about 34 in a typical profile): `key` the package name, `name` its display title (else the package name), `version` the package version, `description` the display description (else the package manifest's, one line), `source` `user` when the profile installed it and `bundled` when the installation supplies it, `status` from whether the profile selects it, `update_available` when DSH can replace it (a registry or git source). `toggle {profile, key, enable}` applies `pluginManager/setBundleEnabled`; `update {profile, key}` lists the newer versions, installs the newest valid bundle compatible with this DSH, and answers the same shape; both answer `{ok, unchanged, restart_required, gateway_reloaded, activation, name, plugin}`, `plugin` being the row read back after the change (`null` when that read fails). A read-only package, a failed or cancelled change, an overridden one, a git-pinned package and one with no update path are refused `5026`; `settings`, `install` and `remove` are refused `5026` |
 | anything else | `-32601`, which the client records and uses to hide the control |
 
 ### Plugins (`plugins.manage`)
 
-Hermex 2.1.0's Settings -> Server -> Plugins screen is driven by this one method, answered here for the single Profile `default` from DSH's `pluginManager/listPlugins`; `list` returns the inventory in the client's row shape, with `user_count`/`bundled_count` counted from each row's `source`. `toggle` applies `pluginManager/setPluginEnabled {id, enabled}` and answers `unchanged` as `!changed`, `restart_required` true only when the host reports `application:"restart-required"` (it could not apply the change live under HMR, so it lands at the next start), `gateway_reloaded` always false, and `plugin` as the row read back after the change (`null` when that read fails, which makes the client take its own `read()` fallback). A read-only (shipped) row, an `overridden` change and a failed or cancelled one are all `5026`: the read-only sentence is built here from DSH's reason, while the other two carry DeepSeek Harness's own wording, because `overridden` means the patch was saved but a higher-priority layer keeps the row as it was. A key that no longer exists is `4020`, malformed params are `4021`, an unknown Profile is `4064`, and `install`/`remove`/`update`/`settings` are refused `5026` because DSH installs, updates and removes plugins through the `dsh plugin` command and has no per-plugin settings form. When the host mounts no pluginManager service at all, `plugins.manage` answers `-32601`; Hermex 2.1.0's Settings row is unconditional, so that answer becomes its "Couldn't Load Plugins" screen and the host reports that it cannot manage plugins rather than drawing a broken list. `GET /api/dashboard/plugins/catalog` stays 404, so the Discover tab shows the catalogue as unavailable: it is Nous's Hermes plugin marketplace (`hermes://plugin/install`, `catalog_tier` official/verified/community), while DSH's plugin ecosystem is npm-based and unrelated, so there is nothing honest to map it onto yet.
+Hermex 2.1.0's Settings -> Server -> Plugins screen is driven by this one
+method, answered here for the single Profile `default` over DSH's plugin
+**bundles**: the plugin packages the profile composes (about 34 in a typical
+profile), not the Loader's composition entries that the earlier entry-level view
+listed (about 264 internal rows such as `include:llm`).
+
+`list` reads `pluginManager/listBundles {}` and returns one row per package in the
+client's shape, with `user_count`/`bundled_count` counted from each row's `source`.
+The row is `BundleInfo` mapped as: `key` the package name (`BundleInfo.name`),
+`name` its display title (`meta.title`, else the package name), `version` the
+package version (else the install target's), `description` its display description
+(`meta.description`, else the bundle's own, flattened to one line), `source` `user`
+when `availability` is `profile` (the profile installed it) and `bundled` when the
+installation supplies it, `status` `enabled`/`disabled` from `BundleInfo.enabled`,
+`update_available` true exactly when `BundleInfo.update` is `registry` or `git`
+(absent when DSH cannot replace the package), and `settings_schema` empty because
+DSH packages declare no settings form. A bundle with an empty name is dropped.
+
+`toggle` finds the package by name and applies `pluginManager/setBundleEnabled`
+with `{name, enabled}`. It answers `unchanged` as `!changed`; `restart_required` is
+true only when the host reports `application:"restart-required"` (it could not
+apply the change live, so it lands at the next start); `gateway_reloaded` is always
+false; and `plugin` is the row read back after the change (`null` when that read
+fails, which makes the client take its own `read()` fallback). A package whose
+`readOnlyReason` is set, a failed or cancelled change and an `overridden` one are
+all `5026`: the read-only sentence is built here from DSH's reason, while the other
+two carry DeepSeek Harness's own wording, and `overridden` is refused rather than
+reported as applied because a higher-priority layer keeps the package as it was.
+
+`update` is the phone's Update button and now works for a registry package: DSH
+lists the newer versions (`pluginManager/listVersions` with `{name}`), takes the
+newest that is still a bundle and compatible with this DSH version (`bundle:true`,
+no `incompatible` marker), installs it (`pluginManager/updateBundle` with
+`{name, version, options:{registry}}`), reads the row back and answers the same
+reply shape as `toggle`. Nothing newer answers `ok` with `unchanged`, because the
+question is whether a newer version exists. There are two refusals, both `5026`: a
+git-pinned package (`update:"git"`) moves to a commit on the host and has no
+registry version to install, and a package with no update path at all (the
+installation supplies it, or it was installed from a path, so `update` is absent)
+cannot be replaced through this surface. A `listVersions` reply that is `refused`
+is `5026` carrying its reason.
+
+Errors: a key that no longer exists is `4020`, malformed params `4021`, an unknown
+Profile `4064`, and `install`/`remove`/`settings` are refused `5026` (`settings`
+because DSH packages declare no settings form; install and remove because the
+`dsh plugin` command / pnpm is the only path). When the host mounts no pluginManager
+service at all, `plugins.manage` answers `-32601`; only a real capability refusal is
+remembered as "no service", while a transient invocation failure is retried on the
+next call. Hermex 2.1.0's Settings row is unconditional, so that answer becomes its
+"Couldn't Load Plugins" screen and the host reports that it cannot manage plugins
+rather than drawing a broken list. `GET /api/dashboard/plugins/catalog` stays 404,
+so the Discover tab shows the catalogue as unavailable: it is Nous's Hermes plugin
+marketplace (`hermes://plugin/install`, `catalog_tier` official/verified/community),
+while DSH's plugin ecosystem is npm-based and unrelated, so there is nothing honest
+to map it onto yet.
 
 ### Events
 

@@ -17,7 +17,7 @@ import { basename, join, sep } from 'node:path'
 import { commandsOf, controlOf, HOST_GOAL_COMMAND, modelOptionsOf, resumeReplyOf, sessionRowOf } from './shapes.mjs'
 import { decodeUpload, imageMediaType, sanitizeUploadName } from './uploads.mjs'
 import { profilesListBody, profileRow, PROFILE_NAME, TERMINAL_BACKEND } from './protocol.mjs'
-import { PLUGIN_CODES, pluginRowOf, pluginsBodyOf, toggleReplyOf, parseManageParams } from './plugins.mjs'
+import { PLUGIN_CODES, pluginRowOf, pluginsBodyOf, toggleReplyOf, updateReplyOf, parseManageParams } from './plugins.mjs'
 
 /**
  * Build an RPC error with an explicit JSON-RPC code.
@@ -662,8 +662,11 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
       }
       case 'plugins.manage': {
         // Hermex 2.1.0 drives Settings -> Server -> Plugins entirely through this
-        // one method: `list`, `toggle`, and the lifecycle actions (install,
-        // remove, update, settings) it renders as buttons.
+        // one method: `list`, `toggle`, `update`, and the lifecycle actions
+        // (install, remove, settings) it renders as buttons. A row is one plugin
+        // bundle - a package the profile selects - because that is the layer DSH
+        // can version and replace; the Loader entries a bundle contributes are
+        // internal wiring with no package identity of their own.
         const parsed = parseManageParams(p)
         // -32601 is how this facade tells Hermex a method does not exist. On
         // Hermex 2.1.0 the Settings row is unconditional and this answer becomes
@@ -675,25 +678,43 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
         if (!(await host.plugins.available())) {
           throw rpcError(-32601, 'plugins.manage is not available on this host')
         }
+        /**
+         * Read one plugin's row back after a write.
+         *
+         * The reply carries a row read after the change: the row the request
+         * started from would show the state the write replaced, and a failed
+         * read answers null, which is the client's cue to take its own read()
+         * fallback.
+         *
+         * @returns {Promise<object|null>} the row, or null when the read failed.
+         */
+        async function readBackRow() {
+          return host.plugins.listBundles()
+            .then(bundles => bundles.map(pluginRowOf).find(candidate => candidate?.key === parsed.key) ?? null)
+            .catch(() => null)
+        }
         switch (parsed.action) {
           case 'list':
-            return pluginsBodyOf(await host.plugins.list())
+            return pluginsBodyOf(await host.plugins.listBundles())
           case 'toggle': {
-            const infos = await host.plugins.list()
-            const before = infos.find(info => String(info?.entryId ?? '') === parsed.key)
+            // Bundles are addressed by package name, which is also the row key the
+            // phone sends back, so a key names exactly one package.
+            const bundles = await host.plugins.listBundles()
+            const before = bundles.find(bundle => String(bundle?.name ?? '') === parsed.key)
             if (before === undefined) throw rpcError(PLUGIN_CODES.missing, 'No plugin on this host has that key')
-            // A row without a patchId is not owned by the profile patch: it is a
-            // shipped/management plugin. DSH's reason is a two-value union, and
-            // both are said in plain words rather than being sent as a code.
-            if (before.patchId === undefined) {
+            // A bundle carrying a read-only reason belongs to the installation
+            // or cannot be addressed by the profile patch. DSH's reason is a
+            // two-value union, and both are said in plain words rather than being
+            // sent as a code.
+            if (before.readOnlyReason !== undefined) {
               const why = before.readOnlyReason === 'management-required'
                 ? ': it is part of the DSH installation, which has to stay enabled.'
                 : before.readOnlyReason === 'unaddressable'
-                  ? ': its loader entry cannot be addressed by the profile patch.'
+                  ? ': its rows cannot be addressed by the profile patch.'
                   : '.'
               throw rpcError(PLUGIN_CODES.refused, 'DSH cannot enable or disable that plugin from here' + why)
             }
-            const change = await host.plugins.setEnabled(parsed.key, parsed.enable)
+            const change = await host.plugins.setBundleEnabled(parsed.key, parsed.enable)
             // A refused change is the host's own answer, so it is forwarded in the
             // host's words rather than reported as a silent no-op. The host's
             // ManagementError carries {code, diagnostic} - never a message - so
@@ -718,21 +739,73 @@ export function createMethods({ backend, hub, runner, requests, sessions, upload
             // re-read answers `plugin: null`, which is what makes the client take
             // its own read() fallback; reusing the pre-toggle row instead would
             // show the switch returning to a state the host may no longer be in.
-            const row = await host.plugins.list()
-              .then(list => list.map(pluginRowOf).find(candidate => candidate?.key === parsed.key) ?? null)
-              .catch(() => null)
-            return toggleReplyOf(change ?? {}, row)
+            return toggleReplyOf(change ?? {}, await readBackRow())
+          }
+          case 'update': {
+            // An update replaces the installed package with a newer release, so
+            // the bundle has to name the way it can be replaced before anything is
+            // asked for: DSH reports no `update` for one the installation supplies
+            // or one installed from a path, and no newer release can replace those.
+            const bundles = await host.plugins.listBundles()
+            const before = bundles.find(bundle => String(bundle?.name ?? '') === parsed.key)
+            if (before === undefined) throw rpcError(PLUGIN_CODES.missing, 'No plugin on this host has that key')
+            if (before.update === undefined) {
+              throw rpcError(
+                PLUGIN_CODES.refused,
+                'That plugin has no update from the phone: the DSH installation supplies it, or it was installed ' +
+                  'from a path rather than a package registry.',
+              )
+            }
+            // A git-pinned copy updates to another commit of the host's repository
+            // directory, which is a host-side operation, not a release the phone
+            // can pick.
+            if (before.update === 'git') {
+              throw rpcError(
+                PLUGIN_CODES.refused,
+                'That plugin is pinned to a git commit on this host, so it updates to another commit on the host, ' +
+                  'not from the phone.',
+              )
+            }
+            const versions = await host.plugins.listVersions(parsed.key)
+            // A refused list carries DSH's own reason; forwarding it is the only
+            // honest answer, since no version can be chosen from a list that was
+            // never read.
+            if (versions?.status !== 'listed') {
+              throw rpcError(
+                PLUGIN_CODES.refused,
+                String(versions?.reason ?? 'DSH could not read a version list for that plugin'),
+              )
+            }
+            // The list is newest first, and only a version that still declares a
+            // bundle and accepts this DSH build can replace the installed one.
+            const eligible = (versions.versions ?? []).find(
+              version => version?.bundle === true && version?.incompatible === undefined,
+            )
+            if (eligible === undefined) {
+              // Nothing newer to install: the unchanged form of the toggle reply
+              // still carries the row read back now.
+              return updateReplyOf(undefined, await readBackRow())
+            }
+            const update = await host.plugins.updateBundle(parsed.key, eligible.version, { registry: versions.registry })
+            // A failed or cancelled installation is the host's own answer, so it is
+            // forwarded in the host's words; ChangeResult.error carries {code,
+            // diagnostic}, never a message.
+            if (update?.result?.application === 'failed' || update?.result?.application === 'cancelled') {
+              const detail = update.result.error?.diagnostic ?? update.result.error?.code ?? update.result.application
+              throw rpcError(PLUGIN_CODES.refused, String(detail))
+            }
+            return updateReplyOf(update, await readBackRow())
           }
           case 'install':
           case 'remove':
-          case 'update':
           case 'settings':
-            // DSH owns plugin lifecycle: "dsh plugin add|remove|update" is the only
-            // path, and there is no per-plugin settings form to render.
+            // DSH owns plugin lifecycle: "dsh plugin add|remove" is the only path
+            // for those, and there is no per-plugin settings form to render. An
+            // update is answered above, for the packages DSH can replace.
             throw rpcError(
               PLUGIN_CODES.refused,
-              'plugins.manage ' + parsed.action + ' cannot be done from the phone: DeepSeek Harness installs, ' +
-                'updates and removes plugins through the "dsh plugin" command, and has no per-plugin settings form.',
+              'plugins.manage ' + parsed.action + ' cannot be done from the phone: DeepSeek Harness installs and ' +
+                'removes plugins through the "dsh plugin" command, and has no per-plugin settings form.',
             )
           default:
             throw rpcError(4021, 'plugins.manage action "' + String(parsed.action) + '" is not supported')

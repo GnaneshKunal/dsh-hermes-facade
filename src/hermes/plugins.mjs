@@ -1,13 +1,16 @@
 /**
- * Pure conversions between DeepSeek Harness's plugin inventory and the
+ * Pure conversions between DeepSeek Harness's plugin bundles and the
  * `plugins.manage` shapes Hermex 2.1.0 decodes for Settings → Server →
  * Plugins.
  *
  * Nothing here reads DSH state or touches the gateway: the dispatcher fetches
- * PluginInfo[] from the `pluginManager/listPlugins` Remote, maps it with
- * these functions, and hands a toggle's ChangeResult back through them. The
- * inventory carries no package version and DSH has no plugin settings form, so
- * both stay empty rather than being invented.
+ * BundleInfo[] from the `pluginManager/listBundles` Remote, maps it with these
+ * functions, and hands a toggle's ChangeResult and an update's
+ * PluginUpdateResult back through them. A row is one plugin PACKAGE - name,
+ * version, description, the thing the user installed - not one Loader
+ * composition entry, so the screen never shows the host's internal wiring. DSH
+ * has no per-plugin settings form, so `settings_schema` stays empty rather than
+ * being invented.
  *
  * @module dsh-hermes-facade/src/hermes/plugins
  */
@@ -26,7 +29,7 @@ export const PLUGIN_CODES = Object.freeze({
   refused: 5026,
 })
 
-/** Every action `plugins.manage` can carry; the facade implements list and toggle. */
+/** Every action `plugins.manage` can carry; the facade implements list, toggle and update. */
 const ACTIONS = ['list', 'toggle', 'install', 'remove', 'update', 'settings']
 
 /** Actions that name one plugin. */
@@ -58,8 +61,9 @@ function localized(value) {
 
 /**
  * Flatten a description to the single line the row carries.
- * @param {string|object|undefined} value `PluginLocalizedMeta.description`.
- * @returns {string} one line, empty when the entry has no description.
+ * @param {string|object|undefined} value localized meta text, or the package
+ *   manifest's own `description`.
+ * @returns {string} one line, empty when the bundle has no description.
  */
 function descriptionOf(value) {
   const text = localized(value)
@@ -67,29 +71,40 @@ function descriptionOf(value) {
 }
 
 /**
- * One PluginInfo as the row Hermex decodes.
+ * One BundleInfo as the row Hermex decodes.
  *
- * A row with no `entryId` cannot be addressed by key, so it is dropped instead
- * of being listed as a plugin the screen could never toggle. Hermex has no
- * version or settings field for a plugin, so those stay empty.
+ * A bundle with no `name` cannot be addressed by key, so it is dropped instead
+ * of being listed as a plugin the screen could never toggle. The row's key is
+ * the package name itself - the same string `setBundleEnabled`, `listVersions`
+ * and `updateBundle` take.
  *
- * @param {object} info `pluginManager/listPlugins` entry.
- * @returns {object|null} row, or null when the entry cannot be addressed.
+ * @param {object} bundle `pluginManager/listBundles` entry.
+ * @returns {object|null} row, or null when the bundle cannot be addressed.
  */
-export function pluginRowOf(info) {
-  const key = String(info?.entryId ?? '')
+export function pluginRowOf(bundle) {
+  const key = String(bundle?.name ?? '')
   if (key.length === 0) return null
-  const meta = info?.meta
+  const meta = bundle?.meta
+  const listed = bundle?.version
+  const installTarget = bundle?.installTarget?.version
   return {
     key,
-    name: localized(meta?.title) || String(info?.moduleName ?? '') || key,
-    version: '',
-    description: descriptionOf(meta?.description),
-    // Only a row the profile patch owns is writable by the user; the rest ship
-    // with the installation and are read-only through `plugins.manage`.
-    source: info?.patchId !== undefined ? 'user' : 'bundled',
-    status: info?.enabled === true ? 'enabled' : 'disabled',
-    update_available: false,
+    // A translated title wins; the package name is the honest fallback when the
+    // manifest carries no display text.
+    name: localized(meta?.title) || key,
+    version: typeof listed === 'string' && listed.length > 0
+      ? listed
+      : (typeof installTarget === 'string' ? installTarget : ''),
+    // The localized summary wins; the least fallback is the package manifest's
+    // own untranslated description.
+    description: descriptionOf(meta?.description) || descriptionOf(bundle?.description),
+    // Only a bundle the profile declares is the user's own install; anything
+    // else comes with the installation and is read-only through `plugins.manage`.
+    source: bundle?.availability === 'profile' ? 'user' : 'bundled',
+    status: bundle?.enabled === true ? 'enabled' : 'disabled',
+    // `update` is how updateBundle can replace the bundle, and is absent
+    // exactly when it cannot.
+    update_available: bundle?.update === 'registry' || bundle?.update === 'git',
     // DSH has no per-plugin settings form, so the app renders no settings row.
     settings_schema: [],
   }
@@ -98,16 +113,18 @@ export function pluginRowOf(info) {
 /**
  * The reply `plugins.manage` list sends.
  *
- * Rows keep the inventory's order, which is the Loader's composition order, and
- * both counts are always present so the screen can show its header either way.
+ * Rows keep the order the host listed the bundles in, and both counts are always
+ * present so the screen can show its header either way. `user_count` counts the
+ * user's own profile installs and `bundled_count` what the installation ships,
+ * both read off each row's `source`.
  *
- * @param {Array<object>|unknown} infos `pluginManager/listPlugins` entries.
+ * @param {Array<object>|unknown} bundles `pluginManager/listBundles` entries.
  * @returns {{plugins: object[], user_count: number, bundled_count: number}} reply.
  */
-export function pluginsBodyOf(infos) {
+export function pluginsBodyOf(bundles) {
   const plugins = []
-  for (const info of Array.isArray(infos) ? infos : []) {
-    const row = pluginRowOf(info)
+  for (const bundle of Array.isArray(bundles) ? bundles : []) {
+    const row = pluginRowOf(bundle)
     if (row !== null) plugins.push(row)
   }
   let userCount = 0
@@ -127,7 +144,7 @@ export function pluginsBodyOf(infos) {
  * dispatcher refuses a failed, cancelled or overridden change before it builds
  * this reply, so `ok` is only ever false for a host this facade cannot explain.
  *
- * @param {object|undefined} change `pluginManager/setPluginEnabled` result.
+ * @param {object|undefined} change `pluginManager/setBundleEnabled` result.
  * @param {object|null|undefined} row the row read back after the change, or
  *   null when that read failed - the client then takes its own read() fallback.
  * @returns {object} reply.
@@ -145,6 +162,26 @@ export function toggleReplyOf(change, row) {
     name: row?.key ?? String(change?.target ?? ''),
     plugin: row ?? null,
   }
+}
+
+/**
+ * The reply `plugins.manage` update sends for one PluginUpdateResult.
+ *
+ * An update answers with the same shape a toggle does because it changes the
+ * same bundle: `unchanged` and `restart_required` describe the inner
+ * ChangeResult of the step that ran. Nothing newer to install is not a failure -
+ * the update simply did nothing - so an absent update answers ok + unchanged.
+ *
+ * @param {object|undefined} update `pluginManager/updateBundle` result, absent
+ *   when no newer version was offered.
+ * @param {object|null|undefined} row the row read back after the update, or
+ *   null when that read failed - the client then takes its own read() fallback.
+ * @returns {object} reply.
+ */
+export function updateReplyOf(update, row) {
+  // An absent update means the registry offered nothing replaceable; the
+  // default claims only "not changed", which is exactly that answer.
+  return toggleReplyOf(update?.result ?? { changed: false, application: 'applied' }, row)
 }
 
 /**
