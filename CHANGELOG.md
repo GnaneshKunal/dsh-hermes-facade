@@ -3,7 +3,7 @@
 Notable changes to dsh-hermes-facade. Version headings correspond to releases; unreleased
 changes accumulate at the top. Format follows [Keep a Changelog](https://keepachangelog.com).
 
-## [Unreleased]
+## [0.3.0] - 2026-11-18
 
 ### Added
 
@@ -312,53 +312,6 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   reuses this fence; Memory will too. The Legacy `:9120` file routes are
   unchanged.
 
-### Fixed
-
-- **The Hermes listener's session write fence.** Hermex reads
-  `GET /api/sessions/{id}/mutation-snapshot` before every rename, pin or
-  archive and rethrows anything but a 200 (or the host's "old server" 404
-  wording) — so on `:9121` every list action failed even though the PATCH route
-  existed. The listener now answers the snapshot with
-  `{session_id, exists, runtime_revision}` (`exists:false` for an unknown id),
-  seeds the revision from the session's activity timestamp, advances it on every
-  write and turn, validates `request_id` + `expected_revision` on a PATCH
-  (`409 revision_conflict` / `409 mutation_identity_required`), and applies a
-  write with no identity bare for an older client. `unread` is refused with a
-  detail instead of a 200 that changed nothing.
-- **Hermes-listener wire defects from the compatibility audit.** The turn now
-  reports the canonical `message.complete.status:"complete"`; `session.interrupt`
-  answers `interrupted`/`not_interrupted`; `session.title` has its read form
-  (omit the title); `session.list` returns the same row shape as REST;
-  `session.info` falls back to the catalog's default model/provider when the
-  session has no selection, so the composer's chip is never blank; a `PATCH`
-  applies every field it names,
-  not just the first; `/api/sessions/search` and `/stats` answer a plain 404
-  instead of the row regex's "Session not found"; `sources` is matched as a CSV
-  of names (`cron` no longer empties the list by substring) and `limit=0` is
-  honoured; reverse requests go only to sockets that advertised
-  `client.capabilities {server_requests:true}`, and a raw JSON-RPC answer now
-  withdraws its card; the login rate limit keys on the forwarded client (trusted
-  only from loopback) so one phone behind `tailscale serve` cannot lock out the
-  rest; an empty prompt is refused before a draft is promoted and a double submit
-  queues instead of racing; Fast and yolo are refused with a key-level error
-  rather than echoed as applied. The listener's 32 gateway tests (175 in the
-  whole suite) cover these.
-
-### Changed
-
-- **The compatibility matrix now covers both transports.** `docs/05` is
-  restructured into the Legacy webui surface (`:9120`) and a first-class Hermes
-  host surface (`:9121`), with the app's behaviour, bridgeability and the known
-  defects for each. `docs/07-v2-roadmap.md` is new: parity with the Legacy
-  server first, then the V2-only screens, ranked by value per effort with
-  acceptance criteria.
-- `docs/06` records the write fence, the clarify request shape the client
-  decodes, and the remaining chat-wire gaps (usage, `terminal_backend`).
-
-## [0.3.0] - 2026-11-07
-
-### Added
-
 - **Hermes-protocol listener (port 9121).** Hermex 2.0 talks to a Hermes host
   (REST + JSON-RPC over a WebSocket) by default and files webui servers as
   Legacy. The plugin can now serve both contracts side by side, so the same app
@@ -418,6 +371,15 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 
 ### Changed
 
+- **The compatibility matrix now covers both transports.** `docs/05` is
+  restructured into the Legacy webui surface (`:9120`) and a first-class Hermes
+  host surface (`:9121`), with the app's behaviour, bridgeability and the known
+  defects for each. `docs/07-v2-roadmap.md` is new: parity with the Legacy
+  server first, then the V2-only screens, ranked by value per effort with
+  acceptance criteria.
+- `docs/06` records the write fence, the clarify request shape the client
+  decodes, and the remaining chat-wire gaps (usage, `terminal_backend`).
+
 - The webui listener now also accepts the loopback internal token, in addition to
   its cookie. Nothing else about :9120 changed.
 - `/api/profile/switch` and `/api/profile/create` still refuse (Profiles are not
@@ -425,6 +387,35 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
   source; tracked in docs/06 §9 as the next gap.
 
 ### Fixed
+
+- **The Hermes listener's session write fence.** Hermex reads
+  `GET /api/sessions/{id}/mutation-snapshot` before every rename, pin or
+  archive and rethrows anything but a 200 (or the host's "old server" 404
+  wording) — so on `:9121` every list action failed even though the PATCH route
+  existed. The listener now answers the snapshot with
+  `{session_id, exists, runtime_revision}` (`exists:false` for an unknown id),
+  seeds the revision from the session's activity timestamp, advances it on every
+  write and turn, validates `request_id` + `expected_revision` on a PATCH
+  (`409 revision_conflict` / `409 mutation_identity_required`), and applies a
+  write with no identity bare for an older client. `unread` is refused with a
+  detail instead of a 200 that changed nothing.
+- **Hermes-listener wire defects from the compatibility audit.** The turn now
+  reports the canonical `message.complete.status:"complete"`; `session.interrupt`
+  answers `interrupted`/`not_interrupted`; `session.title` has its read form
+  (omit the title); `session.list` returns the same row shape as REST;
+  `session.info` falls back to the catalog's default model/provider when the
+  session has no selection, so the composer's chip is never blank; a `PATCH`
+  applies every field it names,
+  not just the first; `/api/sessions/search` and `/stats` answer a plain 404
+  instead of the row regex's "Session not found"; `sources` is matched as a CSV
+  of names (`cron` no longer empties the list by substring) and `limit=0` is
+  honoured; reverse requests go only to sockets that advertised
+  `client.capabilities {server_requests:true}`, and a raw JSON-RPC answer now
+  withdraws its card; the login rate limit keys on the forwarded client (trusted
+  only from loopback) so one phone behind `tailscale serve` cannot lock out the
+  rest; an empty prompt is refused before a draft is promoted and a double submit
+  queues instead of racing; Fast and yolo are refused with a key-level error
+  rather than echoed as applied. The gateway suite covers these.
 
 - **Reverse requests survive a reconnect and a stop.** The withdrawal frame is
   the host's `{id, method, reason}` (it was `{request_id}`, which the client
@@ -445,10 +436,13 @@ changes accumulate at the top. Format follows [Keep a Changelog](https://keepach
 
 ### Known gaps
 
-- No session import, files, git, tasks, skills, memory, kanban, usage, bots or
-  bot screen on the Hermes listener; those are separate backends (and DSH has no
-  memory or kanban store). Move to Hermes cannot use this host as a destination
-  until DSH can accept a transcript.
+- No session import, kanban or bots on the Hermes listener: each is a separate
+  backend (and DSH has no kanban store), so those methods answer `-32601` and the
+  app hides the control, as it does on an older host. Workspace
+  add/remove/rename/reorder and the session lifecycle actions (delete, duplicate,
+  compress, clear, undo, retry, truncate, move) still refuse honestly. Move to
+  Hermes cannot use this host as a destination until DSH can accept a
+  transcript.
 
 ## [0.2.0] - 2026-11-07
 
