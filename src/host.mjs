@@ -52,7 +52,7 @@ async function packageDirs(root) {
   return dirs
 }
 /** How long a pending interaction waits before it is released to the GUI. */
-const INTERACTION_TIMEOUT_MS = 10 * 60 * 1000
+const DEFAULT_INTERACTION_TIMEOUT_MS = 10 * 60 * 1000
 
 /**
  * The one grant DeepSeek Harness's approval contract accepts
@@ -219,7 +219,25 @@ const PLUGIN_SERVICE_MISSING_CODES = new Set([
  * @param {{info: Function, warn: Function}} [options.logger] logger.
  * @returns {object} host surface consumed by the HTTP layer.
  */
-export function createDshHost({ ctx, logger = console }) {
+export function createDshHost({ ctx, logger = console, interactionTimeoutMs = DEFAULT_INTERACTION_TIMEOUT_MS }) {
+  // 0 (or any non-positive value) means an unanswered ask never expires by
+  // itself: the phone is the owner, the card stays open, and a reattaching
+  // client restores it from session.resume / open_requests. A positive value
+  // keeps the original behaviour, handing an abandoned ask to the GUI.
+  const interactionTimeout = Number.isFinite(interactionTimeoutMs)
+    ? interactionTimeoutMs
+    : DEFAULT_INTERACTION_TIMEOUT_MS
+  /**
+   * Arm the interaction timeout, or leave the ask parked when it is disabled.
+   * @param {Function} onExpire expiry handler.
+   * @returns {object|undefined} timer handle, undefined when disabled.
+   */
+  const armInteractionTimer = onExpire => {
+    if (interactionTimeout <= 0) return undefined
+    const timer = setTimeout(onExpire, interactionTimeout)
+    if (typeof timer.unref === 'function') timer.unref()
+    return timer
+  }
   let costWarningLogged = false
   const gateway = ctx.typertGateway
   const connection = ctx.connection
@@ -399,13 +417,12 @@ export function createDshHost({ ctx, logger = console }) {
         notify({ kind: 'approval-resolved', sessionId, approvalId, reason })
         return true
       }
-      const timer = setTimeout(() => {
+      const timer = armInteractionTimer(() => {
         // An unanswered ask expires: retract the card first, then hand the
         // question to the GUI, which is where an abandoned prompt belongs.
         if (!withdraw('timeout')) return
         resolve(next())
-      }, INTERACTION_TIMEOUT_MS)
-      if (typeof timer.unref === 'function') timer.unref()
+      })
       pendingApprovals.set(approvalId, {
         sessionId,
         toolName,
@@ -465,11 +482,10 @@ export function createDshHost({ ctx, logger = console }) {
         notify({ kind: 'clarify-resolved', sessionId, clarifyId, reason })
         return true
       }
-      const timer = setTimeout(() => {
+      const timer = armInteractionTimer(() => {
         if (!withdraw('timeout')) return
         resolve(next())
-      }, INTERACTION_TIMEOUT_MS)
-      if (typeof timer.unref === 'function') timer.unref()
+      })
       pendingQuestions.set(clarifyId, {
         sessionId,
         ...(typeof first?.id === 'string' && first.id.length > 0 ? { questionId: first.id } : {}),

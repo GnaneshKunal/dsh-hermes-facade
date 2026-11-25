@@ -233,6 +233,9 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, host, conve
     epochOf: () => replayEpoch,
     ...(Number.isSafeInteger(replayRetain) && replayRetain > 0 ? { retain: replayRetain } : {}),
     ...(Number.isSafeInteger(turnRetain) && turnRetain > 0 ? { turnRetain } : {}),
+    // `subscribed` (config eventScope) stops one client from receiving another
+    // client's sessions; `broadcast` is the historical fan-out to every socket.
+    ...(config.eventScope === 'subscribed' ? { scope: 'subscribed' } : {}),
   })
   const connections = new Set()
 
@@ -317,10 +320,16 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, host, conve
         settled: false,
         resolve: release,
       }
-      entry.timer = setTimeout(() => {
-        if (settle(entry, null)) emitCancel(entry, 'timeout')
-      }, timeoutMs)
-      entry.timer.unref?.()
+      // A non-positive timeout parks the ask until the client answers it: the
+      // session stays in "Needs you" and a reattaching screen restores the card
+      // from open_requests. Settling it instead would hand the question to a
+      // GUI the phone-only user never sees.
+      entry.timer = timeoutMs > 0
+        ? setTimeout(() => {
+          if (settle(entry, null)) emitCancel(entry, 'timeout')
+        }, timeoutMs)
+        : undefined
+      entry.timer?.unref?.()
       pending.set(id, entry)
       open.set(id, entry)
       // The client answers an approval or a clarification by the id in its
@@ -466,6 +475,7 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, host, conve
     resolveBackendSession: id => sessions.resolve(id),
     onSettled: id => bumpRevision(id),
     logger,
+    ...(Number.isFinite(config.interactionTimeoutMs) ? { interactionTimeoutMs: config.interactionTimeoutMs } : {}),
   })
   const methods = createMethods({ backend, hub, runner, requests, sessions, uploadsDir: uploads, host, bumpRevision, logger })
 
@@ -1642,6 +1652,15 @@ export function createGatewayServer({ config, facadeUrl, facadeAuth, host, conve
     let frame
     try { frame = JSON.parse(text) } catch { return }
     if (frame === null || typeof frame !== 'object') return
+    // Name-to-subscribe: in `subscribed` event scope a socket only receives the
+    // sessions it has addressed. Done before dispatch so the frames a prompt
+    // emits immediately are not lost to the subscription race.
+    if (typeof frame.params === 'object' && frame.params !== null) {
+      for (const key of ['session_id', 'sessionId', 'session_key']) {
+        const named = frame.params[key]
+        if (typeof named === 'string' && named.length > 0) connection.subscribeSession?.(named)
+      }
+    }
     // A JSON-RPC response to a server-to-client request. It settles the request
     // and withdraws it, exactly as the request.answer/approval.respond path does;
     // leaving the cancel frame out left the card to a timeout on the other side.

@@ -101,6 +101,17 @@ export function resolveConfig(raw = {}) {
       ? raw.streamRetainMs
       : undefined,
     lanHost,
+    // How long an approval/clarification stays open before it is handed to the
+    // GUI or withdrawn. 0 keeps it open until the client answers, so a closed
+    // app comes back to its own "Needs you" card instead of finding the turn
+    // silently blocked on a GUI card it cannot see.
+    interactionTimeoutMs: Number.isSafeInteger(raw.interactionTimeoutMs) && raw.interactionTimeoutMs >= 0
+      ? raw.interactionTimeoutMs
+      : 10 * 60 * 1000,
+    // 'broadcast' (historical) sends every session's frames to every socket;
+    // 'subscribed' only sends the sessions a socket has named, so two clients
+    // on one host do not stream each other's turns.
+    eventScope: raw.eventScope === 'subscribed' ? 'subscribed' : 'broadcast',
   }
 }
 

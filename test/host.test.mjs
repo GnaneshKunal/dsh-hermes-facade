@@ -217,6 +217,7 @@ function build(existingWorkspaces = {}, options = {}) {
  * so they need a fake ctx that records the listeners and a way to fire them.
  * @param {object} [options] options.
  * @param {boolean} [options.client] whether a phone is attached.
+ * @param {number} [options.interactionTimeoutMs] ask lifetime; 0 parks the ask.
  * @returns {object} harness with the host, its notices and fire helpers.
  */
 function buildInteractions(options = {}) {
@@ -233,7 +234,11 @@ function buildInteractions(options = {}) {
       return () => handlers.delete(event)
     },
   }
-  const host = createDshHost({ ctx, logger: { info() {}, warn() {} } })
+  const host = createDshHost({
+    ctx,
+    logger: { info() {}, warn() {} },
+    ...(options.interactionTimeoutMs === undefined ? {} : { interactionTimeoutMs: options.interactionTimeoutMs }),
+  })
   host.setClientPredicate(() => options.client !== false)
   const notices = []
   host.onInteraction(notice => notices.push(notice))
@@ -1159,4 +1164,53 @@ test('a broken bundle reply is an error, never an empty bundle list', async () =
   const { host } = build({}, { plugins: 'not-a-list' })
   await assert.rejects(() => host.plugins.listBundles(), /no bundle list/)
   await assert.rejects(() => host.plugins.available())
+})
+
+test('an unanswered ask is delegated to the GUI at the default timeout', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { host, ask } = buildInteractions()
+  const outcome = ask({ agent: { id: 's1' }, toolName: 'bash', callId: 'call-1' })
+  t.mock.timers.tick(10 * 60 * 1000)
+  // The harness' next() stands in for the GUI's own answerer.
+  assert.equal(await outcome, 'unavailable')
+  assert.equal(host.pendingApproval('s1'), undefined)
+})
+
+test('interactionTimeoutMs 0 parks an ask until the phone answers it', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { host, ask } = buildInteractions({ interactionTimeoutMs: 0 })
+  const outcome = ask({ agent: { id: 's1' }, toolName: 'bash', callId: 'call-1' })
+  let settled = false
+  outcome.then(() => { settled = true })
+
+  // An hour with the app closed: long past the old ten-minute handoff.
+  t.mock.timers.tick(60 * 60 * 1000)
+  await Promise.resolve()
+  assert.equal(settled, false, 'a parked ask must not settle or move to the GUI')
+  assert.equal(host.pendingApproval('s1').approval_id, 'call-1', 'the card is still addressable')
+
+  assert.deepEqual(host.respondApproval({ approvalId: 'call-1', choice: 'once' }), {
+    ok: true,
+    choice: 'once',
+    outcome: 'allowed-once',
+  })
+  assert.equal(await outcome, 'allowed-once')
+})
+
+test('interactionTimeoutMs 0 parks a clarification too', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { host, askQuestion } = buildInteractions({ interactionTimeoutMs: 0 })
+  const answer = askQuestion({
+    agent: { id: 's1' },
+    id: 'q-1',
+    questions: [{ id: 'q-1', question: 'Kies A of B', options: [{ label: 'A' }, { label: 'B' }] }],
+  })
+  let settled = false
+  answer.then(() => { settled = true })
+  t.mock.timers.tick(60 * 60 * 1000)
+  await Promise.resolve()
+  assert.equal(settled, false)
+  assert.equal(host.pendingClarification('s1').clarify_id, 'q-1')
+  assert.deepEqual(host.respondClarification({ clarifyId: 'q-1', response: 'A' }), { ok: true })
+  assert.deepEqual(await answer, { answers: [{ id: 'q-1', selected: ['A'] }] })
 })

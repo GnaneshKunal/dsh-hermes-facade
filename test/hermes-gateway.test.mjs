@@ -14,7 +14,7 @@ import { createMockHost } from '../scripts/standalone.mjs'
  * Boot the facade and the gateway on ephemeral ports.
  * @returns {Promise<object>} harness.
  */
-async function boot({ hostCwd, convertAudio, replayRetain, turnRetain } = {}) {
+async function boot({ hostCwd, convertAudio, replayRetain, turnRetain, eventScope, interactionTimeoutMs } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'hermes-gateway-'))
   const host = hostCwd === undefined ? createMockHost() : createMockHost({ cwd: hostCwd })
   const config = {
@@ -30,6 +30,8 @@ async function boot({ hostCwd, convertAudio, replayRetain, turnRetain } = {}) {
     internalToken: 'test-internal-token-0123456789abcdef',
     historyWindow: 800,
     historyPage: 200,
+    ...(eventScope === undefined ? {} : { eventScope }),
+    ...(interactionTimeoutMs === undefined ? {} : { interactionTimeoutMs }),
   }
   const facade = createFacadeServer({ config, host })
   const address = await facade.listen()
@@ -3262,6 +3264,70 @@ test('a screen reattaching mid-turn replays the active turn instead of a hole', 
       socket.ws.close()
     }
   } finally {
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('broadcast scope streams one socket the other socket\'s turn', async () => {
+  const harness = await boot()
+  const first = await signIn(harness.base, harness.password)
+  const second = await signIn(harness.base, harness.password)
+  const watcher = await openSocket(harness.base, first)
+  const talker = await openSocket(harness.base, second)
+  try {
+    await talker.call('prompt.submit', { session_id: 'sess-mock', text: 'hello' })
+    await talker.waitFor(frame => frame.params?.type === 'message.complete')
+    const leaked = watcher.frames.filter(frame => frame.params?.session_id === 'sess-mock')
+    // The historical behaviour: every socket sees every session's frames.
+    assert.ok(leaked.length > 0, 'broadcast scope is expected to fan out to all sockets')
+  } finally {
+    watcher.ws.close()
+    talker.ws.close()
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('subscribed scope keeps another socket out of a turn it never named', async () => {
+  const harness = await boot({ eventScope: 'subscribed' })
+  const first = await signIn(harness.base, harness.password)
+  const second = await signIn(harness.base, harness.password)
+  const watcher = await openSocket(harness.base, first)
+  const talker = await openSocket(harness.base, second)
+  try {
+    const submitted = await talker.call('prompt.submit', { session_id: 'sess-mock', text: 'hello' })
+    assert.equal(submitted.result.status, 'streaming')
+    await talker.waitFor(frame => frame.params?.type === 'message.complete')
+
+    const leaked = watcher.frames.filter(frame => frame.params?.session_id === 'sess-mock')
+    assert.deepEqual(leaked, [], 'a socket that never named this session must not receive its frames')
+    // The process-wide list refresh still reaches every socket, so the session
+    // list keeps updating without the per-session stream.
+    assert.ok(watcher.frames.some(frame => frame.params?.type === 'sessions.changed'))
+  } finally {
+    watcher.ws.close()
+    talker.ws.close()
+    await harness.gateway.close()
+    await harness.facade.close()
+  }
+})
+
+test('subscribed scope still delivers a session the socket resumed', async () => {
+  const harness = await boot({ eventScope: 'subscribed' })
+  const cookie = await signIn(harness.base, harness.password)
+  const watcher = await openSocket(harness.base, cookie)
+  const talker = await openSocket(harness.base, cookie)
+  try {
+    const resumed = await watcher.call('session.resume', { session_id: 'sess-mock' })
+    assert.equal(resumed.result.session_id, 'sess-mock')
+    await talker.call('prompt.submit', { session_id: 'sess-mock', text: 'hello' })
+    await talker.waitFor(frame => frame.params?.type === 'message.complete')
+    // Naming the session is what subscribes it: the same turn is now visible.
+    await watcher.waitFor(frame => frame.params?.session_id === 'sess-mock' && frame.params?.type === 'message.complete')
+  } finally {
+    watcher.ws.close()
+    talker.ws.close()
     await harness.gateway.close()
     await harness.facade.close()
   }

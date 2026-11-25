@@ -134,7 +134,24 @@ config:
   gatewayPort: 9121
   gatewayBindHost: 127.0.0.1
   gatewayLanHost: auto      # also bind Wi-Fi LAN + Tailscale IPv4 (plain HTTP)
+  eventScope: subscribed    # a socket only receives the sessions it named
+  interactionTimeoutMs: 0   # keep an unanswered ask open (0) instead of 10 min
 ```
+
+Two behaviours matter when the app is the only client:
+
+- **`interactionTimeoutMs`** is how long an approval or clarification stays
+  addressable. The default (ten minutes) then hands an unanswered ask to the Web
+  GUI, which is the right owner for an abandoned prompt when a desktop is
+  watching — and an invisible one for a phone-only user, who sees the turn stall
+  with nothing to answer. `0` parks the ask instead: the session keeps reporting
+  `running: true`, the card survives the app closing, and `session.resume`
+  returns it in `open_requests` so the app shows its own Needs-you card again.
+- **`eventScope`** decides who receives a session's frames. `broadcast` is the
+  historical fan-out to every socket (the client filters its own screen);
+  `subscribed` sends a socket only the sessions it has named, so a phone and a
+  Web GUI on the same host stop streaming each other's reasoning, tools and
+  text. Process-wide frames such as `sessions.changed` always reach everyone.
 
 Both listeners share the password file, the cookie secret and the state directory.
 Expose the second one with `tailscale serve --bg --https=9444 http://127.0.0.1:9121`
@@ -150,7 +167,7 @@ and add it in Hermex as its own server.
 | chat telemetry | full: live `session.usage` plus `usage` on `message.complete` (context used/max, input/output tokens); **no cost** — DSH has no pricing |
 | chat start / SSE stream / cancel / stream status | full; a failed or cancelled turn ends the stream with `error`/`cancel` instead of `done`; the Legacy start body's `profile` is ignored (attachments are staged on the Hermes listener) |
 | token deltas, thinking, tool cards | full: live and reloaded transcripts carry tool results, error verdicts and durations |
-| approvals (once / session / always / deny) | full: a reconnect keeps command/description, expired prompts answer `409 {"stale":true}` and are retracted. `session`/`always` are standing grants keyed by tool name (no command-pattern allowlist) |
+| approvals (once / session / always / deny) | full: a reconnect keeps command/description, expired prompts answer `409 {"stale":true}` and are retracted. `session`/`always` are standing grants keyed by tool name (no command-pattern allowlist). With `interactionTimeoutMs: 0` an unanswered ask parks instead of moving to the GUI, and a reattaching screen gets it back from `open_requests` |
 | clarifications / agent questions | full: live and re-attached cards carry `question`/`choices_offered` and answer correctly |
 | reasoning effort | full: levels come from the model catalog |
 | model picker | full: applied through `session/selectModel`; the catalog id/provider is resolved and the reasoning effort carried over |

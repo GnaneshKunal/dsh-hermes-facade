@@ -51,7 +51,7 @@ async function mount(ctx, config, logger) {
 
   let host
   try {
-    host = createDshHost({ ctx, logger })
+    host = createDshHost({ ctx, logger, interactionTimeoutMs: resolved.interactionTimeoutMs })
   } catch (error) {
     logger.warn?.('hermes-facade: host services unavailable, not mounting (' + String(error?.message ?? error) + ')')
     return
