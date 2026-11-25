@@ -92,3 +92,57 @@ test('forgetting a session drops its turn pin', () => {
   assert.equal(replay.truncated, false)
   assert.equal(replay.events[0].seq, 1)
 })
+
+test('broadcast scope keeps the historical fan-out to every socket', () => {
+  const hub = createEventHub()
+  const first = { sent: [], on() {}, sendJson(frame) { this.sent.push(frame) } }
+  const second = { sent: [], on() {}, sendJson(frame) { this.sent.push(frame) } }
+  hub.attach(first)
+  hub.attach(second)
+  hub.publish('message.delta', { text: 'x' }, 'sess-a')
+  assert.equal(first.sent.length, 1)
+  assert.equal(second.sent.length, 1)
+})
+
+test('subscribed scope sends a socket only the sessions it named', () => {
+  const hub = createEventHub({ scope: 'subscribed' })
+  const mine = { sent: [], on() {}, sendJson(frame) { this.sent.push(frame) } }
+  const other = { sent: [], on() {}, sendJson(frame) { this.sent.push(frame) } }
+  hub.attach(mine)
+  hub.attach(other)
+  // Before naming anything, a session frame is not addressed to this socket.
+  hub.publish('message.delta', { text: 'early' }, 'sess-a')
+  assert.equal(mine.sent.length, 0, 'an unnamed session must not reach the socket')
+
+  mine.subscribeSession('sess-a')
+  hub.publish('message.delta', { text: 'a1' }, 'sess-a')
+  hub.publish('message.delta', { text: 'b1' }, 'sess-b')
+  hub.publish('sessions.changed', {})
+
+  assert.deepEqual(mine.sent.map(frame => frame.params.type), ['message.delta', 'sessions.changed'])
+  assert.equal(mine.sent[0].params.session_id, 'sess-a')
+  // The socket that stayed quiet only sees the process-wide frame.
+  assert.deepEqual(other.sent.map(frame => frame.params.type), ['sessions.changed'])
+})
+
+test('subscribed scope keeps per-session sequence numbers contiguous for the ring', () => {
+  const hub = createEventHub({ scope: 'subscribed' })
+  const socket = { sent: [], on() {}, sendJson(frame) { this.sent.push(frame) } }
+  hub.attach(socket)
+  socket.subscribeSession('sess-a')
+  hub.publish('message.start', {}, 'sess-a')
+  hub.publish('message.delta', { text: 'x' }, 'sess-a')
+  hub.publish('tool.start', { name: 'bash' }, 'sess-b')
+  assert.deepEqual(socket.sent.map(frame => frame.params.seq), [1, 2])
+  assert.equal(hub.since('sess-a', 0).events.length, 2)
+  assert.equal(hub.since('sess-b', 0).events.length, 1)
+})
+
+test('subscribeSession is a no-op in broadcast scope', () => {
+  const hub = createEventHub()
+  const socket = { sent: [], on() {}, sendJson(frame) { this.sent.push(frame) } }
+  hub.attach(socket)
+  socket.subscribeSession('sess-a')
+  hub.publish('message.delta', { text: 'b' }, 'sess-b')
+  assert.equal(socket.sent.length, 1)
+})

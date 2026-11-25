@@ -3,6 +3,23 @@
 Notable changes to dsh-hermes-facade. Version headings correspond to releases; unreleased
 changes accumulate at the top. Format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [Unreleased]
+
+### Added
+
+- **`interactionTimeoutMs`.** How long an approval or clarification stays open,
+  default ten minutes as before. `0` parks it: the ask is never withdrawn on a
+  timer and never handed to the Web GUI, the session keeps reporting
+  `running: true`, and `session.resume` returns the card in `open_requests` so a
+  phone that was closed reopens onto its own Needs-you card. Previously the
+  ten-minute handoff left a phone-only user with a parked turn and no card to
+  answer, which read as "the agent stopped".
+- **`eventScope`.** `broadcast` (default, historical) sends every session's
+  frames to every socket; `subscribed` sends a socket only the sessions it named
+  (`session.resume`, `prompt.submit`, `session.events.since` and the rest), so a
+  phone and a Web GUI on one host no longer stream each other's reasoning, tool
+  output and text. `sessions.changed` still reaches every socket.
+
 ## [0.3.0] - 2026-11-18
 
 ### Added

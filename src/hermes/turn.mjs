@@ -15,7 +15,7 @@ import { TERMINAL_BACKEND } from './protocol.mjs'
 import { usageOf } from './shapes.mjs'
 
 /** How long an approval or question may stay unanswered. */
-const REQUEST_TTL_MS = 10 * 60 * 1000
+const DEFAULT_REQUEST_TTL_MS = 10 * 60 * 1000
 
 /**
  * Parse an SSE data payload.
@@ -93,7 +93,12 @@ export function createTurnRunner({
   onSettled,
   logger = console,
   now = () => Math.floor(Date.now() / 1000),
+  // How long an unanswered approval/clarify stays addressable. 0 parks it until
+  // the client answers, which is what makes "Needs you" survive a closed app;
+  // the host's own interaction timeout is configured from the same value.
+  interactionTimeoutMs = DEFAULT_REQUEST_TTL_MS,
 }) {
+  const requestTtlMs = Number.isFinite(interactionTimeoutMs) ? interactionTimeoutMs : DEFAULT_REQUEST_TTL_MS
   /** @type {Map<string, {streamId: string, controller: AbortController, startedAt: number, info: object}>} */
   const active = new Map()
   /** Prompts submitted while the session already had a turn, oldest first. */
@@ -340,7 +345,7 @@ export function createTurnRunner({
       allow_permanent: true,
       allow_session: true,
       smart_denied: false,
-    }, { sessionId, timeoutMs: REQUEST_TTL_MS })
+    }, { sessionId, timeoutMs: requestTtlMs })
     if (result === null || result === undefined) return
     const choice = String(result.choice ?? 'deny')
     try {
@@ -373,7 +378,7 @@ export function createTurnRunner({
       question,
       ...(choices.length > 0 ? { choices } : {}),
       ...(pending.multi_select === true ? { multi_select: true } : {}),
-    }, { sessionId, timeoutMs: REQUEST_TTL_MS })
+    }, { sessionId, timeoutMs: requestTtlMs })
     if (result === null || result === undefined) return
     const response = String(result.answer ?? result.value ?? '')
     try {

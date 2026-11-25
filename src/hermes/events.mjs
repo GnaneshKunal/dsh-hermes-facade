@@ -94,6 +94,7 @@ export function createEventHub({
   epochOf = () => 'epoch-1',
   retain = DEFAULT_RETAIN,
   turnRetain = DEFAULT_TURN_RETAIN,
+  scope = 'broadcast',
 } = {}) {
   const sequences = new Map()
   const pendingSince = new Map()
@@ -135,6 +136,18 @@ export function createEventHub({
   function attach(connection) {
     connections.add(connection)
     connection.on('close', () => connections.delete(connection))
+    // Session-scoped delivery. In `broadcast` scope (the historical behaviour)
+    // every socket receives every session's frames and each screen filters out
+    // the rows it does not own. In `subscribed` scope a socket receives a
+    // session's frames only after it named that session, so two clients on one
+    // host stop seeing each other's reasoning, tool output and text.
+    const subscriptions = new Set()
+    connection.subscribeSession = sessionId => {
+      if (scope === 'subscribed' && typeof sessionId === 'string' && sessionId.length > 0) {
+        subscriptions.add(sessionId)
+      }
+    }
+    connection.wantsSession = sessionId => scope !== 'subscribed' || subscriptions.has(sessionId)
 
     // A first replay is answered from the ring only (a real host also parks
     // later frames); the count is small and every frame we keep is answerable.
@@ -163,6 +176,7 @@ export function createEventHub({
     ring.push(eventParams(type, seq, payload, sessionId))
     trim(ring, turnFloors.get(sessionId))
     for (const connection of connections) {
+      if (connection.wantsSession?.(sessionId) === false) continue
       try { connection.sendJson(frame) } catch { connections.delete(connection) }
     }
     return { frame, seq }
